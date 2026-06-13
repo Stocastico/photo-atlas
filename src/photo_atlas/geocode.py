@@ -34,6 +34,13 @@ class Place:
 
 
 @lru_cache(maxsize=1)
+def _country_names() -> dict[str, str]:
+    """Map ISO country code -> country name, derived from the bundled dataset."""
+
+    return {p.country_code: p.country for p in _bundled_cities() if p.country_code}
+
+
+@lru_cache(maxsize=1)
 def _bundled_cities() -> list[Place]:
     places: list[Place] = []
     data = resources.files("photo_atlas.data").joinpath("cities.csv").read_text(encoding="utf-8")
@@ -77,13 +84,17 @@ class Geocoder:
         if lat is None or lon is None:
             return None
 
-        if self._rg is not None:  # pragma: no cover - optional dependency
+        if self._rg is not None:
             result = self._rg.search((lat, lon), mode=1)[0]
+            cc = result.get("cc", "")
             return Place(
                 city=result.get("name", ""),
                 admin=result.get("admin1", ""),
-                country=result.get("admin1", ""),
-                country_code=result.get("cc", ""),
+                # reverse_geocoder only returns a country *code*; resolve it to a
+                # name (falling back to the code) instead of mislabelling the
+                # region (admin1) as the country.
+                country=_country_names().get(cc, cc),
+                country_code=cc,
                 lat=float(result.get("lat", lat)),
                 lon=float(result.get("lon", lon)),
             )

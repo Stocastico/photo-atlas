@@ -59,6 +59,17 @@ def _person_centroids(conn: sqlite3.Connection) -> dict[int, np.ndarray]:
     return {pid: np.mean(np.vstack(vs), axis=0) for pid, vs in buckets.items() if vs}
 
 
+def thumb_path_for(config: AtlasConfig, sha1: str) -> Path:
+    """Content-addressed thumbnail path.
+
+    Deriving the name from the file's SHA-1 (not ``hash()``, which is salted per
+    process) keeps it stable across runs, so re-indexing reuses the same file
+    instead of orphaning the previous thumbnail.
+    """
+
+    return config.thumbs_dir / sha1[:2] / f"{sha1}.jpg"
+
+
 def _save_face_crop(src: Path, bbox: tuple[int, int, int, int], dest: Path) -> None:
     x, y, w, h = bbox
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -83,6 +94,7 @@ def index_file(
 
     path = Path(path)
     meta = extract_meta(path)
+    sha1 = sha1_of(path)
 
     place = None
     if geocoder is not None:
@@ -91,7 +103,7 @@ def index_file(
     # Detect faces first so the scene tagger can use the count.
     observations = backend.detect(path) if backend is not None else []
 
-    thumb_path = config.thumbs_dir / f"{sha1_of(path)[:2]}" / f"{path.stem}_{abs(hash(str(path))) % 10**8}.jpg"
+    thumb_path = thumb_path_for(config, sha1)
     make_thumbnail(path, thumb_path, size=config.thumb_size)
 
     scene_label, scene_scores = tagger.tag(path, face_count=len(observations))
@@ -99,7 +111,7 @@ def index_file(
     record = {
         "path": str(path.resolve()),
         "filename": path.name,
-        "sha1": sha1_of(path),
+        "sha1": sha1,
         "width": meta.width,
         "height": meta.height,
         "bytes": path.stat().st_size,

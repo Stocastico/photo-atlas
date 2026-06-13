@@ -55,6 +55,15 @@ def _exif_dict(img: Image.Image) -> dict:
     out = {}
     for tag_id, value in raw.items():
         out[TAGS.get(tag_id, tag_id)] = value
+    # The canonical capture time (DateTimeOriginal / DateTimeDigitized) lives in
+    # the Exif sub-IFD (0x8769), not the base IFD that ``getexif()`` returns, so
+    # merge it in. Base-IFD tags win on the rare key collision.
+    try:
+        exif_ifd = raw.get_ifd(0x8769)
+    except Exception:  # pragma: no cover - defensive
+        exif_ifd = {}
+    for tag_id, value in (exif_ifd or {}).items():
+        out.setdefault(TAGS.get(tag_id, tag_id), value)
     return out
 
 

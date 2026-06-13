@@ -114,15 +114,15 @@ def upsert_photo(conn: sqlite3.Connection, record: dict) -> int:
     placeholders = ", ".join(["?"] * len(columns))
     collist = ", ".join(columns)
     updates = ", ".join(f"{c}=excluded.{c}" for c in columns if c != "path")
-    cur = conn.execute(
+    conn.execute(
         f"INSERT INTO photos ({collist}) VALUES ({placeholders}) "
         f"ON CONFLICT(path) DO UPDATE SET {updates}",
         values,
     )
-    if cur.lastrowid:
-        row = conn.execute("SELECT id FROM photos WHERE path=?", (record["path"],)).fetchone()
-        return int(row["id"])
-    return int(cur.lastrowid)
+    # ``path`` is UNIQUE, so resolving by it returns the right id on both the
+    # insert and the update branch (lastrowid is unreliable after an UPSERT).
+    row = conn.execute("SELECT id FROM photos WHERE path=?", (record["path"],)).fetchone()
+    return int(row["id"])
 
 
 def replace_faces(conn: sqlite3.Connection, photo_id: int, faces: Iterable[dict]) -> None:

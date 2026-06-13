@@ -94,7 +94,7 @@ def _paint_scene(kind: str, people_idx: list[int]) -> Image.Image:
     else:  # people
         draw.rectangle([0, 0, w, h], fill=(150, 160, 175))
 
-    # Draw the recurring faces (large enough for the Haar cascade).
+    # Draw the recurring faces (large enough for the synthetic skin-blob detector).
     for i, pidx in enumerate(people_idx):
         cx = (i + 1) * w // (len(people_idx) + 1)
         _draw_face(draw, cx, h // 2, 150, _PEOPLE[pidx % len(_PEOPLE)])

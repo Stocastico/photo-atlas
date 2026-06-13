@@ -39,6 +39,25 @@ def test_demo_exif_roundtrip(demo_photos):
     assert meta.camera_model == "DemoCam 1.0"
 
 
+def test_exif_datetimeoriginal_is_read(tmp_path):
+    """Real cameras store capture time in DateTimeOriginal, in the Exif sub-IFD.
+
+    Pillow's ``Image.getexif()`` only exposes the *base* IFD, so the canonical
+    capture timestamp must be read from the Exif sub-IFD (0x8769) explicitly.
+    """
+    from PIL import Image
+
+    path = tmp_path / "real.jpg"
+    img = Image.new("RGB", (32, 32), (10, 20, 30))
+    exif = Image.Exif()
+    exif[0x8769] = {0x9003: "2015:08:09 11:22:33"}  # Exif sub-IFD -> DateTimeOriginal
+    img.save(path, "JPEG", exif=exif)
+
+    meta = extract_meta(path)
+    assert meta.taken_source == "exif"
+    assert meta.taken_at.startswith("2015-08-09")
+
+
 # -- geocoding -------------------------------------------------------------
 def test_geocode_nearest_city():
     place = Geocoder(prefer_external=False).lookup(41.9, 12.5)  # Rome
@@ -48,6 +67,29 @@ def test_geocode_nearest_city():
 
 def test_geocode_handles_missing_coords():
     assert Geocoder(prefer_external=False).lookup(None, None) is None
+
+
+def test_external_geocoder_reports_country_not_region():
+    """The high-resolution backend must fill ``country`` with a country, not the
+    admin1 region, and keep the ISO country code."""
+
+    class FakeRG:
+        def search(self, coords, mode=1):  # mimics reverse_geocoder.search
+            return [{
+                "name": "Brooklyn", "admin1": "New York", "admin2": "Kings",
+                "cc": "US", "lat": "40.6500", "lon": "-73.9500",
+            }]
+
+    geo = Geocoder(prefer_external=False)
+    geo._rg = FakeRG()  # inject the high-resolution backend without installing it
+    place = geo.lookup(40.65, -73.95)
+
+    assert place is not None
+    assert place.city == "Brooklyn"
+    assert place.country_code == "US"
+    assert place.admin == "New York"
+    # The bug: country was set to admin1 ("New York"). It must be the country.
+    assert place.country == "United States"
 
 
 # -- scene tagging ---------------------------------------------------------
@@ -91,6 +133,22 @@ def test_cosine_distance_and_match():
     assert pid is None
 
 
+# -- db --------------------------------------------------------------------
+def test_upsert_photo_returns_stable_id_on_insert_and_update():
+    conn = db.connect(":memory:")
+    base = {"filename": "x.jpg"}
+    id_a = db.upsert_photo(conn, {**base, "path": "/x/a.jpg"})
+    db.upsert_photo(conn, {**base, "path": "/x/b.jpg"})  # advance the rowid
+
+    # Re-upserting an existing path updates in place and returns the same id.
+    id_a2 = db.upsert_photo(conn, {**base, "path": "/x/a.jpg", "filename": "a2.jpg"})
+    assert id_a2 == id_a
+    assert conn.execute(
+        "SELECT filename FROM photos WHERE id=?", (id_a,)
+    ).fetchone()[0] == "a2.jpg"
+    assert conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0] == 2
+
+
 # -- indexing + search + library ------------------------------------------
 @pytest.fixture
 def indexed(config, tmp_path):
@@ -110,6 +168,29 @@ def test_index_populates_catalog(indexed):
     # Every photo got a scene tag and most got a place from GPS.
     placed = conn.execute("SELECT COUNT(*) FROM photos WHERE place_country IS NOT NULL").fetchone()[0]
     assert placed == 24
+
+
+def test_thumbnail_path_is_content_addressed(config, tmp_path):
+    """Thumbnail filenames must be a deterministic function of file content, not
+    of ``hash()`` (which is salted per process), so re-indexing reuses them."""
+    from photo_atlas.metadata import sha1_of
+
+    [photo] = demo.generate(tmp_path / "p", count=1, seed=5)
+    sha1 = sha1_of(photo)
+    expected = config.thumbs_dir / sha1[:2] / f"{sha1}.jpg"
+    assert indexer.thumb_path_for(config, sha1) == expected
+
+
+def test_reindex_reuses_thumbnail_path(config, tmp_path):
+    photos_dir = tmp_path / "photos"
+    demo.generate(photos_dir, count=2, seed=8)
+    indexer.index_path(config, photos_dir, backend_name="none", geocode=False)
+    conn = db.connect(config.db_path)
+    before = {r["id"]: r["thumb_path"] for r in conn.execute("SELECT id, thumb_path FROM photos")}
+
+    indexer.index_path(config, photos_dir, backend_name="none", geocode=False, recompute=True)
+    after = {r["id"]: r["thumb_path"] for r in conn.execute("SELECT id, thumb_path FROM photos")}
+    assert before == after
 
 
 def test_reindex_is_idempotent(indexed, tmp_path):
