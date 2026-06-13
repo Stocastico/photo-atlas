@@ -133,6 +133,22 @@ def test_cosine_distance_and_match():
     assert pid is None
 
 
+# -- db --------------------------------------------------------------------
+def test_upsert_photo_returns_stable_id_on_insert_and_update():
+    conn = db.connect(":memory:")
+    base = {"filename": "x.jpg"}
+    id_a = db.upsert_photo(conn, {**base, "path": "/x/a.jpg"})
+    db.upsert_photo(conn, {**base, "path": "/x/b.jpg"})  # advance the rowid
+
+    # Re-upserting an existing path updates in place and returns the same id.
+    id_a2 = db.upsert_photo(conn, {**base, "path": "/x/a.jpg", "filename": "a2.jpg"})
+    assert id_a2 == id_a
+    assert conn.execute(
+        "SELECT filename FROM photos WHERE id=?", (id_a,)
+    ).fetchone()[0] == "a2.jpg"
+    assert conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0] == 2
+
+
 # -- indexing + search + library ------------------------------------------
 @pytest.fixture
 def indexed(config, tmp_path):
