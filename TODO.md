@@ -14,15 +14,14 @@ responsive/mobile work is intentionally deprioritised.
 - [x] **Broader search** — `q` now matches filename, city, country, place
   label, folder/trip and camera make/model (was filename-only).
 - [x] Minor: loading row, Enter-to-save on lightbox face inputs.
+- [x] **Filter-aware facet counts.** `/api/facets` now accepts the active
+  filters and each facet's counts reflect the other filters but not its own
+  dimension (Photos-app style); `total` stays the library size. Sidebar passes
+  the current filters and refreshes counts as you filter/search.
 
 ## Queued
 
 ### Filtering correctness & power
-- [ ] **Filter-aware facet counts.** `/api/facets` ignores active filters, so
-  sidebar counts are global and can mislead (a chip showing "12" yields a
-  different result once combined). Pass the current filters into `facets()` and
-  compute counts against the filtered set (keep the active facet's own counts
-  unconstrained, Photos-app style).
 - [ ] **Multi-select within a facet.** Today picking a second country replaces
   the first (`toggleFilter` is single-value). Allow OR-within-facet,
   AND-across-facets. Requires list params in the API + `IN (...)` clauses.

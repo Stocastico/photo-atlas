@@ -102,44 +102,54 @@ def photo_detail(conn: sqlite3.Connection, photo_id: int) -> dict | None:
     return photo
 
 
-def facets(conn: sqlite3.Connection) -> dict:
-    """Aggregate counts used to build the filter sidebar."""
+def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> dict:
+    """Aggregate counts used to build the filter sidebar.
 
-    def counts(sql: str) -> list[dict]:
+    Counts are *filter-aware*: each facet reflects the other active filters but
+    not its own dimension, so the number next to a chip is how many photos you
+    would see by adding that value to the current selection (the classic
+    faceted-search behaviour). ``total`` stays the unfiltered library size.
+    """
+
+    filters = filters or {}
+
+    def facet(column: str, own_key: str, *, order_by_value: bool = False) -> list[dict]:
+        # Exclude this facet's own filter so all of its options stay visible.
+        sub = {k: v for k, v in filters.items() if k != own_key}
+        where, params, join = _where(sub)
+        order = f"{column} DESC" if order_by_value else "c DESC, v"
+        sql = (
+            f"SELECT {column} AS v, COUNT(DISTINCT p.id) AS c "
+            f"FROM photos p {join}{where} GROUP BY v ORDER BY {order}"
+        )
         return [
-            {"value": r[0], "count": r[1]}
-            for r in conn.execute(sql).fetchall()
-            if r[0] is not None
+            {"value": r["v"], "count": r["c"]}
+            for r in conn.execute(sql, params).fetchall()
+            if r["v"] is not None
+        ]
+
+    def person_facet() -> list[dict]:
+        sub = {k: v for k, v in filters.items() if k != "person_id"}
+        where, params, _join = _where(sub)
+        sql = (
+            "SELECT pr.id AS id, pr.name AS name, COUNT(DISTINCT p.id) AS c "
+            "FROM persons pr JOIN faces f ON f.person_id = pr.id "
+            f"JOIN photos p ON p.id = f.photo_id {where} "
+            "GROUP BY pr.id ORDER BY c DESC, pr.name"
+        )
+        return [
+            {"id": r["id"], "name": r["name"], "count": r["c"]}
+            for r in conn.execute(sql, params).fetchall()
         ]
 
     total = conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
     return {
         "total": int(total),
-        "scenes": counts(
-            "SELECT scene_type, COUNT(*) FROM photos GROUP BY scene_type ORDER BY 2 DESC"
-        ),
-        "countries": counts(
-            "SELECT place_country, COUNT(*) FROM photos GROUP BY place_country ORDER BY 2 DESC"
-        ),
-        "cities": counts(
-            "SELECT place_city, COUNT(*) FROM photos GROUP BY place_city ORDER BY 2 DESC"
-        ),
-        "places": counts(
-            "SELECT folder_place, COUNT(*) FROM photos GROUP BY folder_place ORDER BY 2 DESC"
-        ),
-        "years": counts(
-            "SELECT substr(taken_at,1,4) AS y, COUNT(*) FROM photos "
-            "WHERE taken_at IS NOT NULL GROUP BY y ORDER BY y DESC"
-        ),
-        "cameras": counts(
-            "SELECT camera_model, COUNT(*) FROM photos GROUP BY camera_model ORDER BY 2 DESC"
-        ),
-        "persons": [
-            {"id": r["id"], "name": r["name"], "count": r["c"]}
-            for r in conn.execute(
-                "SELECT pr.id, pr.name, COUNT(f.id) AS c FROM persons pr "
-                "LEFT JOIN faces f ON f.person_id = pr.id "
-                "GROUP BY pr.id ORDER BY c DESC"
-            ).fetchall()
-        ],
+        "scenes": facet("p.scene_type", "scene"),
+        "countries": facet("p.place_country", "country"),
+        "cities": facet("p.place_city", "city"),
+        "places": facet("p.folder_place", "place"),
+        "years": facet("substr(p.taken_at,1,4)", "year", order_by_value=True),
+        "cameras": facet("p.camera_model", "camera"),
+        "persons": person_facet(),
     }

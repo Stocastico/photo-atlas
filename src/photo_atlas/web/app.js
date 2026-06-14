@@ -41,8 +41,14 @@ function chip(label, count, active, onClick) {
   return el;
 }
 
+function filterParams() {
+  const params = new URLSearchParams();
+  Object.entries(state.filters).forEach(([k, v]) => v != null && v !== "" && params.set(k, v));
+  return params;
+}
+
 async function renderSidebar() {
-  const f = await api("/api/facets");
+  const f = await api("/api/facets?" + filterParams().toString());
   state.facetData = f;
   const side = $("#sidebar");
   side.innerHTML = "";
@@ -148,8 +154,7 @@ async function renderPhotos(reset = true) {
   }
   $("#grid-loading").style.display = "block";
 
-  const params = new URLSearchParams();
-  Object.entries(state.filters).forEach(([k, v]) => v != null && v !== "" && params.set(k, v));
+  const params = filterParams();
   if (state.sort === "oldest") params.set("sort", "oldest");
   params.set("limit", String(PAGE));
   params.set("offset", String(state.offset));
@@ -356,8 +361,7 @@ $("#search").oninput = (e) => {
   searchTimer = setTimeout(() => {
     const v = e.target.value.trim();
     if (v) state.filters.q = v; else delete state.filters.q;
-    renderActiveFilters();
-    renderPhotos(true);
+    refresh();
   }, 250);
 };
 

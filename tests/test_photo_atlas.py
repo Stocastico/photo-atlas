@@ -218,6 +218,15 @@ def test_search_filters(indexed):
     by_country, total_country = search.search_photos(conn, {"q": country})
     assert total_country >= 1
 
+    # Facet counts are filter-aware: constraining to one scene must not inflate
+    # any facet beyond that scene's own total, and the scene facet itself stays
+    # fully listed (its own dimension is excluded from the constraint).
+    scene_total = next(s["count"] for s in f["scenes"] if s["value"] == "people")
+    fp = search.facets(conn, {"scene": "people"})
+    assert {s["value"] for s in fp["scenes"]} == {s["value"] for s in f["scenes"]}
+    assert all(c["count"] <= scene_total for c in fp["countries"])
+    assert sum(p["count"] for p in fp["persons"]) >= 0  # persons facet still resolves
+
 
 def test_cluster_assignment_and_recognition(indexed):
     conn = db.connect(indexed.db_path)
