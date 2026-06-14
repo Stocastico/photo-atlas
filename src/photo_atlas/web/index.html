@@ -15,7 +15,7 @@
       <button class="tab" data-view="clusters">Name faces</button>
     </div>
     <div class="spacer"></div>
-    <input id="search" placeholder="Search filename…" />
+    <input id="search" placeholder="Search name, place, camera…" />
   </header>
 
   <div class="layout">
@@ -32,8 +32,10 @@
             </select>
           </label>
         </div>
+        <div id="active-filters"></div>
         <div id="grid" class="grid"></div>
         <div id="grid-empty" class="empty" style="display:none">No photos match these filters.</div>
+        <div id="grid-loading" class="loading" style="display:none">Loading…</div>
       </div>
 
       <div id="view-people" style="display:none">
@@ -52,6 +54,8 @@
 
   <div class="lightbox" id="lightbox">
     <span class="close" id="lb-close">&times;</span>
+    <button class="lb-nav prev" id="lb-prev" aria-label="Previous photo">&#8249;</button>
+    <button class="lb-nav next" id="lb-next" aria-label="Next photo">&#8250;</button>
     <div class="lb-inner">
       <div class="lb-img"><img id="lb-img" src="" alt="" /></div>
       <div class="lb-side" id="lb-side"></div>

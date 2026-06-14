@@ -11,7 +11,8 @@ Supported filters (all optional, combined with AND):
 ``date_from``  / ``date_to`` -- ISO date bounds on ``taken_at``.
 ``camera``     camera model substring.
 ``has_faces``  ``True`` -> at least one face.
-``q``          filename substring.
+``q``          free-text substring matched across filename, city, country,
+               place label, folder/trip and camera make/model.
 """
 
 from __future__ import annotations
@@ -57,8 +58,13 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any], str]:
     if filters.get("has_faces"):
         clauses.append("p.face_count > 0")
     if filters.get("q"):
-        clauses.append("p.filename LIKE ?")
-        params.append(f"%{filters['q']}%")
+        like = f"%{filters['q']}%"
+        clauses.append(
+            "(p.filename LIKE ? OR p.place_city LIKE ? OR p.place_country LIKE ? "
+            "OR p.place_label LIKE ? OR p.folder_place LIKE ? "
+            "OR p.camera_make LIKE ? OR p.camera_model LIKE ?)"
+        )
+        params.extend([like] * 7)
 
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params, join

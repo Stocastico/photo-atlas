@@ -1,8 +1,20 @@
 // Photo Atlas — single page front-end (no build step, vanilla JS).
+const PAGE = 120;
 const state = {
   view: "photos",
   filters: {}, // person_id, scene, country, city, place, year, camera, q
   sort: "newest",
+  photos: [],        // currently loaded photos (drives infinite scroll + lightbox)
+  offset: 0,
+  total: 0,
+  loading: false,
+  facetData: null,
+  lightboxIndex: null,
+};
+
+const FILTER_NAMES = {
+  person_id: "Person", scene: "Scene", country: "Country", city: "City",
+  place: "Place", year: "Year", camera: "Camera", q: "Search",
 };
 
 const $ = (s) => document.querySelector(s);
@@ -31,6 +43,7 @@ function chip(label, count, active, onClick) {
 
 async function renderSidebar() {
   const f = await api("/api/facets");
+  state.facetData = f;
   const side = $("#sidebar");
   side.innerHTML = "";
 
@@ -53,7 +66,7 @@ async function renderSidebar() {
   hdr.innerHTML = `<h3 style="margin:0">${f.total} photos</h3>`;
   const clear = document.createElement("button");
   clear.className = "clear"; clear.textContent = "Clear all";
-  clear.onclick = () => { state.filters = {}; $("#search").value = ""; refresh(); };
+  clear.onclick = clearAllFilters;
   hdr.appendChild(clear);
   side.appendChild(hdr);
 
@@ -64,39 +77,146 @@ async function renderSidebar() {
   section("Place", f.places, "place");
   section("Year", f.years, "year");
   section("Camera", f.cameras, "camera");
+
+  // Person names just became available — refresh the pills' labels.
+  renderActiveFilters();
 }
 
-// ---- photos grid ----------------------------------------------------------
-async function renderPhotos() {
-  const params = new URLSearchParams();
-  Object.entries(state.filters).forEach(([k, v]) => v != null && v !== "" && params.set(k, v));
-  if (state.sort === "oldest") params.set("sort", "oldest");
-  params.set("limit", "120");
-  const data = await api("/api/photos?" + params.toString());
+function clearAllFilters() {
+  state.filters = {};
+  $("#search").value = "";
+  refresh();
+}
 
-  $("#result-count").textContent = `${data.total} result${data.total === 1 ? "" : "s"}`;
-  const grid = $("#grid");
-  grid.innerHTML = "";
-  $("#grid-empty").style.display = data.photos.length ? "none" : "block";
+// ---- active filter pills --------------------------------------------------
+function filterValueLabel(key, value) {
+  if (key === "person_id") {
+    const p = (state.facetData?.persons || []).find((x) => x.id == value);
+    return p ? p.name : `#${value}`;
+  }
+  return value;
+}
 
-  for (const p of data.photos) {
-    const card = document.createElement("div");
-    card.className = "card";
-    const placeText = p.place_label ? p.place_label.split(",")[0] : p.folder_place;
-    const place = placeText ? `<span>${esc(placeText)}</span>` : "<span></span>";
-    card.innerHTML = `
-      <img loading="lazy" src="/api/thumb/${p.id}" alt="${esc(p.filename)}" />
-      ${p.face_count ? `<span class="badge">👤 ${p.face_count}</span>` : ""}
-      <div class="meta">${place}<span>${(p.taken_at || "").slice(0, 4)}</span></div>`;
-    card.onclick = () => openLightbox(p.id);
-    grid.appendChild(card);
+function renderActiveFilters() {
+  const bar = $("#active-filters");
+  if (!bar) return;
+  bar.innerHTML = "";
+  const keys = Object.keys(state.filters).filter((k) => state.filters[k] != null && state.filters[k] !== "");
+  bar.style.display = keys.length ? "flex" : "none";
+  for (const k of keys) {
+    const pill = document.createElement("button");
+    pill.className = "filter-pill";
+    pill.innerHTML = `<span>${esc(FILTER_NAMES[k] || k)}: ${esc(filterValueLabel(k, state.filters[k]))}</span><span class="x">✕</span>`;
+    pill.title = "Remove filter";
+    pill.onclick = () => {
+      delete state.filters[k];
+      if (k === "q") $("#search").value = "";
+      refresh();
+    };
+    bar.appendChild(pill);
+  }
+  if (keys.length) {
+    const clr = document.createElement("button");
+    clr.className = "filter-pill clear-pill";
+    clr.textContent = "Clear all";
+    clr.onclick = clearAllFilters;
+    bar.appendChild(clr);
   }
 }
 
+// ---- photos grid (infinite scroll) ----------------------------------------
+function photoCard(p, index) {
+  const card = document.createElement("div");
+  card.className = "card";
+  const placeText = p.place_label ? p.place_label.split(",")[0] : p.folder_place;
+  const place = placeText ? `<span>${esc(placeText)}</span>` : "<span></span>";
+  card.innerHTML = `
+    <img loading="lazy" src="/api/thumb/${p.id}" alt="${esc(p.filename)}" />
+    ${p.face_count ? `<span class="badge">👤 ${p.face_count}</span>` : ""}
+    <div class="meta">${place}<span>${(p.taken_at || "").slice(0, 4)}</span></div>`;
+  card.onclick = () => openLightbox(index);
+  return card;
+}
+
+async function renderPhotos(reset = true) {
+  if (state.loading) return;
+  state.loading = true;
+  if (reset) {
+    state.offset = 0;
+    state.photos = [];
+    $("#grid").innerHTML = "";
+  }
+  $("#grid-loading").style.display = "block";
+
+  const params = new URLSearchParams();
+  Object.entries(state.filters).forEach(([k, v]) => v != null && v !== "" && params.set(k, v));
+  if (state.sort === "oldest") params.set("sort", "oldest");
+  params.set("limit", String(PAGE));
+  params.set("offset", String(state.offset));
+
+  let data;
+  try {
+    data = await api("/api/photos?" + params.toString());
+  } catch (e) {
+    $("#grid-loading").textContent = "Could not load photos.";
+    state.loading = false;
+    return;
+  }
+
+  const baseIndex = state.photos.length;
+  state.photos = state.photos.concat(data.photos);
+  state.total = data.total;
+  state.offset += data.photos.length;
+
+  $("#result-count").textContent = `${data.total} result${data.total === 1 ? "" : "s"}`;
+  $("#grid-empty").style.display = state.photos.length ? "none" : "block";
+
+  const grid = $("#grid");
+  data.photos.forEach((p, i) => grid.appendChild(photoCard(p, baseIndex + i)));
+
+  $("#grid-loading").style.display = state.photos.length < state.total ? "block" : "none";
+  $("#grid-loading").textContent = "Loading…";
+  state.loading = false;
+  maybeLoadMore();
+}
+
+function maybeLoadMore() {
+  if (state.view !== "photos" || state.loading) return;
+  if (state.photos.length >= state.total) return;
+  // Keep loading until the viewport is filled (so short result sets behave).
+  if (document.body.offsetHeight <= window.innerHeight + 600) renderPhotos(false);
+}
+
+window.addEventListener("scroll", () => {
+  if (state.view !== "photos" || state.loading) return;
+  if (state.photos.length >= state.total) return;
+  if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 600) renderPhotos(false);
+});
+
 // ---- lightbox / detail ----------------------------------------------------
-async function openLightbox(id) {
-  const p = await api(`/api/photos/${id}`);
-  $("#lb-img").src = `/api/image/${id}`;
+function closeLightbox() {
+  $("#lightbox").classList.remove("open");
+  state.lightboxIndex = null;
+}
+
+function lightboxStep(delta) {
+  const i = state.lightboxIndex + delta;
+  if (i < 0 || i >= state.photos.length) return;
+  openLightbox(i);
+}
+
+async function openLightbox(index) {
+  state.lightboxIndex = index;
+  $("#lb-prev").disabled = index <= 0;
+  $("#lb-next").disabled = index >= state.photos.length - 1;
+
+  const base = state.photos[index];
+  $("#lightbox").classList.add("open");
+  const p = await api(`/api/photos/${base.id}`);
+  // Guard against a fast prev/next click landing on a different photo.
+  if (state.lightboxIndex !== index) return;
+
+  $("#lb-img").src = `/api/image/${base.id}`;
   const side = $("#lb-side");
   const kv = (k, v) => (v ? `<div class="kv"><span>${k}</span><span>${esc(v)}</span></div>` : "");
   side.innerHTML = `
@@ -128,9 +248,9 @@ async function openLightbox(id) {
       });
       renderSidebar();
     };
+    input.addEventListener("keydown", (e) => e.key === "Enter" && item.querySelector("button").click());
     list.appendChild(item);
   }
-  $("#lightbox").classList.add("open");
 }
 
 // ---- people ---------------------------------------------------------------
@@ -208,24 +328,36 @@ function setView(view) {
 }
 
 function refresh() {
+  renderActiveFilters();
   renderSidebar();
-  if (state.view === "photos") renderPhotos();
+  if (state.view === "photos") renderPhotos(true);
   else if (state.view === "people") renderPeople();
   else renderClusters();
 }
 
 // ---- wiring ---------------------------------------------------------------
 document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => setView(t.dataset.view)));
-$("#lb-close").onclick = () => $("#lightbox").classList.remove("open");
-$("#lightbox").onclick = (e) => { if (e.target.id === "lightbox") $("#lightbox").classList.remove("open"); };
-$("#sort").onchange = (e) => { state.sort = e.target.value; renderPhotos(); };
+$("#lb-close").onclick = closeLightbox;
+$("#lb-prev").onclick = () => lightboxStep(-1);
+$("#lb-next").onclick = () => lightboxStep(1);
+$("#lightbox").onclick = (e) => { if (e.target.id === "lightbox") closeLightbox(); };
+$("#sort").onchange = (e) => { state.sort = e.target.value; renderPhotos(true); };
+
+document.addEventListener("keydown", (e) => {
+  if (!$("#lightbox").classList.contains("open")) return;
+  if (e.key === "Escape") closeLightbox();
+  else if (e.key === "ArrowLeft") lightboxStep(-1);
+  else if (e.key === "ArrowRight") lightboxStep(1);
+});
+
 let searchTimer;
 $("#search").oninput = (e) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
     const v = e.target.value.trim();
     if (v) state.filters.q = v; else delete state.filters.q;
-    renderPhotos();
+    renderActiveFilters();
+    renderPhotos(true);
   }, 250);
 };
 

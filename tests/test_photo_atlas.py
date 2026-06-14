@@ -210,6 +210,14 @@ def test_search_filters(indexed):
     assert any(s["value"] == "people" for s in f["scenes"])
     assert f["countries"]
 
+    # Free-text search reaches beyond the filename into camera/place fields.
+    by_camera, total_cam = search.search_photos(conn, {"q": "DemoCam"})
+    assert total_cam == 24 and all("DemoCam" in (p["camera_model"] or "") for p in by_camera)
+
+    country = f["countries"][0]["value"]
+    by_country, total_country = search.search_photos(conn, {"q": country})
+    assert total_country >= 1
+
 
 def test_cluster_assignment_and_recognition(indexed):
     conn = db.connect(indexed.db_path)
