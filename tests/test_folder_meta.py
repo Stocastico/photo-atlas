@@ -62,3 +62,92 @@ def test_extract_merges_fields_across_ancestors(tmp_path):
 def test_extract_returns_empty_without_year(tmp_path):
     photo = tmp_path / "Pictures" / "vacation" / "img.jpg"
     assert extract_folder_meta(photo) == FolderMeta()
+
+
+# -- integration: indexer / db / search ------------------------------------
+def _plain_jpeg(path, color=(20, 40, 60)):
+    """Write a tiny JPEG with no EXIF date or GPS."""
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (24, 24), color).save(path, "JPEG")
+    return path
+
+
+def _exif_jpeg(path, when="2019:03:04 05:06:07"):
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    exif = Image.Exif()
+    exif[0x8769] = {0x9003: when}  # DateTimeOriginal in the Exif sub-IFD
+    Image.new("RGB", (24, 24), (30, 30, 30)).save(path, "JPEG", exif=exif)
+    return path
+
+
+def _index(tmp_path):
+    from photo_atlas import db, indexer
+    from photo_atlas.config import AtlasConfig
+
+    config = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    indexer.index_path(config, tmp_path / "src", backend_name="none", geocode=False)
+    return db.connect(config.db_path)
+
+
+def test_folder_date_and_place_fill_when_no_exif(tmp_path):
+    _plain_jpeg(tmp_path / "src" / "2013" / "2013_07_Sardegna" / "a.jpg")
+    conn = _index(tmp_path)
+    row = conn.execute(
+        "SELECT taken_at, taken_source, folder_place FROM photos"
+    ).fetchone()
+    assert row["taken_source"] == "folder"
+    assert row["taken_at"].startswith("2013-07-01")
+    assert row["folder_place"] == "Sardegna"
+
+
+def test_exif_date_wins_over_folder(tmp_path):
+    _exif_jpeg(tmp_path / "src" / "2013" / "2013_07_Sardegna" / "b.jpg")
+    conn = _index(tmp_path)
+    row = conn.execute(
+        "SELECT taken_at, taken_source, folder_place FROM photos"
+    ).fetchone()
+    assert row["taken_source"] == "exif"
+    assert row["taken_at"].startswith("2019-03-04")
+    # The trip label is still recorded even though EXIF supplied the date.
+    assert row["folder_place"] == "Sardegna"
+
+
+def test_place_facet_and_filter(tmp_path):
+    from photo_atlas import search
+
+    _plain_jpeg(tmp_path / "src" / "2013_05_Sardegna" / "a.jpg")
+    _plain_jpeg(tmp_path / "src" / "2014_08_Norway" / "b.jpg")
+    conn = _index(tmp_path)
+
+    places = {f["value"] for f in search.facets(conn)["places"]}
+    assert {"Sardegna", "Norway"} <= places
+
+    rows, total = search.search_photos(conn, {"place": "Norway"})
+    assert total == 1 and rows[0]["folder_place"] == "Norway"
+
+
+def test_db_migration_adds_folder_place_column(tmp_path):
+    """An existing catalog created before folder_place must gain the column."""
+    import sqlite3
+
+    from photo_atlas import db
+
+    db_path = tmp_path / "old.db"
+    # Simulate an old DB: the original photos schema, minus folder_place. It
+    # includes the columns the schema's indexes reference (taken_at, etc.).
+    raw = sqlite3.connect(db_path)
+    raw.execute(
+        "CREATE TABLE photos (id INTEGER PRIMARY KEY, path TEXT UNIQUE, "
+        "filename TEXT, taken_at TEXT, scene_type TEXT, place_country TEXT, "
+        "place_city TEXT)"
+    )
+    raw.commit()
+    raw.close()
+
+    conn = db.connect(db_path)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(photos)")}
+    assert "folder_place" in cols

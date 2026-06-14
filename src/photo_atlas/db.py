@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS photos (
     place_city   TEXT,
     place_country TEXT,
     place_label  TEXT,
+    folder_place TEXT,          -- trip/region label mined from the folder name
     scene_type   TEXT,
     scene_scores TEXT,          -- JSON map label -> score
     face_count   INTEGER DEFAULT 0,
@@ -70,10 +71,25 @@ CREATE INDEX IF NOT EXISTS idx_photos_taken   ON photos(taken_at);
 CREATE INDEX IF NOT EXISTS idx_photos_scene   ON photos(scene_type);
 CREATE INDEX IF NOT EXISTS idx_photos_country ON photos(place_country);
 CREATE INDEX IF NOT EXISTS idx_photos_city    ON photos(place_city);
+CREATE INDEX IF NOT EXISTS idx_photos_folder  ON photos(folder_place);
 CREATE INDEX IF NOT EXISTS idx_faces_photo    ON faces(photo_id);
 CREATE INDEX IF NOT EXISTS idx_faces_person   ON faces(person_id);
 CREATE INDEX IF NOT EXISTS idx_faces_cluster  ON faces(cluster_id);
 """
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply additive migrations to catalogs created by older versions.
+
+    Runs before the schema script so that columns referenced by ``CREATE INDEX``
+    statements (e.g. ``folder_place``) exist on pre-existing tables.
+    """
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "photos" in tables:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(photos)")}
+        if "folder_place" not in cols:
+            conn.execute("ALTER TABLE photos ADD COLUMN folder_place TEXT")
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -83,6 +99,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    _migrate(conn)
     conn.executescript(SCHEMA)
     return conn
 
@@ -107,8 +124,8 @@ def upsert_photo(conn: sqlite3.Connection, record: dict) -> int:
     columns = [
         "path", "filename", "sha1", "width", "height", "bytes", "taken_at",
         "taken_source", "camera_make", "camera_model", "lat", "lon",
-        "place_city", "place_country", "place_label", "scene_type",
-        "scene_scores", "face_count", "thumb_path", "indexed_at",
+        "place_city", "place_country", "place_label", "folder_place",
+        "scene_type", "scene_scores", "face_count", "thumb_path", "indexed_at",
     ]
     values = [record.get(c) for c in columns]
     placeholders = ", ".join(["?"] * len(columns))

@@ -1,7 +1,7 @@
 // Photo Atlas — single page front-end (no build step, vanilla JS).
 const state = {
   view: "photos",
-  filters: {}, // person_id, scene, country, city, year, camera, q
+  filters: {}, // person_id, scene, country, city, place, year, camera, q
   sort: "newest",
 };
 
@@ -61,6 +61,7 @@ async function renderSidebar() {
   section("Scene", f.scenes, "scene");
   section("Country", f.countries, "country");
   section("City", f.cities, "city");
+  section("Place", f.places, "place");
   section("Year", f.years, "year");
   section("Camera", f.cameras, "camera");
 }
@@ -81,7 +82,8 @@ async function renderPhotos() {
   for (const p of data.photos) {
     const card = document.createElement("div");
     card.className = "card";
-    const place = p.place_label ? `<span>${esc(p.place_label.split(",")[0])}</span>` : "<span></span>";
+    const placeText = p.place_label ? p.place_label.split(",")[0] : p.folder_place;
+    const place = placeText ? `<span>${esc(placeText)}</span>` : "<span></span>";
     card.innerHTML = `
       <img loading="lazy" src="/api/thumb/${p.id}" alt="${esc(p.filename)}" />
       ${p.face_count ? `<span class="badge">👤 ${p.face_count}</span>` : ""}
@@ -101,6 +103,7 @@ async function openLightbox(id) {
     <h2>${esc(p.filename)}</h2>
     <p class="tagline">${esc(p.scene_type || "")} · ${fmtDate(p.taken_at)}</p>
     ${kv("Place", p.place_label)}
+    ${kv("Trip", p.folder_place)}
     ${kv("Camera", [p.camera_make, p.camera_model].filter(Boolean).join(" "))}
     ${kv("Size", p.width && p.height ? `${p.width}×${p.height}` : "")}
     ${kv("Coordinates", p.lat != null ? `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}` : "")}
