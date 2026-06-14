@@ -57,6 +57,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         scene: str | None = None,
         country: str | None = None,
         city: str | None = None,
+        place: str | None = None,
         year: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
@@ -69,7 +70,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
     ):
         filters = {
             "person_id": person_id, "scene": scene, "country": country,
-            "city": city, "year": year, "date_from": date_from,
+            "city": city, "place": place, "year": year, "date_from": date_from,
             "date_to": date_to, "camera": camera, "has_faces": has_faces,
             "q": q, "sort": sort,
         }

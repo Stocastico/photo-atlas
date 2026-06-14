@@ -4,8 +4,9 @@ Supported filters (all optional, combined with AND):
 
 ``person_id``  only photos containing this person.
 ``scene``      scene tag (people/landscape/food/document/other).
-``country``    place country.
-``city``       place city.
+``country``    place country (from GPS).
+``city``       place city (from GPS).
+``place``      trip/region label mined from the folder name.
 ``year``       capture year (int or str).
 ``date_from``  / ``date_to`` -- ISO date bounds on ``taken_at``.
 ``camera``     camera model substring.
@@ -38,6 +39,9 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any], str]:
     if filters.get("city"):
         clauses.append("p.place_city = ?")
         params.append(filters["city"])
+    if filters.get("place"):
+        clauses.append("p.folder_place = ?")
+        params.append(filters["place"])
     if filters.get("year"):
         clauses.append("substr(p.taken_at, 1, 4) = ?")
         params.append(str(filters["year"]))
@@ -113,6 +117,9 @@ def facets(conn: sqlite3.Connection) -> dict:
         ),
         "cities": counts(
             "SELECT place_city, COUNT(*) FROM photos GROUP BY place_city ORDER BY 2 DESC"
+        ),
+        "places": counts(
+            "SELECT folder_place, COUNT(*) FROM photos GROUP BY folder_place ORDER BY 2 DESC"
         ),
         "years": counts(
             "SELECT substr(taken_at,1,4) AS y, COUNT(*) FROM photos "

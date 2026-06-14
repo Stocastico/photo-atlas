@@ -30,6 +30,7 @@ from . import db
 from .classify import SceneTagger
 from .config import AtlasConfig
 from .faces import FaceBackend, best_person_match, cluster_embeddings, get_backend
+from .folder_meta import extract_folder_meta
 from .geocode import Geocoder
 from .metadata import extract_meta, is_supported, make_thumbnail, sha1_of
 import json
@@ -96,6 +97,15 @@ def index_file(
     meta = extract_meta(path)
     sha1 = sha1_of(path)
 
+    # Folder names (e.g. 2012/2012_05_Sardegna) often carry a year/month/place
+    # the file's EXIF lacks. Use them only to fill gaps: a folder date replaces
+    # the filesystem-mtime fallback but never a real EXIF capture time.
+    folder = extract_folder_meta(path)
+    if meta.taken_source != "exif" and folder.year is not None:
+        synthesized = datetime(folder.year, folder.month or 1, 1)
+        meta.taken_at = synthesized.isoformat(timespec="seconds")
+        meta.taken_source = "folder"
+
     place = None
     if geocoder is not None:
         place = geocoder.lookup(meta.lat, meta.lon)
@@ -124,6 +134,7 @@ def index_file(
         "place_city": place.city if place else None,
         "place_country": place.country if place else None,
         "place_label": place.label if place else None,
+        "folder_place": folder.place,
         "scene_type": scene_label,
         "scene_scores": json.dumps(scene_scores),
         "face_count": len(observations),
