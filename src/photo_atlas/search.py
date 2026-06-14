@@ -1,8 +1,11 @@
 """Translate filter dictionaries into SQL queries over the catalog.
 
-Supported filters (all optional, combined with AND):
+Supported filters (all optional, combined with AND across keys). The facet
+filters (``person_id``, ``scene``, ``country``, ``city``, ``place``, ``year``,
+``camera``) each accept a single value *or* a list of values; a list matches
+any of them (OR within the facet, AND across facets).
 
-``person_id``  only photos containing this person.
+``person_id``  only photos containing this person (or any of these people).
 ``scene``      scene tag (people/landscape/food/document/other).
 ``country``    place country (from GPS).
 ``city``       place city (from GPS).
@@ -11,7 +14,8 @@ Supported filters (all optional, combined with AND):
 ``date_from``  / ``date_to`` -- ISO date bounds on ``taken_at``.
 ``camera``     camera model substring.
 ``has_faces``  ``True`` -> at least one face.
-``q``          filename substring.
+``q``          free-text substring matched across filename, city, country,
+               place label, folder/trip and camera make/model.
 """
 
 from __future__ import annotations
@@ -20,45 +24,64 @@ import sqlite3
 from typing import Any
 
 
+def _as_list(value: Any) -> list[Any]:
+    """Normalise a scalar / list / None filter value to a list of non-empty items."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [v for v in value if v is not None and v != ""]
+    if value == "":
+        return []
+    return [value]
+
+
 def _where(filters: dict[str, Any]) -> tuple[str, list[Any], str]:
     clauses: list[str] = []
     params: list[Any] = []
     join = ""
 
-    person_id = filters.get("person_id")
-    if person_id:
-        join = "JOIN faces f ON f.photo_id = p.id AND f.person_id = ?"
-        params.append(int(person_id))
+    persons = _as_list(filters.get("person_id"))
+    if persons:
+        placeholders = ", ".join(["?"] * len(persons))
+        join = f"JOIN faces f ON f.photo_id = p.id AND f.person_id IN ({placeholders})"
+        params.extend(int(p) for p in persons)
 
-    if filters.get("scene"):
-        clauses.append("p.scene_type = ?")
-        params.append(filters["scene"])
-    if filters.get("country"):
-        clauses.append("p.place_country = ?")
-        params.append(filters["country"])
-    if filters.get("city"):
-        clauses.append("p.place_city = ?")
-        params.append(filters["city"])
-    if filters.get("place"):
-        clauses.append("p.folder_place = ?")
-        params.append(filters["place"])
-    if filters.get("year"):
-        clauses.append("substr(p.taken_at, 1, 4) = ?")
-        params.append(str(filters["year"]))
+    def add_in(column: str, key: str, cast=lambda v: v) -> None:
+        values = _as_list(filters.get(key))
+        if not values:
+            return
+        placeholders = ", ".join(["?"] * len(values))
+        clauses.append(f"{column} IN ({placeholders})")
+        params.extend(cast(v) for v in values)
+
+    add_in("p.scene_type", "scene")
+    add_in("p.place_country", "country")
+    add_in("p.place_city", "city")
+    add_in("p.folder_place", "place")
+    add_in("substr(p.taken_at, 1, 4)", "year", cast=str)
+
+    cameras = _as_list(filters.get("camera"))
+    if cameras:
+        likes = " OR ".join(["p.camera_model LIKE ?"] * len(cameras))
+        clauses.append(f"({likes})")
+        params.extend(f"%{c}%" for c in cameras)
+
     if filters.get("date_from"):
-        clauses.append("p.taken_at >= ?")
+        clauses.append("substr(p.taken_at, 1, 10) >= ?")
         params.append(filters["date_from"])
     if filters.get("date_to"):
-        clauses.append("p.taken_at <= ?")
+        clauses.append("substr(p.taken_at, 1, 10) <= ?")
         params.append(filters["date_to"])
-    if filters.get("camera"):
-        clauses.append("p.camera_model LIKE ?")
-        params.append(f"%{filters['camera']}%")
     if filters.get("has_faces"):
         clauses.append("p.face_count > 0")
     if filters.get("q"):
-        clauses.append("p.filename LIKE ?")
-        params.append(f"%{filters['q']}%")
+        like = f"%{filters['q']}%"
+        clauses.append(
+            "(p.filename LIKE ? OR p.place_city LIKE ? OR p.place_country LIKE ? "
+            "OR p.place_label LIKE ? OR p.folder_place LIKE ? "
+            "OR p.camera_make LIKE ? OR p.camera_model LIKE ?)"
+        )
+        params.extend([like] * 7)
 
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params, join
@@ -96,44 +119,70 @@ def photo_detail(conn: sqlite3.Connection, photo_id: int) -> dict | None:
     return photo
 
 
-def facets(conn: sqlite3.Connection) -> dict:
-    """Aggregate counts used to build the filter sidebar."""
+def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> dict:
+    """Aggregate counts used to build the filter sidebar.
 
-    def counts(sql: str) -> list[dict]:
+    Counts are *filter-aware*: each facet reflects the other active filters but
+    not its own dimension, so the number next to a chip is how many photos you
+    would see by adding that value to the current selection (the classic
+    faceted-search behaviour). ``total`` stays the unfiltered library size.
+    """
+
+    filters = filters or {}
+
+    def facet(column: str, own_key: str, *, order_by_value: bool = False) -> list[dict]:
+        # Exclude this facet's own filter so all of its options stay visible.
+        sub = {k: v for k, v in filters.items() if k != own_key}
+        where, params, join = _where(sub)
+        order = f"{column} DESC" if order_by_value else "c DESC, v"
+        sql = (
+            f"SELECT {column} AS v, COUNT(DISTINCT p.id) AS c "
+            f"FROM photos p {join}{where} GROUP BY v ORDER BY {order}"
+        )
         return [
-            {"value": r[0], "count": r[1]}
-            for r in conn.execute(sql).fetchall()
-            if r[0] is not None
+            {"value": r["v"], "count": r["c"]}
+            for r in conn.execute(sql, params).fetchall()
+            if r["v"] is not None
         ]
+
+    def person_facet() -> list[dict]:
+        sub = {k: v for k, v in filters.items() if k != "person_id"}
+        where, params, _join = _where(sub)
+        sql = (
+            "SELECT pr.id AS id, pr.name AS name, COUNT(DISTINCT p.id) AS c "
+            "FROM persons pr JOIN faces f ON f.person_id = pr.id "
+            f"JOIN photos p ON p.id = f.photo_id {where} "
+            "GROUP BY pr.id ORDER BY c DESC, pr.name"
+        )
+        return [
+            {"id": r["id"], "name": r["name"], "count": r["c"]}
+            for r in conn.execute(sql, params).fetchall()
+        ]
+
+    def with_faces_count() -> int:
+        # Photos containing at least one face, under the other active filters.
+        sub = {k: v for k, v in filters.items() if k != "has_faces"}
+        where, params, join = _where(sub)
+        glue = " AND " if where else " WHERE "
+        sql = f"SELECT COUNT(DISTINCT p.id) FROM photos p {join}{where}{glue}p.face_count > 0"
+        return int(conn.execute(sql, params).fetchone()[0])
+
+    drow = conn.execute(
+        "SELECT MIN(substr(taken_at,1,10)), MAX(substr(taken_at,1,10)) "
+        "FROM photos WHERE taken_at IS NOT NULL"
+    ).fetchone()
 
     total = conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
     return {
         "total": int(total),
-        "scenes": counts(
-            "SELECT scene_type, COUNT(*) FROM photos GROUP BY scene_type ORDER BY 2 DESC"
-        ),
-        "countries": counts(
-            "SELECT place_country, COUNT(*) FROM photos GROUP BY place_country ORDER BY 2 DESC"
-        ),
-        "cities": counts(
-            "SELECT place_city, COUNT(*) FROM photos GROUP BY place_city ORDER BY 2 DESC"
-        ),
-        "places": counts(
-            "SELECT folder_place, COUNT(*) FROM photos GROUP BY folder_place ORDER BY 2 DESC"
-        ),
-        "years": counts(
-            "SELECT substr(taken_at,1,4) AS y, COUNT(*) FROM photos "
-            "WHERE taken_at IS NOT NULL GROUP BY y ORDER BY y DESC"
-        ),
-        "cameras": counts(
-            "SELECT camera_model, COUNT(*) FROM photos GROUP BY camera_model ORDER BY 2 DESC"
-        ),
-        "persons": [
-            {"id": r["id"], "name": r["name"], "count": r["c"]}
-            for r in conn.execute(
-                "SELECT pr.id, pr.name, COUNT(f.id) AS c FROM persons pr "
-                "LEFT JOIN faces f ON f.person_id = pr.id "
-                "GROUP BY pr.id ORDER BY c DESC"
-            ).fetchall()
-        ],
+        "scenes": facet("p.scene_type", "scene"),
+        "countries": facet("p.place_country", "country"),
+        "cities": facet("p.place_city", "city"),
+        "places": facet("p.folder_place", "place"),
+        "years": facet("substr(p.taken_at,1,4)", "year", order_by_value=True),
+        "cameras": facet("p.camera_model", "camera"),
+        "persons": person_facet(),
+        "with_faces": with_faces_count(),
+        "date_min": drow[0],
+        "date_max": drow[1],
     }

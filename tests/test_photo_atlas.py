@@ -210,6 +210,91 @@ def test_search_filters(indexed):
     assert any(s["value"] == "people" for s in f["scenes"])
     assert f["countries"]
 
+    # Free-text search reaches beyond the filename into camera/place fields.
+    by_camera, total_cam = search.search_photos(conn, {"q": "DemoCam"})
+    assert total_cam == 24 and all("DemoCam" in (p["camera_model"] or "") for p in by_camera)
+
+    country = f["countries"][0]["value"]
+    by_country, total_country = search.search_photos(conn, {"q": country})
+    assert total_country >= 1
+
+    # Facet counts are filter-aware: constraining to one scene must not inflate
+    # any facet beyond that scene's own total, and the scene facet itself stays
+    # fully listed (its own dimension is excluded from the constraint).
+    scene_total = next(s["count"] for s in f["scenes"] if s["value"] == "people")
+    fp = search.facets(conn, {"scene": "people"})
+    assert {s["value"] for s in fp["scenes"]} == {s["value"] for s in f["scenes"]}
+    assert all(c["count"] <= scene_total for c in fp["countries"])
+    assert sum(p["count"] for p in fp["persons"]) >= 0  # persons facet still resolves
+
+
+def test_multi_select_filters(indexed):
+    conn = db.connect(indexed.db_path)
+    f = search.facets(conn)
+    countries = [c["value"] for c in f["countries"]]
+    assert len(countries) >= 2, "demo library should span several countries"
+    c1, c2 = countries[0], countries[1]
+
+    # A scalar value and a single-element list behave identically.
+    one, t1 = search.search_photos(conn, {"country": c1})
+    one_list, t1l = search.search_photos(conn, {"country": [c1]})
+    assert t1 == t1l and {p["id"] for p in one} == {p["id"] for p in one_list}
+
+    # OR within a facet: two countries return the union (they are disjoint).
+    a, ta = search.search_photos(conn, {"country": [c1]})
+    b, tb = search.search_photos(conn, {"country": [c2]})
+    both, tboth = search.search_photos(conn, {"country": [c1, c2]})
+    assert tboth == ta + tb
+    assert {p["id"] for p in both} == {p["id"] for p in a} | {p["id"] for p in b}
+    assert all(p["place_country"] in {c1, c2} for p in both)
+
+    # AND across facets still narrows the union.
+    scenes = [s["value"] for s in f["scenes"]]
+    combined, tcomb = search.search_photos(conn, {"country": [c1, c2], "scene": scenes[:1]})
+    assert tcomb <= tboth
+    assert all(p["scene_type"] == scenes[0] for p in combined)
+
+    # The facet's own dimension stays fully listed under multi-select.
+    fm = search.facets(conn, {"country": [c1, c2]})
+    assert {c["value"] for c in fm["countries"]} == set(countries)
+
+    # OR across people via the faces join.
+    clusters = library.list_clusters(conn)
+    if len(clusters) >= 2:
+        p1 = library.assign_cluster(conn, clusters[0]["cluster_id"], name="MP1")
+        p2 = library.assign_cluster(conn, clusters[1]["cluster_id"], name="MP2")
+        a2, _ = search.search_photos(conn, {"person_id": [p1]})
+        b2, _ = search.search_photos(conn, {"person_id": [p2]})
+        ab, _ = search.search_photos(conn, {"person_id": [p1, p2]})
+        assert {p["id"] for p in ab} == {p["id"] for p in a2} | {p["id"] for p in b2}
+
+
+def test_has_faces_and_date_filters(indexed):
+    conn = db.connect(indexed.db_path)
+    f = search.facets(conn)
+
+    # Facet payload carries the quick-filter count and the date bounds.
+    assert f["with_faces"] >= 1
+    assert f["date_min"] and f["date_max"] and f["date_min"] <= f["date_max"]
+
+    withf, tf = search.search_photos(conn, {"has_faces": True})
+    assert tf == f["with_faces"]
+    assert all(p["face_count"] > 0 for p in withf)
+
+    # A full-span range returns every dated photo (bounds are inclusive).
+    dated = conn.execute("SELECT COUNT(*) FROM photos WHERE taken_at IS NOT NULL").fetchone()[0]
+    _, tb = search.search_photos(conn, {"date_from": f["date_min"], "date_to": f["date_max"]})
+    assert tb == dated
+
+    # Capping the upper bound at the earliest date keeps only that day or before.
+    narrow, tn = search.search_photos(conn, {"date_to": f["date_min"]})
+    assert 1 <= tn <= dated
+    assert all(p["taken_at"][:10] <= f["date_min"] for p in narrow)
+
+    # has_faces AND a date range combine (never more than either alone).
+    _, tcomb = search.search_photos(conn, {"has_faces": True, "date_to": f["date_min"]})
+    assert tcomb <= tf and tcomb <= tn
+
 
 def test_cluster_assignment_and_recognition(indexed):
     conn = db.connect(indexed.db_path)
@@ -270,6 +355,25 @@ def test_api_endpoints(indexed):
     photo_id = photos["photos"][0]["id"]
     assert client.get(f"/api/thumb/{photo_id}").status_code == 200
     assert client.get(f"/api/photos/{photo_id}").json()["id"] == photo_id
+
+    # Multi-select round-trips as repeated query params (OR within a facet).
+    countries = [c["value"] for c in facets["countries"]][:2]
+    assert len(countries) == 2
+    a = client.get("/api/photos", params={"country": countries[0]}).json()
+    b = client.get("/api/photos", params={"country": countries[1]}).json()
+    both = client.get("/api/photos", params={"country": countries}).json()
+    assert both["total"] == a["total"] + b["total"]
+    # Filter-aware facets accept the same repeated params.
+    fac = client.get("/api/facets", params={"country": countries}).json()
+    assert fac["total"] == 24
+
+    # has_faces toggle and the inclusive date range round-trip over HTTP.
+    hf = client.get("/api/photos", params={"has_faces": "true"}).json()
+    assert hf["total"] == facets["with_faces"]
+    dated = client.get(
+        "/api/photos", params={"date_from": facets["date_min"], "date_to": facets["date_max"]}
+    ).json()
+    assert dated["total"] >= 1
 
     clusters = client.get("/api/clusters").json()["clusters"]
     res = client.post(f"/api/clusters/{clusters[0]['cluster_id']}/assign", json={"name": "Carol"})

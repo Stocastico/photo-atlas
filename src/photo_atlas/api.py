@@ -47,21 +47,39 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
 
     # -- discovery --------------------------------------------------------
     @app.get("/api/facets")
-    def api_facets(conn: sqlite3.Connection = Depends(get_conn)):
-        return search.facets(conn)
+    def api_facets(
+        conn: sqlite3.Connection = Depends(get_conn),
+        person_id: list[int] | None = Query(None),
+        scene: list[str] | None = Query(None),
+        country: list[str] | None = Query(None),
+        city: list[str] | None = Query(None),
+        place: list[str] | None = Query(None),
+        year: list[str] | None = Query(None),
+        date_from: str | None = None,
+        date_to: str | None = None,
+        camera: list[str] | None = Query(None),
+        has_faces: bool | None = None,
+        q: str | None = None,
+    ):
+        filters = {
+            "person_id": person_id, "scene": scene, "country": country,
+            "city": city, "place": place, "year": year, "date_from": date_from,
+            "date_to": date_to, "camera": camera, "has_faces": has_faces, "q": q,
+        }
+        return search.facets(conn, filters)
 
     @app.get("/api/photos")
     def api_photos(
         conn: sqlite3.Connection = Depends(get_conn),
-        person_id: int | None = None,
-        scene: str | None = None,
-        country: str | None = None,
-        city: str | None = None,
-        place: str | None = None,
-        year: str | None = None,
+        person_id: list[int] | None = Query(None),
+        scene: list[str] | None = Query(None),
+        country: list[str] | None = Query(None),
+        city: list[str] | None = Query(None),
+        place: list[str] | None = Query(None),
+        year: list[str] | None = Query(None),
         date_from: str | None = None,
         date_to: str | None = None,
-        camera: str | None = None,
+        camera: list[str] | None = Query(None),
         has_faces: bool | None = None,
         q: str | None = None,
         sort: str | None = None,
