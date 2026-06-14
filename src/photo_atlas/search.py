@@ -67,10 +67,10 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any], str]:
         params.extend(f"%{c}%" for c in cameras)
 
     if filters.get("date_from"):
-        clauses.append("p.taken_at >= ?")
+        clauses.append("substr(p.taken_at, 1, 10) >= ?")
         params.append(filters["date_from"])
     if filters.get("date_to"):
-        clauses.append("p.taken_at <= ?")
+        clauses.append("substr(p.taken_at, 1, 10) <= ?")
         params.append(filters["date_to"])
     if filters.get("has_faces"):
         clauses.append("p.face_count > 0")
@@ -159,6 +159,19 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
             for r in conn.execute(sql, params).fetchall()
         ]
 
+    def with_faces_count() -> int:
+        # Photos containing at least one face, under the other active filters.
+        sub = {k: v for k, v in filters.items() if k != "has_faces"}
+        where, params, join = _where(sub)
+        glue = " AND " if where else " WHERE "
+        sql = f"SELECT COUNT(DISTINCT p.id) FROM photos p {join}{where}{glue}p.face_count > 0"
+        return int(conn.execute(sql, params).fetchone()[0])
+
+    drow = conn.execute(
+        "SELECT MIN(substr(taken_at,1,10)), MAX(substr(taken_at,1,10)) "
+        "FROM photos WHERE taken_at IS NOT NULL"
+    ).fetchone()
+
     total = conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
     return {
         "total": int(total),
@@ -169,4 +182,7 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
         "years": facet("substr(p.taken_at,1,4)", "year", order_by_value=True),
         "cameras": facet("p.camera_model", "camera"),
         "persons": person_facet(),
+        "with_faces": with_faces_count(),
+        "date_min": drow[0],
+        "date_max": drow[1],
     }

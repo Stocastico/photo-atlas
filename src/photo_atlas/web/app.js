@@ -10,12 +10,15 @@ const state = {
   loading: false,
   facetData: null,
   lightboxIndex: null,
+  facetExpanded: {}, // facet key -> show all values
 };
 
 const FILTER_NAMES = {
   person_id: "Person", scene: "Scene", country: "Country", city: "City",
   place: "Place", year: "Year", camera: "Camera", q: "Search",
+  date_from: "From", date_to: "To",
 };
+const FACET_CAP = 14;
 
 const $ = (s) => document.querySelector(s);
 const api = async (url, opts) => (await fetch(url, opts)).json();
@@ -59,6 +62,12 @@ function removeFilterValue(key, value) {
   refresh();
 }
 
+function toggleHasFaces() {
+  if (state.filters.has_faces) delete state.filters.has_faces;
+  else state.filters.has_faces = true;
+  refresh();
+}
+
 function chip(label, count, active, onClick) {
   const el = document.createElement("button");
   el.className = "chip" + (active ? " active" : "");
@@ -94,18 +103,31 @@ async function renderSidebar() {
   const side = $("#sidebar");
   side.innerHTML = "";
 
-  const section = (title, items, key, labelFn = (i) => i.value, valFn = (i) => i.value) => {
-    if (!items || !items.length) return;
+  const heading = (title) => {
     const h = document.createElement("h3");
     h.textContent = title;
     side.appendChild(h);
+  };
+
+  const section = (title, items, key, labelFn = (i) => i.value, valFn = (i) => i.value) => {
+    if (!items || !items.length) return;
+    heading(title);
     const wrap = document.createElement("div");
     wrap.className = "facet";
-    items.slice(0, 14).forEach((i) => {
+    const expanded = state.facetExpanded[key];
+    const shown = expanded ? items : items.slice(0, FACET_CAP);
+    shown.forEach((i) => {
       const v = valFn(i);
       wrap.appendChild(chip(labelFn(i), i.count, isActive(key, v), () => toggleFilter(key, v)));
     });
     side.appendChild(wrap);
+    if (items.length > FACET_CAP) {
+      const more = document.createElement("button");
+      more.className = "show-more";
+      more.textContent = expanded ? "Show less" : `+${items.length - FACET_CAP} more`;
+      more.onclick = () => { state.facetExpanded[key] = !expanded; renderSidebar(); };
+      side.appendChild(more);
+    }
   };
 
   const hdr = document.createElement("div");
@@ -117,16 +139,55 @@ async function renderSidebar() {
   hdr.appendChild(clear);
   side.appendChild(hdr);
 
+  // Quick toggle: only photos with at least one detected face.
+  heading("Quick filters");
+  const quick = document.createElement("div");
+  quick.className = "facet";
+  quick.appendChild(chip("👤 Has people", f.with_faces, !!state.filters.has_faces, toggleHasFaces));
+  side.appendChild(quick);
+
   section("People", f.persons, "person_id", (i) => `${i.name}`, (i) => i.id);
   section("Scene", f.scenes, "scene");
   section("Country", f.countries, "country");
   section("City", f.cities, "city");
   section("Place", f.places, "place");
   section("Year", f.years, "year");
+  dateSection(side, f);
   section("Camera", f.cameras, "camera");
 
   // Person names just became available — refresh the pills' labels.
   renderActiveFilters();
+}
+
+// Two date-taken bounds (inclusive). Inputs read/write state.filters directly.
+function dateSection(side, f) {
+  const h = document.createElement("h3");
+  h.textContent = "Date taken";
+  side.appendChild(h);
+  const wrap = document.createElement("div");
+  wrap.className = "date-range";
+  const mk = (key, label) => {
+    const inp = document.createElement("input");
+    inp.type = "date";
+    inp.className = "date-input";
+    inp.value = state.filters[key] || "";
+    inp.setAttribute("aria-label", `${label} date`);
+    if (f.date_min) inp.min = f.date_min;
+    if (f.date_max) inp.max = f.date_max;
+    inp.onchange = () => {
+      if (inp.value) state.filters[key] = inp.value;
+      else delete state.filters[key];
+      refresh();
+    };
+    return inp;
+  };
+  wrap.appendChild(mk("date_from", "From"));
+  const dash = document.createElement("span");
+  dash.className = "date-dash";
+  dash.textContent = "–";
+  wrap.appendChild(dash);
+  wrap.appendChild(mk("date_to", "To"));
+  side.appendChild(wrap);
 }
 
 function clearAllFilters() {
@@ -153,7 +214,8 @@ function renderActiveFilters() {
   for (const [k, v] of pairs) {
     const pill = document.createElement("button");
     pill.className = "filter-pill";
-    pill.innerHTML = `<span>${esc(FILTER_NAMES[k] || k)}: ${esc(filterValueLabel(k, v))}</span><span class="x">✕</span>`;
+    const text = k === "has_faces" ? "Has people" : `${FILTER_NAMES[k] || k}: ${filterValueLabel(k, v)}`;
+    pill.innerHTML = `<span>${esc(text)}</span><span class="x">✕</span>`;
     pill.title = "Remove filter";
     pill.onclick = () => removeFilterValue(k, v);
     bar.appendChild(pill);

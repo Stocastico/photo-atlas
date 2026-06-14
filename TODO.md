@@ -28,11 +28,15 @@ responsive/mobile work is intentionally deprioritised.
   camera, an `IN` join for people); the API takes repeated query params; the
   sidebar toggles values and each gets its own removable pill.
   Possible follow-up: an *AND* mode for people ("photos containing A **and** B").
-- [ ] **Surface `has_faces`.** Backend filter exists; add a "Has people" toggle.
-- [ ] **Date range / timeline.** Backend supports `date_from`/`date_to`; add a
-  month/year range control or a scrubber rather than only year chips.
-- [ ] **Facet "show more".** Sidebar sections silently truncate at 14 items
-  (`.slice(0, 14)`) — cities/cameras/places beyond that are unreachable.
+- [x] **Surface `has_faces`.** "👤 Has people" quick-filter chip in the sidebar;
+  facets now return a filter-aware `with_faces` count for it.
+- [x] **Date range.** Two inclusive `date_taken` inputs (bounded by the
+  library's `date_min`/`date_max`); `_where` compares on the date prefix so
+  same-day photos with a time component are included. A timeline/scrubber is a
+  possible future upgrade.
+- [x] **Facet "show more".** Sidebar sections cap at 14 items with a
+  "+N more / Show less" toggle (per-facet expand state) instead of silently
+  truncating.
 - [ ] **More sort options** (e.g. by filename / by recently indexed).
 
 ### Navigation & state
