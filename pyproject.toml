@@ -24,10 +24,31 @@ dependencies = [
 dlib = ["face-recognition>=1.3"]
 # High-resolution offline reverse geocoding (~150k cities).
 geo = ["reverse_geocoder>=1.5"]
+
+# Development tooling lives in a PEP 735 dependency group so it is installed by
+# `uv sync` (which includes the `dev` group by default) but never ships as a
+# package extra. Install with plain pip via `pip install -e '.[dev]'` is no
+# longer the supported path — use uv (see README).
+[dependency-groups]
 dev = ["pytest>=8.2", "httpx>=0.27"]
 
 [project.scripts]
 photo-atlas = "photo_atlas.cli:main"
+
+[tool.uv]
+# The `dev` group is installed by default; opt into optional features
+# explicitly, e.g. `uv sync --extra geo` or `uv sync --extra dlib`
+# (dlib needs a C++ toolchain + CMake).
+default-groups = ["dev"]
+
+# opencv-python-headless stopped publishing macOS-13 *Intel* (x86_64) wheels at
+# 4.13. On that one legacy platform, pin to the last version that still ships a
+# wheel so `uv sync` resolves without a source build. Every other platform
+# (Apple Silicon, Linux, Windows, newer macOS) keeps the project's >=4.10 floor
+# and is free to use 4.13+.
+constraint-dependencies = [
+  "opencv-python-headless<4.13; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
