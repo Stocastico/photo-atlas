@@ -27,9 +27,35 @@ function fmtDate(iso) {
 }
 
 // ---- filters / sidebar ----------------------------------------------------
+// Facet filters hold an array of values (OR within a facet, AND across facets).
+function isActive(key, value) {
+  const cur = state.filters[key];
+  if (Array.isArray(cur)) return cur.some((v) => v == value);
+  return cur != null && cur == value;
+}
+
 function toggleFilter(key, value) {
-  if (state.filters[key] === value) delete state.filters[key];
-  else state.filters[key] = value;
+  const arr = Array.isArray(state.filters[key])
+    ? state.filters[key].slice()
+    : (state.filters[key] != null ? [state.filters[key]] : []);
+  const i = arr.findIndex((v) => v == value);
+  if (i >= 0) arr.splice(i, 1);
+  else arr.push(value);
+  if (arr.length) state.filters[key] = arr;
+  else delete state.filters[key];
+  refresh();
+}
+
+function removeFilterValue(key, value) {
+  const cur = state.filters[key];
+  if (Array.isArray(cur)) {
+    const arr = cur.filter((v) => v != value);
+    if (arr.length) state.filters[key] = arr;
+    else delete state.filters[key];
+  } else {
+    delete state.filters[key];
+  }
+  if (key === "q") $("#search").value = "";
   refresh();
 }
 
@@ -43,8 +69,23 @@ function chip(label, count, active, onClick) {
 
 function filterParams() {
   const params = new URLSearchParams();
-  Object.entries(state.filters).forEach(([k, v]) => v != null && v !== "" && params.set(k, v));
+  for (const [k, v] of Object.entries(state.filters)) {
+    if (v == null || v === "") continue;
+    if (Array.isArray(v)) v.forEach((x) => x != null && x !== "" && params.append(k, x));
+    else params.set(k, v);
+  }
   return params;
+}
+
+// Flatten state.filters into [key, value] pairs (one per selected value).
+function activeFilterPairs() {
+  const pairs = [];
+  for (const [k, v] of Object.entries(state.filters)) {
+    if (v == null || v === "") continue;
+    if (Array.isArray(v)) v.forEach((x) => (x != null && x !== "") && pairs.push([k, x]));
+    else pairs.push([k, v]);
+  }
+  return pairs;
 }
 
 async function renderSidebar() {
@@ -62,7 +103,7 @@ async function renderSidebar() {
     wrap.className = "facet";
     items.slice(0, 14).forEach((i) => {
       const v = valFn(i);
-      wrap.appendChild(chip(labelFn(i), i.count, state.filters[key] == v, () => toggleFilter(key, v)));
+      wrap.appendChild(chip(labelFn(i), i.count, isActive(key, v), () => toggleFilter(key, v)));
     });
     side.appendChild(wrap);
   };
@@ -107,21 +148,17 @@ function renderActiveFilters() {
   const bar = $("#active-filters");
   if (!bar) return;
   bar.innerHTML = "";
-  const keys = Object.keys(state.filters).filter((k) => state.filters[k] != null && state.filters[k] !== "");
-  bar.style.display = keys.length ? "flex" : "none";
-  for (const k of keys) {
+  const pairs = activeFilterPairs();
+  bar.style.display = pairs.length ? "flex" : "none";
+  for (const [k, v] of pairs) {
     const pill = document.createElement("button");
     pill.className = "filter-pill";
-    pill.innerHTML = `<span>${esc(FILTER_NAMES[k] || k)}: ${esc(filterValueLabel(k, state.filters[k]))}</span><span class="x">✕</span>`;
+    pill.innerHTML = `<span>${esc(FILTER_NAMES[k] || k)}: ${esc(filterValueLabel(k, v))}</span><span class="x">✕</span>`;
     pill.title = "Remove filter";
-    pill.onclick = () => {
-      delete state.filters[k];
-      if (k === "q") $("#search").value = "";
-      refresh();
-    };
+    pill.onclick = () => removeFilterValue(k, v);
     bar.appendChild(pill);
   }
-  if (keys.length) {
+  if (pairs.length) {
     const clr = document.createElement("button");
     clr.className = "filter-pill clear-pill";
     clr.textContent = "Clear all";
@@ -279,7 +316,7 @@ async function renderPeople() {
         <button class="ghost" data-act="del">Delete</button>
       </div>`;
     el.querySelector('[data-act="view"]').onclick = () => {
-      state.filters = { person_id: person.id }; setView("photos");
+      state.filters = { person_id: [person.id] }; setView("photos");
     };
     el.querySelector('[data-act="del"]').onclick = async () => {
       if (!confirm(`Remove ${person.name}? Faces are kept for re-clustering.`)) return;

@@ -22,9 +22,12 @@ responsive/mobile work is intentionally deprioritised.
 ## Queued
 
 ### Filtering correctness & power
-- [ ] **Multi-select within a facet.** Today picking a second country replaces
-  the first (`toggleFilter` is single-value). Allow OR-within-facet,
-  AND-across-facets. Requires list params in the API + `IN (...)` clauses.
+- [x] **Multi-select within a facet.** Facet filters (`person_id`, `scene`,
+  `country`, `city`, `place`, `year`, `camera`) accept a value or a list:
+  OR-within-facet, AND-across-facets. SQL uses `IN (...)` (and OR-of-LIKE for
+  camera, an `IN` join for people); the API takes repeated query params; the
+  sidebar toggles values and each gets its own removable pill.
+  Possible follow-up: an *AND* mode for people ("photos containing A **and** B").
 - [ ] **Surface `has_faces`.** Backend filter exists; add a "Has people" toggle.
 - [ ] **Date range / timeline.** Backend supports `date_from`/`date_to`; add a
   month/year range control or a scrubber rather than only year chips.

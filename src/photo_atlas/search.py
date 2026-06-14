@@ -1,8 +1,11 @@
 """Translate filter dictionaries into SQL queries over the catalog.
 
-Supported filters (all optional, combined with AND):
+Supported filters (all optional, combined with AND across keys). The facet
+filters (``person_id``, ``scene``, ``country``, ``city``, ``place``, ``year``,
+``camera``) each accept a single value *or* a list of values; a list matches
+any of them (OR within the facet, AND across facets).
 
-``person_id``  only photos containing this person.
+``person_id``  only photos containing this person (or any of these people).
 ``scene``      scene tag (people/landscape/food/document/other).
 ``country``    place country (from GPS).
 ``city``       place city (from GPS).
@@ -21,40 +24,54 @@ import sqlite3
 from typing import Any
 
 
+def _as_list(value: Any) -> list[Any]:
+    """Normalise a scalar / list / None filter value to a list of non-empty items."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [v for v in value if v is not None and v != ""]
+    if value == "":
+        return []
+    return [value]
+
+
 def _where(filters: dict[str, Any]) -> tuple[str, list[Any], str]:
     clauses: list[str] = []
     params: list[Any] = []
     join = ""
 
-    person_id = filters.get("person_id")
-    if person_id:
-        join = "JOIN faces f ON f.photo_id = p.id AND f.person_id = ?"
-        params.append(int(person_id))
+    persons = _as_list(filters.get("person_id"))
+    if persons:
+        placeholders = ", ".join(["?"] * len(persons))
+        join = f"JOIN faces f ON f.photo_id = p.id AND f.person_id IN ({placeholders})"
+        params.extend(int(p) for p in persons)
 
-    if filters.get("scene"):
-        clauses.append("p.scene_type = ?")
-        params.append(filters["scene"])
-    if filters.get("country"):
-        clauses.append("p.place_country = ?")
-        params.append(filters["country"])
-    if filters.get("city"):
-        clauses.append("p.place_city = ?")
-        params.append(filters["city"])
-    if filters.get("place"):
-        clauses.append("p.folder_place = ?")
-        params.append(filters["place"])
-    if filters.get("year"):
-        clauses.append("substr(p.taken_at, 1, 4) = ?")
-        params.append(str(filters["year"]))
+    def add_in(column: str, key: str, cast=lambda v: v) -> None:
+        values = _as_list(filters.get(key))
+        if not values:
+            return
+        placeholders = ", ".join(["?"] * len(values))
+        clauses.append(f"{column} IN ({placeholders})")
+        params.extend(cast(v) for v in values)
+
+    add_in("p.scene_type", "scene")
+    add_in("p.place_country", "country")
+    add_in("p.place_city", "city")
+    add_in("p.folder_place", "place")
+    add_in("substr(p.taken_at, 1, 4)", "year", cast=str)
+
+    cameras = _as_list(filters.get("camera"))
+    if cameras:
+        likes = " OR ".join(["p.camera_model LIKE ?"] * len(cameras))
+        clauses.append(f"({likes})")
+        params.extend(f"%{c}%" for c in cameras)
+
     if filters.get("date_from"):
         clauses.append("p.taken_at >= ?")
         params.append(filters["date_from"])
     if filters.get("date_to"):
         clauses.append("p.taken_at <= ?")
         params.append(filters["date_to"])
-    if filters.get("camera"):
-        clauses.append("p.camera_model LIKE ?")
-        params.append(f"%{filters['camera']}%")
     if filters.get("has_faces"):
         clauses.append("p.face_count > 0")
     if filters.get("q"):

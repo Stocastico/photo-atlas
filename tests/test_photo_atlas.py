@@ -228,6 +228,47 @@ def test_search_filters(indexed):
     assert sum(p["count"] for p in fp["persons"]) >= 0  # persons facet still resolves
 
 
+def test_multi_select_filters(indexed):
+    conn = db.connect(indexed.db_path)
+    f = search.facets(conn)
+    countries = [c["value"] for c in f["countries"]]
+    assert len(countries) >= 2, "demo library should span several countries"
+    c1, c2 = countries[0], countries[1]
+
+    # A scalar value and a single-element list behave identically.
+    one, t1 = search.search_photos(conn, {"country": c1})
+    one_list, t1l = search.search_photos(conn, {"country": [c1]})
+    assert t1 == t1l and {p["id"] for p in one} == {p["id"] for p in one_list}
+
+    # OR within a facet: two countries return the union (they are disjoint).
+    a, ta = search.search_photos(conn, {"country": [c1]})
+    b, tb = search.search_photos(conn, {"country": [c2]})
+    both, tboth = search.search_photos(conn, {"country": [c1, c2]})
+    assert tboth == ta + tb
+    assert {p["id"] for p in both} == {p["id"] for p in a} | {p["id"] for p in b}
+    assert all(p["place_country"] in {c1, c2} for p in both)
+
+    # AND across facets still narrows the union.
+    scenes = [s["value"] for s in f["scenes"]]
+    combined, tcomb = search.search_photos(conn, {"country": [c1, c2], "scene": scenes[:1]})
+    assert tcomb <= tboth
+    assert all(p["scene_type"] == scenes[0] for p in combined)
+
+    # The facet's own dimension stays fully listed under multi-select.
+    fm = search.facets(conn, {"country": [c1, c2]})
+    assert {c["value"] for c in fm["countries"]} == set(countries)
+
+    # OR across people via the faces join.
+    clusters = library.list_clusters(conn)
+    if len(clusters) >= 2:
+        p1 = library.assign_cluster(conn, clusters[0]["cluster_id"], name="MP1")
+        p2 = library.assign_cluster(conn, clusters[1]["cluster_id"], name="MP2")
+        a2, _ = search.search_photos(conn, {"person_id": [p1]})
+        b2, _ = search.search_photos(conn, {"person_id": [p2]})
+        ab, _ = search.search_photos(conn, {"person_id": [p1, p2]})
+        assert {p["id"] for p in ab} == {p["id"] for p in a2} | {p["id"] for p in b2}
+
+
 def test_cluster_assignment_and_recognition(indexed):
     conn = db.connect(indexed.db_path)
     clusters = library.list_clusters(conn)
@@ -287,6 +328,17 @@ def test_api_endpoints(indexed):
     photo_id = photos["photos"][0]["id"]
     assert client.get(f"/api/thumb/{photo_id}").status_code == 200
     assert client.get(f"/api/photos/{photo_id}").json()["id"] == photo_id
+
+    # Multi-select round-trips as repeated query params (OR within a facet).
+    countries = [c["value"] for c in facets["countries"]][:2]
+    assert len(countries) == 2
+    a = client.get("/api/photos", params={"country": countries[0]}).json()
+    b = client.get("/api/photos", params={"country": countries[1]}).json()
+    both = client.get("/api/photos", params={"country": countries}).json()
+    assert both["total"] == a["total"] + b["total"]
+    # Filter-aware facets accept the same repeated params.
+    fac = client.get("/api/facets", params={"country": countries}).json()
+    assert fac["total"] == 24
 
     clusters = client.get("/api/clusters").json()["clusters"]
     res = client.post(f"/api/clusters/{clusters[0]['cluster_id']}/assign", json={"name": "Carol"})
