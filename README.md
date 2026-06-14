@@ -22,11 +22,17 @@ recognised automatically once a person has been named.
   cluster and every matching photo becomes filterable. Future imports are
   auto-recognised against the people you've named.
 - **Filter by anything** — person, scene type (`people` / `landscape` / `food` /
-  `document` / `other`), country, city, year, camera, or filename — combined.
+  `document` / `other`), country, city, place (trip/folder), year, camera, or
+  filename — combined.
 - **Offline reverse geocoding** — GPS EXIF → city + country using a bundled
   dataset (no network). Install `reverse_geocoder` for ~150k-city resolution.
 - **Rich metadata** — capture date (EXIF, with file-mtime fallback), camera,
   dimensions, GPS, thumbnails.
+- **Folder-name mining** — for libraries organised like `2012/2012_05_Sardegna`,
+  the year, month and trip/place label are recovered from the folder names and
+  used to fill in dates EXIF lacks (synthesised as `YYYY-MM-01`,
+  `taken_source='folder'`) and to add a filterable **Place** facet. EXIF always
+  wins; only dated folders (with a 4-digit year) are trusted.
 - **Web UI** — gallery with lazy thumbnails, a detail lightbox, a People page
   and a "Name faces" workflow. No build step (vanilla JS).
 - **Everything local** — a single SQLite catalog plus thumbnails/face crops
@@ -34,12 +40,20 @@ recognised automatically once a person has been named.
 
 ## Install
 
+Photo Atlas uses [uv](https://docs.astral.sh/uv/) for environment and
+dependency management:
+
 ```bash
-pip install -e .            # core app (Pillow, scikit-learn, OpenCV, FastAPI…)
-pip install -e '.[dev]'     # + test tooling
-pip install -e '.[dlib]'    # optional: face_recognition (dlib) backend
-pip install -e '.[geo]'     # optional: high-resolution reverse geocoding
+uv sync                     # core app + test tooling into .venv (dev group)
+uv sync --extra geo         # + high-resolution offline reverse geocoding
+uv sync --extra dlib        # + face_recognition (dlib) backend (needs CMake/C++)
+uv run photo-atlas --help   # run the CLI inside the managed environment
+uv run pytest               # run the test suite
 ```
+
+`uv` resolves a compatible Python (3.10+) automatically and records exact
+versions in `uv.lock`. Plain `pip install -e .` still works for the runtime
+package if you prefer to manage your own environment.
 
 The YuNet + SFace ONNX weights (~38 MB) are downloaded on first use to
 `~/.photo_atlas/models`. For offline/air-gapped setups, point
@@ -72,8 +86,9 @@ force). Choose the face backend with `--faces {auto,yunet,dlib,synthetic,none}`
 ## How it works
 
 ```
-indexer ─┬─ metadata.py   EXIF date / camera / GPS  + thumbnails
-         ├─ geocode.py    GPS → city, country (offline nearest-city)
+indexer ─┬─ metadata.py    EXIF date / camera / GPS  + thumbnails
+         ├─ folder_meta.py year / month / place mined from folder names
+         ├─ geocode.py     GPS → city, country (offline nearest-city)
          ├─ faces.py      YuNet detect → SFace embed → DBSCAN cluster
          ├─ classify.py   colour/face heuristics → scene tag
          └─ db.py         SQLite catalog (photos / persons / faces)
@@ -95,7 +110,7 @@ api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces)
 | Method & path | Purpose |
 | --- | --- |
 | `GET /api/facets` | counts for the filter sidebar |
-| `GET /api/photos?person_id=&scene=&country=&city=&year=&camera=&q=` | filtered list |
+| `GET /api/photos?person_id=&scene=&country=&city=&place=&year=&camera=&q=` | filtered list |
 | `GET /api/photos/{id}` | photo detail + faces |
 | `GET /api/image\|thumb/{id}`, `GET /api/face/{id}` | media |
 | `GET /api/persons`, `PATCH/DELETE /api/persons/{id}` | manage people |
@@ -105,8 +120,8 @@ api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces)
 ## Tests
 
 ```bash
-pytest                            # offline suite (deterministic, no network)
-pytest tests/test_deep_faces.py   # deep YuNet/SFace test on real faces*
+uv run pytest                            # offline suite (deterministic, no network)
+uv run pytest tests/test_deep_faces.py   # deep YuNet/SFace test on real faces*
 ```
 
 \* downloads the models + a few public sample faces; **skips** (never fails)
@@ -115,10 +130,22 @@ different people, and that clustering groups repeat photos of one identity.
 
 ## Notes
 
-- Built and verified with `opencv-python 4.13`, which already ships the DNN face
-  module (`FaceDetectorYN` / `FaceRecognizerSF`). OpenCV 5 wheels were not yet on
-  PyPI at the time of writing; the code targets `opencv>=4.10` and is forward
-  compatible.
+- Built and verified against `opencv-python 4.11–4.13`, which ships the DNN face
+  module (`FaceDetectorYN` / `FaceRecognizerSF`). The code targets `opencv>=4.10`
+  and is forward compatible.
+- **OpenCV 5 (as of June 2026):** still not released on PyPI — 4.13.0 (Dec 2025)
+  is the latest published wheel and the 5.0 milestone is feature-complete but
+  unreleased. When 5.0 lands it keeps the same `FaceDetectorYN`/`FaceRecognizerSF`
+  API, so no code change is expected; the YuNet/SFace zoo weights are unchanged.
+  Note: `opencv-python-headless` dropped macOS-13 Intel wheels at 4.13 (see the
+  uv constraint in `pyproject.toml`).
+- **Higher-accuracy embeddings.** SFace is 128-d and fast but modest by 2025
+  standards. The strongest easy-to-use upgrade is [InsightFace](https://github.com/deepinsight/insightface)'s
+  `buffalo_l` pack (ArcFace `w600k_r50`, 512-d, ~99.85 % LFW vs SFace's ~99.6 %),
+  which runs via ONNX Runtime with no dlib/CMake build. It would slot in as a new
+  `FaceBackend` (detection via its SCRFD + 512-d embeddings); `face_match_threshold`
+  / `cluster_eps` would need re-tuning for the new embedding space. Ask if you'd
+  like this wired in as an optional `[insightface]` extra.
 - The original `image_classifications` package (trainable scene classifier +
   multi-label face service, FastAPI) is retained under `src/image_classifications`
   and `scripts/`; Photo Atlas is the application built on top of those ideas.
