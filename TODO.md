@@ -39,6 +39,33 @@ responsive/mobile work is intentionally deprioritised.
   truncating.
 - [ ] **More sort options** (e.g. by filename / by recently indexed).
 
+### Performance & memory at scale
+- [ ] **Virtualize / window the photo grid.** Today infinite scroll *appends*
+  cards and never removes them, so the DOM and the browser's decoded-image cache
+  grow without bound. Thumbnails are small on the wire (~320px JPEG, ~20 KB) and
+  only the lightbox loads originals — so the network/disk story is fine — but a
+  decoded 320×320 thumbnail still costs ~0.4 MB of bitmap memory, so scrolling
+  ~2k+ photos can reach hundreds of MB plus thousands of `<img>` nodes.
+  Options, cheapest first:
+  1. **`content-visibility: auto` + `contain-intrinsic-size`** on each card —
+     a few CSS lines that let the browser skip rendering/decoding offscreen
+     cards and reclaim them. Biggest win for least code; keeps current structure.
+  2. **Recycle offscreen images** — an IntersectionObserver that clears `src`
+     (and restores it) on cards far outside the viewport, so decoded bitmaps are
+     freed while the grid layout stays put.
+  3. **True virtualization / windowing** — render only the visible range (plus a
+     buffer) into a spacer-sized container, recycling card nodes on scroll.
+     Most robust for tens of thousands of photos; most code. A small lib
+     (or a ~100-line custom windower over the fixed-aspect grid) would do.
+  Recommendation: ship (1) now as a safety net, then (3) if libraries get huge.
+- [ ] **Cap the lightbox image size.** The lightbox loads the full-resolution
+  original; a 50 MP photo decodes to ~200 MB. Flicking through many via the
+  arrow keys could spike memory. Consider a medium "preview" derivative
+  (e.g. 1600px) served from a new endpoint, with the true original behind a
+  "view full size / download" action.
+- [ ] **Thumbnail `srcset` / sizing.** Serve the 320px thumb but hint intrinsic
+  size so the browser reserves layout and avoids reflow on load.
+
 ### Navigation & state
 - [ ] **URL / history state.** Reflect filters + view in the querystring so the
   back button undoes a filter and views are shareable/bookmarkable.
