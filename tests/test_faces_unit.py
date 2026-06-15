@@ -86,6 +86,35 @@ def test_read_bgr_falls_back_to_pil_when_cv2_cannot_decode(tmp_path, monkeypatch
     assert r > 150 and g < 20 and b < 20
 
 
+def test_maybe_downscale_scales_long_side_and_reports_factor():
+    big = np.zeros((2000, 3000, 3), dtype=np.uint8)
+    out, scale = faces._maybe_downscale(big, max_side=1200)
+    assert max(out.shape[:2]) == 1200
+    assert np.isclose(scale, 1200 / 3000)
+    # An image already within the cap is returned untouched at scale 1.0.
+    small = np.zeros((100, 80, 3), dtype=np.uint8)
+    out2, scale2 = faces._maybe_downscale(small, max_side=1200)
+    assert out2.shape == small.shape and scale2 == 1.0
+
+
+def test_detect_accepts_predecoded_image(tmp_path, monkeypatch):
+    """A caller that already decoded the image (the indexer's decode-once path)
+    can hand the array to ``detect`` and skip the filesystem read entirely."""
+
+    import cv2
+
+    from photo_atlas import demo
+
+    [png] = demo.generate(tmp_path / "p", count=1, seed=5)
+    backend = faces.SyntheticFaceBackend()
+    from_path = backend.detect(png)
+
+    bgr = faces._read_bgr(png)
+    monkeypatch.setattr(cv2, "imread", lambda *a, **k: None)  # no disk read allowed
+    from_array = backend.detect(png, image=bgr)
+    assert len(from_array) == len(from_path)
+
+
 def test_synthetic_backend_detects_faces_in_heic(tmp_path):
     """Regression: HEIC (iPhone's default, ~a fifth of a real library) must yield
     faces. ``cv2.imread`` returns None for HEIC, so detection has to route the

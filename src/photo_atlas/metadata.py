@@ -130,28 +130,33 @@ def _extract_gps(img: Image.Image) -> tuple[float | None, float | None]:
     return lat, lon
 
 
-def extract_meta(path: Path) -> PhotoMeta:
-    """Read dimensions, capture time, camera and GPS from an image file."""
+def extract_meta_from_image(img: Image.Image, path: Path) -> PhotoMeta:
+    """Read dimensions, capture time, camera and GPS from an already-open image.
+
+    Split from :func:`extract_meta` so the indexer can decode a file once and
+    reuse that single :class:`PIL.Image.Image` across metadata, thumbnail, scene
+    tagging and face crops instead of re-opening it for each stage. ``path`` is
+    still needed for the filesystem-mtime fallback when EXIF carries no date.
+    """
 
     meta = PhotoMeta()
-    with Image.open(path) as img:
-        meta.width, meta.height = img.size
-        exif = _exif_dict(img)
+    meta.width, meta.height = img.size
+    exif = _exif_dict(img)
 
-        for key in ("DateTimeOriginal", "DateTimeDigitized", "DateTime"):
-            if key in exif:
-                parsed = _parse_exif_datetime(str(exif[key]))
-                if parsed:
-                    meta.taken_at = parsed
-                    meta.taken_source = "exif"
-                    break
+    for key in ("DateTimeOriginal", "DateTimeDigitized", "DateTime"):
+        if key in exif:
+            parsed = _parse_exif_datetime(str(exif[key]))
+            if parsed:
+                meta.taken_at = parsed
+                meta.taken_source = "exif"
+                break
 
-        make = exif.get("Make")
-        model = exif.get("Model")
-        meta.camera_make = str(make).strip("\x00 ").strip() or None if make else None
-        meta.camera_model = str(model).strip("\x00 ").strip() or None if model else None
+    make = exif.get("Make")
+    model = exif.get("Model")
+    meta.camera_make = str(make).strip("\x00 ").strip() or None if make else None
+    meta.camera_model = str(model).strip("\x00 ").strip() or None if model else None
 
-        meta.lat, meta.lon = _extract_gps(img)
+    meta.lat, meta.lon = _extract_gps(img)
 
     if meta.taken_at is None:
         ts = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
@@ -161,16 +166,39 @@ def extract_meta(path: Path) -> PhotoMeta:
     return meta
 
 
-def _write_resized(path: Path, dest: Path, size: int, quality: int) -> Path:
-    """Write an orientation-corrected, downscaled JPEG (never upscales)."""
+def extract_meta(path: Path) -> PhotoMeta:
+    """Read dimensions, capture time, camera and GPS from an image file."""
+
+    with Image.open(path) as img:
+        return extract_meta_from_image(img, path)
+
+
+def resize_image_to(img: Image.Image, dest: Path, size: int, quality: int) -> Path:
+    """Write an orientation-corrected, downscaled JPEG from an open image.
+
+    Never upscales (Pillow's ``thumbnail`` only shrinks). Shared by the path-based
+    helpers and the indexer's decode-once path, which already holds the image.
+    """
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with Image.open(path) as img:
-        img = ImageOps.exif_transpose(img)
-        img = img.convert("RGB")
-        img.thumbnail((size, size))  # Pillow's thumbnail only ever shrinks.
-        img.save(dest, "JPEG", quality=quality)
+    out = ImageOps.exif_transpose(img)
+    out = out.convert("RGB")
+    out.thumbnail((size, size))
+    out.save(dest, "JPEG", quality=quality)
     return dest
+
+
+def _write_resized(path: Path, dest: Path, size: int, quality: int) -> Path:
+    """Open ``path`` and write an orientation-corrected, downscaled JPEG."""
+
+    with Image.open(path) as img:
+        return resize_image_to(img, dest, size, quality)
+
+
+def make_thumbnail_from_image(img: Image.Image, dest: Path, size: int = 320) -> Path:
+    """Write a JPEG thumbnail from an already-open image (decode-once path)."""
+
+    return resize_image_to(img, dest, size, quality=82)
 
 
 def make_thumbnail(path: Path, dest: Path, size: int = 320) -> Path:

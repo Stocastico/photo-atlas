@@ -30,10 +30,21 @@ from PIL import Image
 from . import db
 from .classify import SceneTagger
 from .config import AtlasConfig
-from .faces import FaceBackend, best_person_match, cluster_embeddings, get_backend
+from .faces import (
+    FaceBackend,
+    best_person_match,
+    cluster_embeddings,
+    get_backend,
+    pil_to_bgr,
+)
 from .folder_meta import extract_folder_meta
 from .geocode import Geocoder
-from .metadata import extract_meta, is_supported, make_thumbnail, sha1_of
+from .metadata import (
+    extract_meta_from_image,
+    is_supported,
+    make_thumbnail_from_image,
+    sha1_of,
+)
 import json
 
 
@@ -79,13 +90,12 @@ def thumb_path_for(config: AtlasConfig, sha1: str) -> Path:
     return config.thumbs_dir / sha1[:2] / f"{sha1}.jpg"
 
 
-def _save_face_crop(src: Path, bbox: tuple[int, int, int, int], dest: Path) -> None:
+def _save_face_crop(img: Image.Image, bbox: tuple[int, int, int, int], dest: Path) -> None:
     x, y, w, h = bbox
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with Image.open(src) as img:
-        # Detection runs on the non-transposed image, so crop without transpose.
-        crop = img.convert("RGB").crop((x, y, x + w, y + h))
-        crop.save(dest, "JPEG", quality=85)
+    # Detection runs on the non-transposed image, so crop without transpose.
+    crop = img.convert("RGB").crop((x, y, x + w, y + h))
+    crop.save(dest, "JPEG", quality=85)
 
 
 def index_file(
@@ -102,30 +112,61 @@ def index_file(
     """Index a single image file and return its photo id."""
 
     path = Path(path)
-    meta = extract_meta(path)
     sha1 = sha1_of(path)
 
-    # Folder names (e.g. 2012/2012_05_Sardegna) often carry a year/month/place
-    # the file's EXIF lacks. Use them only to fill gaps: a folder date replaces
-    # the filesystem-mtime fallback but never a real EXIF capture time.
-    folder = extract_folder_meta(path)
-    if meta.taken_source != "exif" and folder.year is not None:
-        synthesized = datetime(folder.year, folder.month or 1, 1)
-        meta.taken_at = synthesized.isoformat(timespec="seconds")
-        meta.taken_source = "folder"
+    # Decode the file exactly once and reuse the single Pillow image across
+    # metadata, faces, thumbnail and scene tagging (was 4+ decodes per file).
+    with Image.open(path) as img:
+        img.load()
+        meta = extract_meta_from_image(img, path)
 
-    place = None
-    if geocoder is not None:
-        place = geocoder.lookup(meta.lat, meta.lon)
+        # Folder names (e.g. 2012/2012_05_Sardegna) often carry a year/month/place
+        # the file's EXIF lacks. Use them only to fill gaps: a folder date replaces
+        # the filesystem-mtime fallback but never a real EXIF capture time.
+        folder = extract_folder_meta(path)
+        if meta.taken_source != "exif" and folder.year is not None:
+            synthesized = datetime(folder.year, folder.month or 1, 1)
+            meta.taken_at = synthesized.isoformat(timespec="seconds")
+            meta.taken_source = "folder"
 
-    # Detect faces first so the scene tagger can use the count.
-    observations = backend.detect(path) if backend is not None else []
+        place = None
+        if geocoder is not None:
+            place = geocoder.lookup(meta.lat, meta.lon)
+
+        # Detect faces first so the scene tagger can use the count. The backend
+        # gets the already-decoded BGR array, so it never re-reads the file.
+        bgr = pil_to_bgr(img)
+        observations = backend.detect(path, image=bgr) if backend is not None else []
+
+        thumb_path = thumb_path_for(config, sha1)
+        make_thumbnail_from_image(img, thumb_path, size=config.thumb_size)
+
+        scene_label, scene_scores = tagger.tag_image(img, face_count=len(observations))
+
+        return _store_indexed(
+            conn, config, path, sha1, img, meta, place, folder,
+            scene_label, scene_scores, observations, centroids, stats,
+        )
+
+
+def _store_indexed(
+    conn: sqlite3.Connection,
+    config: AtlasConfig,
+    path: Path,
+    sha1: str,
+    img: Image.Image,
+    meta,
+    place,
+    folder,
+    scene_label: str,
+    scene_scores: dict,
+    observations: list,
+    centroids: dict[int, np.ndarray] | None,
+    stats: IndexStats | None,
+) -> int:
+    """Persist one indexed photo and its faces (called within the decode scope)."""
 
     thumb_path = thumb_path_for(config, sha1)
-    make_thumbnail(path, thumb_path, size=config.thumb_size)
-
-    scene_label, scene_scores = tagger.tag(path, face_count=len(observations))
-
     record = {
         "path": str(path.resolve()),
         "filename": path.name,
@@ -155,7 +196,7 @@ def index_file(
     for i, obs in enumerate(observations):
         crop_path = config.faces_dir / f"{photo_id}" / f"face_{i}.jpg"
         try:
-            _save_face_crop(path, obs.bbox, crop_path)
+            _save_face_crop(img, obs.bbox, crop_path)
         except Exception:
             crop_path = None
 

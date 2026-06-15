@@ -34,7 +34,14 @@ def _softmax(scores: dict[str, float]) -> dict[str, float]:
 class SceneTagger:
     def tag(self, path: Path, face_count: int = 0) -> tuple[str, dict[str, float]]:
         with Image.open(path) as img:
-            small = img.convert("RGB").resize((64, 64))
+            return self.tag_image(img, face_count)
+
+    def tag_image(
+        self, img: Image.Image, face_count: int = 0
+    ) -> tuple[str, dict[str, float]]:
+        """Tag an already-open image (the indexer's decode-once path)."""
+
+        small = img.convert("RGB").resize((64, 64))
         arr = np.asarray(small, dtype=np.float32) / 255.0
         r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
 

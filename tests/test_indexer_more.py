@@ -77,6 +77,37 @@ def test_progress_callback_is_invoked(tmp_path):
     assert seen and seen[-1] == 4
 
 
+def test_index_file_decodes_image_once(tmp_path, monkeypatch):
+    """The per-file pipeline (metadata, thumbnail, scene tag, face crops) reuses
+    a single PIL decode instead of re-opening the file for each stage."""
+
+    import PIL.Image as PILImage
+
+    from photo_atlas import demo, faces
+    from photo_atlas.classify import SceneTagger
+
+    [photo] = demo.generate(tmp_path / "p", count=1, seed=3)
+    cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    conn = db.connect(cfg.db_path)
+
+    calls = {"n": 0}
+    real_open = PILImage.open
+
+    def counting_open(*a, **k):
+        calls["n"] += 1
+        return real_open(*a, **k)
+
+    monkeypatch.setattr(PILImage, "open", counting_open)
+    try:
+        indexer.index_file(
+            conn, cfg, photo,
+            backend=faces.SyntheticFaceBackend(), geocoder=None, tagger=SceneTagger(),
+        )
+    finally:
+        conn.close()
+    assert calls["n"] == 1
+
+
 def test_reindex_reuses_content_addressed_thumb(tmp_path):
     from photo_atlas import demo
 
