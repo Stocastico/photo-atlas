@@ -51,6 +51,7 @@ uv sync                     # core app + test tooling into .venv (dev group)
 uv sync --extra geo         # + high-resolution offline reverse geocoding
 uv sync --extra heic        # + HEIC/HEIF decoding (default iPhone format)
 uv sync --extra dlib        # + face_recognition (dlib) backend (needs CMake/C++)
+uv sync --extra scene       # + zero-shot scene tagging (SigLIP ONNX, no PyTorch)
 uv run photo-atlas --help   # run the CLI inside the managed environment
 uv run pytest               # run the test suite
 ```
@@ -62,6 +63,28 @@ package if you prefer to manage your own environment.
 The YuNet + SFace ONNX weights (~38 MB) are downloaded on first use to
 `~/.photo_atlas/models`. For offline/air-gapped setups, point
 `PHOTO_ATLAS_YUNET` / `PHOTO_ATLAS_SFACE` at local model files.
+
+### Scene tagging
+
+By default scenes are tagged by a fast, dependency-free colour/brightness
+heuristic — handy everywhere, but it genuinely mislabels real photos (sunsets
+read as `food`, snow as `document`). For real accuracy, opt into the **zero-shot**
+tagger, which runs a small **SigLIP** vision encoder (a modern CLIP successor
+that beats CLIP at zero-shot for its size):
+
+```bash
+uv sync --extra scene
+photo-atlas index ~/Pictures --scene zeroshot   # or --scene auto
+```
+
+Only SigLIP's *vision* tower runs at index time (a ~95 MB quantised ONNX,
+downloaded on first use via [ONNX Runtime](https://onnxruntime.ai/) — **no
+PyTorch**). The per-label *text* embeddings are pre-computed once and shipped as
+a tiny bundled matrix (`data/scene_labels.npz`), so there is no text encoder or
+tokenizer at runtime — just a dot product. To swap in a different / newer
+encoder (e.g. SigLIP 2 or MobileCLIP2), rebuild that matrix with
+`scripts/build_scene_embeddings.py --model <hf-repo>` and point
+`PHOTO_ATLAS_SCENE_MODEL` at the matching vision ONNX.
 
 ## Try it in 30 seconds
 
@@ -114,7 +137,7 @@ indexer ─┬─ metadata.py    EXIF date / camera / GPS  + thumbnails
          ├─ folder_meta.py year / month / place mined from folder names
          ├─ geocode.py     GPS → city, country (offline nearest-city)
          ├─ faces.py      YuNet detect → SFace embed → DBSCAN cluster
-         ├─ classify.py   colour/face heuristics → scene tag
+         ├─ classify.py   scene tag (colour heuristic, or SigLIP zero-shot)
          └─ db.py         SQLite catalog (photos / persons / faces)
 
 api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces)

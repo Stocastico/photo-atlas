@@ -26,6 +26,10 @@ dlib = ["face-recognition>=1.3"]
 geo = ["reverse_geocoder>=1.5"]
 # Decode HEIC/HEIF (default iPhone format) via the pillow-heif plugin.
 heic = ["pillow-heif>=0.16"]
+# Zero-shot scene tagging via a SigLIP vision encoder (ONNX). Only the runtime
+# inference engine is needed here — the model downloads on demand and the label
+# embeddings ship bundled, so no PyTorch / tokenizer / text encoder.
+scene = ["onnxruntime>=1.17"]
 
 # Development tooling lives in a PEP 735 dependency group so it is installed by
 # `uv sync` (which includes the `dev` group by default) but never ships as a
@@ -62,6 +66,7 @@ include = ["photo_atlas*"]
 [tool.setuptools.package-data]
 photo_atlas = [
   "data/*.csv",
+  "data/*.npz",
   "web/*",
   "web/vendor/leaflet/*",
   "web/vendor/leaflet/images/*",

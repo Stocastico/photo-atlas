@@ -29,6 +29,7 @@ def _config(args) -> AtlasConfig:
 
 def _cmd_index(args) -> int:
     config = _config(args)
+    config.scene_backend = args.scene
     root = Path(args.path).expanduser()
     if not root.exists():
         print(f"error: path not found: {root}", file=sys.stderr)
@@ -166,6 +167,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_index.add_argument("--faces", default="auto",
                          choices=["auto", "yunet", "dlib", "synthetic", "none"],
                          help="Face detection backend (yunet = deep YuNet+SFace)")
+    p_index.add_argument(
+        "--scene", choices=["heuristic", "zeroshot", "auto"], default="heuristic",
+        help="Scene tagger: heuristic (default, no deps), zeroshot (SigLIP ONNX; "
+             "needs the 'scene' extra), or auto (zeroshot when available)",
+    )
     p_index.add_argument("--no-geocode", action="store_true", help="Skip reverse geocoding")
     p_index.add_argument("--recompute", action="store_true", help="Re-index already known photos")
     p_index.add_argument(

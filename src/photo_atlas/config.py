@@ -50,6 +50,21 @@ class AtlasConfig:
     #: when a person's appearance drifts over the years.
     recognition_k: int = 5
 
+    #: Scene tagger: ``heuristic`` (colour/brightness, zero deps, the default),
+    #: ``zeroshot`` (SigLIP ONNX zero-shot; needs the ``scene`` extra and warns +
+    #: falls back if unavailable) or ``auto`` (zero-shot when it loads, else
+    #: silently the heuristic).
+    scene_backend: str = "heuristic"
+
+    #: Logit temperature applied to the zero-shot cosine similarities before the
+    #: softmax. Higher = sharper label probabilities.
+    scene_temperature: float = 50.0
+
+    #: Logit (in cosine space) of the catch-all ``other`` label for the zero-shot
+    #: tagger. Frames whose best concrete-label similarity does not clear this are
+    #: tagged ``other``. Raise it to send more borderline frames to ``other``.
+    scene_other_bias: float = -0.02
+
     #: DBSCAN epsilon (cosine distance) used when clustering unknown faces.
     cluster_eps: float = 0.5
 

@@ -169,9 +169,22 @@ A full-app review at ~27k images + ~600 videos drove a round of hardening.
   workers keep OpenCV/ONNX native libs clean. SHA-1 dedup / scan-skip bookkeeping
   stays in the main walk. Serial path (`workers<=1`) preserved for the demo/tests;
   parity is unit-tested (`test_parallel_indexing_matches_serial`).
-- [ ] **Better scene tagging.** `classify.py` is a colour/brightness heuristic
-  that mislabels real photos (sunsets→food, snow→document). Replace with a small
-  zero-shot model (MobileCLIP/CLIP) or narrow the labels to what's reliable.
+- [x] **Better scene tagging.** Added an opt-in **zero-shot** tagger
+  (`classify.ZeroShotSceneTagger`, `config.scene_backend`, `index --scene`) that
+  runs a small **SigLIP** vision encoder (quantised ONNX, ~95 MB) via ONNX Runtime
+  — a modern CLIP successor, no PyTorch. Only the vision tower runs at index time;
+  the per-label *text* embeddings are pre-computed once
+  (`scripts/build_scene_embeddings.py`) and shipped as a tiny bundled matrix
+  (`data/scene_labels.npz`), so there's no text encoder/tokenizer at runtime. The
+  catch-all `other` is a learned-bias logit (single argmax, no separate threshold);
+  a detected face nudges `people`. Same `tag()` contract, so the indexer/DB/facets
+  are unchanged. The heuristic stays the zero-dep default and the fallback when the
+  extra/model isn't present. Validated on real photos (document/food/landscape/
+  people correct; out-of-vocabulary images route to `other`); scoring logic, label
+  matrix and fallback are unit-tested, with an optional live round-trip gated on
+  `PHOTO_ATLAS_SCENE_MODEL`. The architecture is model-agnostic — point
+  `--model`/`PHOTO_ATLAS_SCENE_MODEL` at a SigLIP 2 or MobileCLIP2 export and
+  rebuild the matrix to upgrade.
 - [x] **Recognition beyond a single centroid.** Auto-recognition now matches each
   new face by **k-NN majority vote** (`faces.knn_person_match`, `config.recognition_k`,
   default 5) over every named ("enrolled") face, instead of one averaged centroid
