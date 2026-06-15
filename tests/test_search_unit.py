@@ -21,40 +21,43 @@ def test_as_list_normalisation():
 
 
 def test_where_empty_filters():
-    where, params, join = _where({})
-    assert where == "" and params == [] and join == ""
+    where, params = _where({})
+    assert where == "" and params == []
 
 
 def test_where_scalar_and_list_are_equivalent_shape():
-    w1, p1, _ = _where({"scene": "food"})
-    w2, p2, _ = _where({"scene": ["food", "people"]})
+    w1, p1 = _where({"scene": "food"})
+    w2, p2 = _where({"scene": ["food", "people"]})
     assert "p.scene_type IN (?)" in w1 and p1 == ["food"]
     assert "p.scene_type IN (?, ?)" in w2 and p2 == ["food", "people"]
 
 
-def test_where_person_id_builds_join_not_clause():
-    where, params, join = _where({"person_id": [3, 7]})
-    assert "JOIN faces f" in join and "f.person_id IN (?, ?)" in join
+def test_where_person_id_builds_exists_clause():
+    # The person constraint is an EXISTS subquery (one row per photo, no DISTINCT
+    # needed), not a JOIN that fans the result out.
+    where, params = _where({"person_id": [3, 7]})
+    assert "EXISTS (SELECT 1 FROM faces ef" in where
+    assert "ef.person_id IN (?, ?)" in where
+    assert "JOIN" not in where
     assert params == [3, 7]
-    assert where == ""  # the person constraint lives in the JOIN
 
 
 def test_where_camera_is_exact_in():
     # Camera is matched exactly (whole camera_model values from the facet), so
     # the chip count matches the result count even for substring-overlapping names.
-    where, params, _ = _where({"camera": ["iPhone 15", "Pixel 8"]})
+    where, params = _where({"camera": ["iPhone 15", "Pixel 8"]})
     assert "p.camera_model IN (?, ?)" in where
     assert params == ["iPhone 15", "Pixel 8"]
 
 
 def test_where_q_escapes_wildcards_and_sets_escape_clause():
-    where, params, _ = _where({"q": "a_b%c"})
+    where, params = _where({"q": "a_b%c"})
     assert "ESCAPE '\\'" in where
     assert params == ["%a\\_b\\%c%"] * 7
 
 
 def test_where_date_bounds_and_has_faces():
-    where, params, _ = _where(
+    where, params = _where(
         {"date_from": "2012-01-01", "date_to": "2012-12-31", "has_faces": True}
     )
     assert "substr(p.taken_at, 1, 10) >= ?" in where
@@ -64,7 +67,7 @@ def test_where_date_bounds_and_has_faces():
 
 
 def test_where_q_spans_all_text_columns():
-    where, params, _ = _where({"q": "barca"})
+    where, params = _where({"q": "barca"})
     for col in ("filename", "place_city", "place_country", "place_label",
                 "folder_place", "camera_make", "camera_model"):
         assert f"p.{col} LIKE ?" in where
@@ -72,7 +75,7 @@ def test_where_q_spans_all_text_columns():
 
 
 def test_where_combines_across_facets_with_and():
-    where, _params, _ = _where({"scene": "food", "country": "Italy"})
+    where, _params = _where({"scene": "food", "country": "Italy"})
     assert " AND " in where
 
 

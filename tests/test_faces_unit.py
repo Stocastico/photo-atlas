@@ -39,6 +39,50 @@ def test_cluster_embeddings_groups_two_identities():
     assert labels[0] != labels[2]
 
 
+def test_cluster_embeddings_matches_precomputed_cosine_partition():
+    """The tree-based Euclidean clustering must reproduce, exactly, the partition
+    the old dense precomputed-cosine DBSCAN produced — same groups, same noise.
+
+    This guards the O(n^2)->O(n*d) memory refactor: it changes *how* neighbours
+    are found, never *which* points are neighbours (cosine distance is monotonic
+    in Euclidean distance on L2-normalised vectors).
+    """
+
+    import numpy as np
+    from sklearn.cluster import DBSCAN
+
+    from photo_atlas.faces import l2_normalize
+
+    rng = np.random.default_rng(0)
+    # Three tight blobs in 16-D plus a few outliers -> a non-trivial partition.
+    centers = rng.normal(size=(3, 16))
+    embs = []
+    for c in centers:
+        for _ in range(20):
+            embs.append(c + 0.02 * rng.normal(size=16))
+    embs.extend(rng.normal(size=16) for _ in range(5))  # noise
+
+    eps = 0.3
+    got = faces.cluster_embeddings(embs, eps=eps, min_samples=3)
+
+    # Reference: the previous implementation (dense precomputed cosine matrix).
+    matrix = np.vstack([l2_normalize(e) for e in embs])
+    distance = 1.0 - np.clip(matrix @ matrix.T, -1.0, 1.0)
+    np.fill_diagonal(distance, 0.0)
+    ref_labels = DBSCAN(eps=eps, min_samples=3, metric="precomputed").fit_predict(distance)
+    ref = [int(x) for x in ref_labels]
+
+    def partition(labels):
+        noise = frozenset(i for i, lab in enumerate(labels) if lab < 0)
+        by_label: dict[int, set] = {}
+        for i, lab in enumerate(labels):
+            if lab >= 0:
+                by_label.setdefault(lab, set()).add(i)
+        return frozenset(frozenset(s) for s in by_label.values()), noise
+
+    assert partition(got) == partition(ref)
+
+
 def test_best_person_match_respects_threshold():
     centroids = {1: np.array([1.0, 0.0]), 2: np.array([0.0, 1.0])}
     probe = np.array([0.99, 0.01])

@@ -8,9 +8,19 @@ impact, not by area.
 Legend: **P0** = breaks at scale (OOM / unusable) · **P1** = large, easy win ·
 **P2** = worth doing · **P3** = minor / polish.
 
+> **Status (2026-06-15).** The P0/P1 set plus the two P2 indexes, lazy map
+> popups and the `list_persons` N+1 are now **implemented** on this branch — see
+> the ✅ markers below. The remaining open items (facet consolidation / client
+> cache, trimming `scene_scores` from the grid payload) are noted as future work.
+
 ---
 
-## P0 — Clustering builds a dense O(n²) distance matrix (will OOM)
+## P0 ✅ — Clustering builds a dense O(n²) distance matrix (will OOM)
+
+**Fixed:** `cluster_embeddings` now clusters with `metric="euclidean"`,
+`algorithm="ball_tree"` and `eps' = sqrt(2·eps)`, which yields the identical
+partition (regression-tested in `test_cluster_embeddings_matches_precomputed_cosine_partition`)
+without the dense matrix. Original analysis below.
 
 `faces.cluster_embeddings` (`src/photo_atlas/faces.py:326-333`):
 
@@ -43,7 +53,11 @@ swap alone removes the OOM.
 
 ---
 
-## P1 — Every HTTP request re-creates the schema
+## P1 ✅ — Every HTTP request re-creates the schema
+
+**Fixed:** `db.connect` gained `ensure_schema: bool = True`; `create_app` creates
+the schema once at startup and request connections use `ensure_schema=False`, so
+the DDL no longer runs on every call. Original analysis below.
 
 `get_conn` (`api.py:50`) calls `db.connect` per request, and `db.connect`
 (`db.py:95-109`) runs on **every** call:
@@ -67,7 +81,11 @@ p50 latency for every interaction.
 
 ---
 
-## P1 — `SELECT DISTINCT p.*` on every photo query
+## P1 ✅ — `SELECT DISTINCT p.*` on every photo query
+
+**Fixed:** the person filter is now an `EXISTS` subquery (one row per photo), so
+`_where` returns no join and `search_photos` dropped `DISTINCT`/`COUNT(DISTINCT)`
+entirely. Original analysis below.
 
 `search_photos` (`search.py:122-128`) always uses `DISTINCT`:
 
@@ -91,7 +109,11 @@ including the `scene_scores` JSON text — a full hash/sort of wide rows per pag
 
 ---
 
-## P1 — `COUNT(DISTINCT)` recomputed on every infinite-scroll page
+## P1 ✅ — count recomputed on every infinite-scroll page
+
+**Fixed:** `search_photos(..., count=False)` skips the count; the API passes
+`count=(offset == 0)` and returns `total: null` on later pages, and the client
+keeps its first-page total. Original analysis below.
 
 `total` is page-invariant, but `search_photos` recomputes the full
 `COUNT(DISTINCT p.id)` for **each** page the grid pulls (`renderPhotos`,
@@ -104,7 +126,10 @@ from the first page (it already stores `state.total`, `app.js:429`). Or return
 
 ---
 
-## P2 — Missing indexes for two real query patterns
+## P2 ✅ — Missing indexes for two real query patterns
+
+**Fixed:** added `idx_photos_indexed (indexed_at)` and `idx_photos_camera
+(camera_model)` to the schema. Original analysis below.
 
 Schema indexes (`db.py:70-77`) cover `taken_at`, `scene_type`, country, city,
 folder and the face FKs — but not:
@@ -146,7 +171,10 @@ single-photo detail endpoint.
 
 ---
 
-## P2 — Map builds 50k marker popups eagerly
+## P2 ✅ — Map builds 50k marker popups eagerly
+
+**Fixed:** `renderMap` now binds the popup via a factory function, so the popup
+`<div>` is built only when a marker is clicked. Original analysis below.
 
 `renderMap` (`app.js:626-636`) iterates up to `map_point_limit` (50k) points and,
 for **every** one, constructs an `L.marker` *and* a detached popup `<div>` with an
@@ -162,9 +190,9 @@ cost; the eager popups are not.
 
 ## P3 — Smaller items
 
-- **`list_persons` N+1** (`library.py:22-31`): one extra `SELECT ... LIMIT 1` per
-  person without a pinned cover. Fold into the main query with a correlated
-  subquery or a `GROUP BY` min(face id).
+- **`list_persons` N+1** (`library.py`) ✅ — folded the cover-face fallback into
+  the main aggregate query via a correlated subquery, so it no longer fires one
+  extra `SELECT` per cover-less person.
 - **Serial indexing commits per file** (`indexer.py`, the `workers<=1` branch):
   fine for the demo, but the parallel path's batched commit (every 64) is the
   pattern to copy if the serial path is ever used at scale.
@@ -176,15 +204,24 @@ cost; the eager popups are not.
 
 ---
 
-## Suggested order of work
+## Status of the work
 
-1. **P0 clustering metric swap** — removes the OOM; ~5-line change + a memory/
-   correctness test on a synthetic embedding set.
-2. **P1 schema-once + connection reuse** — biggest UI latency win, low risk.
-3. **P1 conditional `DISTINCT` / `EXISTS`** + **skip count after page 0**.
-4. **P2 indexes** (`indexed_at`, `camera_model`) — trivial migrations.
-5. **P2 lazy map popups** + **explicit grid column list**.
-6. **P2 facet consolidation / client cache**, **P3 cleanups** as polish.
+Done on this branch:
 
-Items 1–4 are the high-leverage set: they turn `cluster` from "OOMs" into
+1. ✅ **P0 clustering metric swap** — removes the OOM (partition regression-tested).
+2. ✅ **P1 schema-once** — request connections skip the DDL.
+3. ✅ **P1 `EXISTS` instead of `JOIN`+`DISTINCT`** + **skip count after page 0**.
+4. ✅ **P2 indexes** (`indexed_at`, `camera_model`).
+5. ✅ **P2 lazy map popups**; ✅ **P3 `list_persons` N+1**.
+
+Still open (future work):
+
+- **P2 trim `scene_scores` from the `/api/photos` grid payload** (kept on the
+  single-photo detail). Low risk but touches the row-shape several tests assert
+  on, so deferred to its own change.
+- **P2 facet consolidation / client-side facet cache** — the sidebar still issues
+  ~11 aggregations per filter change; correct and acceptable at 27k, but the
+  largest remaining per-interaction cost.
+
+Items 1–4 were the high-leverage set: they turn `cluster` from "OOMs" into
 "works", and cut the per-interaction DB cost of the web UI substantially.

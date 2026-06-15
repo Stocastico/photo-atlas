@@ -47,8 +47,12 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
     config = (config or AtlasConfig()).ensure_dirs()
     app = FastAPI(title="Photo Atlas", version="0.1.0")
 
+    # Create / migrate the schema once, here, so the per-request connections below
+    # can skip the (idempotent but not free) DDL script on every single call.
+    db.connect(config.db_path).close()
+
     def get_conn() -> Iterator[sqlite3.Connection]:
-        conn = db.connect(config.db_path)
+        conn = db.connect(config.db_path, ensure_schema=False)
         try:
             yield conn
         finally:
@@ -101,8 +105,15 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "date_to": date_to, "camera": camera, "has_faces": has_faces,
             "q": q, "sort": sort,
         }
-        rows, total = search.search_photos(conn, filters, limit=limit, offset=offset)
-        return {"total": total, "count": len(rows), "offset": offset, "photos": rows}
+        # ``total`` is page-invariant, so only count on the first page; later
+        # infinite-scroll pages send ``total: null`` and the client keeps its copy.
+        rows, total = search.search_photos(
+            conn, filters, limit=limit, offset=offset, count=(offset == 0)
+        )
+        return {
+            "total": total if total >= 0 else None,
+            "count": len(rows), "offset": offset, "photos": rows,
+        }
 
     @app.get("/api/map")
     def api_map(

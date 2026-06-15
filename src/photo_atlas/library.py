@@ -12,24 +12,22 @@ from . import db
 
 
 def list_persons(conn: sqlite3.Connection) -> list[dict]:
+    # The cover face falls back to the person's first crop when none is pinned.
+    # A correlated subquery resolves that in the single aggregate query instead
+    # of firing one extra SELECT per cover-less person (an N+1 on big libraries).
     rows = conn.execute(
-        "SELECT pr.id, pr.name, pr.cover_face_id, COUNT(f.id) AS face_count, "
+        "SELECT pr.id, pr.name, "
+        "       COALESCE(pr.cover_face_id, ("
+        "           SELECT f2.id FROM faces f2 "
+        "           WHERE f2.person_id = pr.id AND f2.crop_path IS NOT NULL "
+        "           ORDER BY f2.id LIMIT 1"
+        "       )) AS cover_face_id, "
+        "       COUNT(f.id) AS face_count, "
         "       COUNT(DISTINCT f.photo_id) AS photo_count "
         "FROM persons pr LEFT JOIN faces f ON f.person_id = pr.id "
         "GROUP BY pr.id ORDER BY pr.name COLLATE NOCASE"
     ).fetchall()
-    result = []
-    for r in rows:
-        person = dict(r)
-        cover = person.get("cover_face_id")
-        if not cover:
-            top = conn.execute(
-                "SELECT id FROM faces WHERE person_id=? AND crop_path IS NOT NULL LIMIT 1",
-                (person["id"],),
-            ).fetchone()
-            person["cover_face_id"] = top["id"] if top else None
-        result.append(person)
-    return result
+    return [dict(r) for r in rows]
 
 
 def rename_person(conn: sqlite3.Connection, person_id: int, name: str) -> None:

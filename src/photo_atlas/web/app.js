@@ -426,10 +426,12 @@ async function renderPhotos(reset = true) {
   }
 
   state.photos = state.photos.concat(data.photos);
-  state.total = data.total;
+  // Only the first page carries a total (later pages send null to skip the
+  // server-side COUNT); keep the previously known total across those pages.
+  if (data.total != null) state.total = data.total;
   state.offset += data.photos.length;
 
-  $("#result-count").textContent = `${data.total} result${data.total === 1 ? "" : "s"}`;
+  $("#result-count").textContent = `${state.total} result${state.total === 1 ? "" : "s"}`;
   // Distinguish a genuinely empty library (first-run onboarding) from a filter
   // that simply matched nothing.
   const empty = state.photos.length === 0;
@@ -626,12 +628,18 @@ async function renderMap() {
   for (const pt of data.points) {
     if (pt.lat == null || pt.lon == null) continue;
     const marker = L.marker([pt.lat, pt.lon]);
-    const pop = document.createElement("div");
-    pop.className = "map-pop";
-    pop.innerHTML = `<img src="/api/thumb/${pt.id}" alt="" loading="lazy" />
-      <div class="cap">${esc(String(pt.year || ""))} · open ↗</div>`;
-    pop.onclick = () => openPhotoById(pt.id);
-    marker.bindPopup(pop);
+    // Build the popup (a thumbnail + caption) lazily, only when the marker is
+    // actually clicked. With up to map_point_limit (50k) markers, eagerly
+    // creating a DOM subtree per point would hold tens of thousands of unused
+    // nodes in memory; at most one popup is ever open.
+    marker.bindPopup(() => {
+      const pop = document.createElement("div");
+      pop.className = "map-pop";
+      pop.innerHTML = `<img src="/api/thumb/${pt.id}" alt="" loading="lazy" />
+        <div class="cap">${esc(String(pt.year || ""))} · open ↗</div>`;
+      pop.onclick = () => openPhotoById(pt.id);
+      return pop;
+    });
     _markers.addLayer(marker);
     bounds.push([pt.lat, pt.lon]);
   }
