@@ -52,7 +52,8 @@ def _cmd_index(args) -> int:
     print()
     print(
         f"Done: {stats.indexed} indexed, {stats.skipped} skipped, "
-        f"{stats.failed} failed, {stats.faces} faces ({stats.recognized} auto-recognized)."
+        f"{stats.duplicates} duplicate(s), {stats.failed} failed, "
+        f"{stats.faces} faces ({stats.recognized} auto-recognized)."
     )
     if stats.videos:
         print(

@@ -59,6 +59,29 @@ def test_videos_are_counted_but_not_indexed(tmp_path):
     assert rows == ["photo.jpg"]         # videos never entered the catalog
 
 
+def test_identical_files_are_deduplicated_by_sha1(tmp_path):
+    import shutil
+
+    from PIL import Image
+
+    from photo_atlas import db
+
+    a = tmp_path / "a.jpg"
+    Image.new("RGB", (16, 16), (123, 50, 200)).save(a, "JPEG")
+    shutil.copyfile(a, tmp_path / "b.jpg")   # byte-identical copy -> same sha1
+
+    cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    stats = indexer.index_path(cfg, tmp_path, backend_name="none", geocode=False)
+
+    assert stats.indexed == 1
+    assert stats.duplicates == 1
+    conn = db.connect(cfg.db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
 def test_corrupt_image_is_counted_as_failed_with_diagnostics(tmp_path, capsys):
     cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
     bad = tmp_path / "broken.jpg"  # supported suffix, but not a real image

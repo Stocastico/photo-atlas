@@ -60,6 +60,9 @@ class IndexStats:
     #: Video files seen during the walk. Not indexed (no still-image pipeline),
     #: but counted so they're reported instead of silently dropped.
     videos: int = 0
+    #: Files skipped because a byte-identical copy (same SHA-1) was already
+    #: indexed under a different path.
+    duplicates: int = 0
     #: First few "<path>: <error>" strings for files that failed to index, so a
     #: bad file is diagnosable instead of vanishing into the ``failed`` count.
     #: Capped (see ``_MAX_ERRORS``) to stay bounded on huge libraries.
@@ -112,11 +115,13 @@ def index_file(
     tagger: SceneTagger,
     centroids: dict[int, np.ndarray] | None = None,
     stats: IndexStats | None = None,
+    sha1: str | None = None,
 ) -> int:
     """Index a single image file and return its photo id."""
 
     path = Path(path)
-    sha1 = sha1_of(path)
+    if sha1 is None:
+        sha1 = sha1_of(path)
 
     # Decode the file exactly once and reuse the single Pillow image across
     # metadata, faces, thumbnail and scene tagging (was 4+ decodes per file).
@@ -301,6 +306,10 @@ def index_path(
         existing = {
             r["path"] for r in conn.execute("SELECT path FROM photos").fetchall()
         }
+        seen_sha1 = {
+            r["sha1"]
+            for r in conn.execute("SELECT sha1 FROM photos WHERE sha1 IS NOT NULL")
+        }
         # Never ingest our own generated derivatives (thumbs / face crops /
         # previews / models) if a library dir happens to sit inside the indexed
         # tree. Scoped to those dirs so e.g. the demo's photos under home still index.
@@ -322,11 +331,18 @@ def index_path(
                 stats.skipped += 1
                 continue
             try:
+                sha1 = sha1_of(path)
+                # A byte-identical copy already in the catalog (same photo in two
+                # folders, a re-export, etc.) is skipped rather than duplicated.
+                if not recompute and sha1 in seen_sha1:
+                    stats.duplicates += 1
+                    continue
                 index_file(
                     conn, config, path,
                     backend=backend, geocoder=geocoder, tagger=tagger,
-                    centroids=centroids, stats=stats,
+                    centroids=centroids, stats=stats, sha1=sha1,
                 )
+                seen_sha1.add(sha1)
                 stats.indexed += 1
                 conn.commit()
             except Exception as exc:
