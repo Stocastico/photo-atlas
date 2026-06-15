@@ -123,7 +123,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "city": city, "place": place, "year": year, "date_from": date_from,
             "date_to": date_to, "camera": camera, "has_faces": has_faces, "q": q,
         }
-        return {"points": search.map_points(conn, filters)}
+        return {"points": search.map_points(conn, filters, limit=config.map_point_limit)}
 
     @app.get("/api/photos/{photo_id}")
     def api_photo(photo_id: int, conn: sqlite3.Connection = Depends(get_conn)):

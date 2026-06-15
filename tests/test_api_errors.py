@@ -62,6 +62,17 @@ def test_map_endpoint_respects_filters(client):
     assert data["points"] == []
 
 
+def test_map_endpoint_caps_at_configured_limit(indexed):
+    from fastapi.testclient import TestClient
+
+    from photo_atlas.api import create_app
+
+    indexed.map_point_limit = 5  # AtlasConfig is a mutable dataclass
+    client = TestClient(create_app(indexed))
+    data = client.get("/api/map").json()
+    assert len(data["points"]) == 5  # the 20 geotagged demo photos are capped
+
+
 # -- validation / mutation error branches ----------------------------------
 def test_rename_empty_name_is_400(client, person_id):
     assert client.patch(f"/api/persons/{person_id}", json={"name": "   "}).status_code == 400
