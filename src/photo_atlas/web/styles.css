@@ -82,6 +82,18 @@ main { padding: 18px 20px 60px; min-height: calc(100vh - 58px); }
 .row input { flex: 1; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 6px 8px; border-radius: 6px; }
 button.primary { background: var(--accent); color: #fff; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
 button.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+button.ghost.danger:hover { border-color: #c93c3c; color: #ff8585; }
+button.icon { padding: 6px 9px; line-height: 1; }
+/* person card management panel */
+.person-card .row { justify-content: center; flex-wrap: wrap; }
+.rename-box { margin-top: 8px; }
+.rename-box input { flex: 1; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 6px 8px; border-radius: 6px; }
+.person-panel { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; text-align: left; }
+.person-panel select { flex: 1; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
+.cover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(46px, 1fr)); gap: 6px; max-height: 180px; overflow-y: auto; }
+.cover-grid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; cursor: pointer; border: 2px solid transparent; }
+.cover-grid img:hover { border-color: var(--muted); }
+.cover-grid img.selected { border-color: var(--accent); }
 .empty { color: var(--muted); text-align: center; padding: 60px 0; }
 .loading { color: var(--muted); text-align: center; padding: 24px 0; font-size: 13px; }
 /* active filter pills */

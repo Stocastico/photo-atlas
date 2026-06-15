@@ -75,11 +75,16 @@ responsive/mobile work is intentionally deprioritised.
   loaded photo should trigger the next page load instead of stopping.
 
 ### People / management
-- [ ] **Rename in the People page.** `PATCH /api/persons/{id}` exists but the UI
-  only offers View/Delete — add inline rename.
-- [ ] **Merge people** (two clusters of the same person) and **reassign a face**
-  to a different/again-unknown person from the lightbox.
-- [ ] **Person cover photo picker.**
+- [x] **Rename in the People page.** Each person card has an inline **Rename**
+  (Enter saves, Esc cancels) backed by `PATCH /api/persons/{id}`.
+- [x] **Merge people** (two clusters of the same person) and **reassign a face**
+  to a different/again-unknown person from the lightbox. A card's **Merge**
+  control folds it into another person (`POST /api/persons/{id}/merge`); in the
+  lightbox, typing a name reassigns a face and a **✕** sends it back to unknown
+  (`POST /api/faces/{id}/unassign`).
+- [x] **Person cover photo picker.** The **Cover** control lists the person's
+  face crops (`GET /api/persons/{id}/faces`) and pins the chosen one
+  (`PUT /api/persons/{id}/cover`).
 
 ### Robustness & polish
 - [ ] **Error states.** `api()` assumes JSON; a failed request currently breaks
