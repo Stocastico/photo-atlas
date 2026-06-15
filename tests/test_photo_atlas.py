@@ -127,9 +127,10 @@ def test_cosine_distance_and_match():
     c = np.array([0.0, 1.0, 0.0], dtype=np.float32)
     assert faces.cosine_distance(a, b) < 1e-6
     assert faces.cosine_distance(a, c) > 0.9
-    pid, conf = faces.best_person_match(a, {7: b, 9: c}, threshold=0.5)
+    enrollment = faces.Enrollment.from_pairs([(7, b), (9, c)])
+    pid, conf = faces.knn_person_match(a, enrollment, k=1, threshold=0.5)
     assert pid == 7 and conf > 0.9
-    pid, _ = faces.best_person_match(a, {9: c}, threshold=0.5)
+    pid, _ = faces.knn_person_match(a, faces.Enrollment.from_pairs([(9, c)]), k=1, threshold=0.5)
     assert pid is None
 
 
@@ -572,6 +573,14 @@ def test_api_endpoints(indexed):
     # has_faces toggle and the inclusive date range round-trip over HTTP.
     hf = client.get("/api/photos", params={"has_faces": "true"}).json()
     assert hf["total"] == facets["with_faces"]
+
+    # Number-of-people and known-people buckets: each facet is present and every
+    # bucket's count matches what filtering by that bucket returns.
+    for facet_key, param in (("people", "people"), ("known", "known")):
+        assert facets[facet_key]
+        for bucket in facets[facet_key]:
+            got = client.get("/api/photos", params={param: bucket["value"]}).json()
+            assert got["total"] == bucket["count"]
     dated = client.get(
         "/api/photos", params={"date_from": facets["date_min"], "date_to": facets["date_max"]}
     ).json()

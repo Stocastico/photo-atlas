@@ -83,14 +83,72 @@ def test_cluster_embeddings_matches_precomputed_cosine_partition():
     assert partition(got) == partition(ref)
 
 
-def test_best_person_match_respects_threshold():
-    centroids = {1: np.array([1.0, 0.0]), 2: np.array([0.0, 1.0])}
-    probe = np.array([0.99, 0.01])
-    pid, conf = faces.best_person_match(probe, centroids, threshold=0.5)
+def _enroll(*pairs):
+    return faces.Enrollment.from_pairs([(pid, np.asarray(v, dtype=np.float32)) for pid, v in pairs])
+
+
+def test_enrollment_from_pairs_shapes_and_empty():
+    empty = faces.Enrollment.from_pairs([])
+    assert empty.is_empty and empty.person_ids.size == 0
+    e = _enroll((1, [1.0, 0.0]), (2, [0.0, 1.0]))
+    assert not e.is_empty
+    assert e.embeddings.shape == (2, 2)
+    assert list(e.person_ids) == [1, 2]
+    # Vectors are stored L2-normalised.
+    norms = np.linalg.norm(e.embeddings, axis=1)
+    assert np.allclose(norms, 1.0)
+
+
+def test_knn_empty_enrollment_returns_none():
+    pid, conf = faces.knn_person_match(np.array([1.0, 0.0]), faces.Enrollment.from_pairs([]))
+    assert pid is None and conf == 0.0
+
+
+def test_knn_matches_nearest_within_threshold():
+    e = _enroll((1, [1.0, 0.0]), (2, [0.0, 1.0]))
+    pid, conf = faces.knn_person_match(np.array([0.99, 0.01]), e, k=1, threshold=0.5)
     assert pid == 1 and conf > 0.5
-    # Orthogonal probe is beyond threshold -> no match.
-    pid2, conf2 = faces.best_person_match(np.array([-1.0, 0.0]), centroids, 0.5)
+    # Orthogonal probe is beyond threshold for either person -> no match.
+    pid2, conf2 = faces.knn_person_match(np.array([-1.0, 0.0]), e, k=1, threshold=0.5)
     assert pid2 is None and conf2 == 0.0
+
+
+def test_knn_majority_vote_beats_a_single_closer_outlier():
+    # Three enrolled faces near the probe: two of person 1, one (slightly closer)
+    # of person 2. Majority vote picks person 1 despite person 2's nearest face.
+    e = _enroll(
+        (2, [1.0, 0.02, 0.0]),     # closest single neighbour
+        (1, [1.0, 0.05, 0.0]),
+        (1, [1.0, 0.06, 0.0]),
+    )
+    probe = np.array([1.0, 0.0, 0.0])
+    pid, conf = faces.knn_person_match(probe, e, k=3, threshold=0.5)
+    assert pid == 1 and conf > 0.0
+
+
+def test_knn_is_robust_where_a_centroid_would_fail():
+    # Person 1 enrolled twice at opposite ends of a wide arc (look drifted over
+    # years). Their *average* (centroid) lands near the origin -> far from either
+    # real face, so a centroid match would miss a probe sitting on one end. k-NN
+    # to the nearest individual face still recognises it.
+    a = np.array([1.0, 0.0], dtype=np.float32)
+    b = np.array([0.0, 1.0], dtype=np.float32)
+    centroid = (a + b) / 2.0
+    probe = np.array([0.99, 0.02], dtype=np.float32)
+
+    # The centroid is past threshold from the probe...
+    assert faces.cosine_distance(probe, centroid) > 0.25
+    # ...but k-NN against the enrolled faces recognises person 1.
+    e = _enroll((1, a), (1, b))
+    pid, _ = faces.knn_person_match(probe, e, k=2, threshold=0.25)
+    assert pid == 1
+
+
+def test_knn_tie_breaks_on_smaller_mean_distance():
+    # One vote each within k=2; person 1's neighbour is nearer, so it wins the tie.
+    e = _enroll((1, [1.0, 0.01, 0.0]), (2, [1.0, 0.20, 0.0]))
+    pid, _ = faces.knn_person_match(np.array([1.0, 0.0, 0.0]), e, k=2, threshold=0.5)
+    assert pid == 1
 
 
 def test_get_backend_none_and_synthetic():

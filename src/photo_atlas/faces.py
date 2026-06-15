@@ -342,17 +342,77 @@ def cluster_embeddings(
     return [int(x) for x in labels]
 
 
-def best_person_match(
-    embedding: np.ndarray, centroids: dict[int, np.ndarray], threshold: float
+@dataclass
+class Enrollment:
+    """Named (enrolled) faces available for k-NN recognition.
+
+    ``embeddings`` is an ``(n, d)`` float32 matrix of L2-normalised face vectors
+    and ``person_ids`` the parallel ``(n,)`` array of their owning person ids.
+    Built once per index run from the catalog's already-named faces and treated
+    as read-only, so it is cheap to ship to worker processes.
+    """
+
+    embeddings: np.ndarray
+    person_ids: np.ndarray
+
+    @property
+    def is_empty(self) -> bool:
+        return int(self.person_ids.size) == 0
+
+    @classmethod
+    def from_pairs(cls, pairs: list[tuple[int, np.ndarray]]) -> Enrollment:
+        """Build an enrollment from ``(person_id, embedding)`` pairs."""
+
+        if not pairs:
+            return cls(np.empty((0, 0), dtype=np.float32), np.empty((0,), dtype=np.int64))
+        ids = np.array([pid for pid, _ in pairs], dtype=np.int64)
+        matrix = np.vstack([l2_normalize(vec) for _, vec in pairs]).astype(np.float32)
+        return cls(matrix, ids)
+
+
+def knn_person_match(
+    embedding: np.ndarray,
+    enrollment: Enrollment,
+    *,
+    k: int = 5,
+    threshold: float = 0.5,
 ) -> tuple[int | None, float]:
-    """Find the closest person centroid within ``threshold`` cosine distance."""
+    """Recognise a probe face by majority vote over its k nearest enrolled faces.
+
+    More robust than a single per-person centroid when a person's look drifts over
+    years (child→adult, beards, glasses): comparing against the *nearest individual*
+    enrolled faces tolerates that spread instead of averaging it away (a far-apart
+    pair of enrolments would pull a centroid into the empty space between them).
+
+    Only neighbours within ``threshold`` cosine distance get a vote; the winner is
+    the person with the most votes among the ``k`` nearest, ties broken by the
+    smaller mean distance. Returns ``(person_id | None, confidence)`` where
+    confidence is ``1 - mean distance`` to the winning person's voting neighbours.
+    """
+
+    if enrollment.is_empty:
+        return None, 0.0
+    probe = l2_normalize(embedding)
+    # cosine distance = 1 - cosine similarity; all vectors are unit norm.
+    dists = 1.0 - (enrollment.embeddings @ probe)
+    within = np.where(dists <= threshold)[0]
+    if within.size == 0:
+        return None, 0.0
+
+    # The k nearest neighbours that fall within the threshold.
+    nn = within[np.argsort(dists[within], kind="stable")][:k]
+    nn_ids = enrollment.person_ids[nn]
+    nn_dists = dists[nn]
 
     best_id: int | None = None
-    best_dist = threshold
-    for person_id, centroid in centroids.items():
-        dist = cosine_distance(embedding, centroid)
-        if dist <= best_dist:
-            best_dist = dist
-            best_id = person_id
-    confidence = max(0.0, 1.0 - best_dist) if best_id is not None else 0.0
+    best_votes = 0
+    best_mean = float("inf")
+    for pid in np.unique(nn_ids):
+        mask = nn_ids == pid
+        votes = int(mask.sum())
+        mean_d = float(nn_dists[mask].mean())
+        if votes > best_votes or (votes == best_votes and mean_d < best_mean):
+            best_votes, best_mean, best_id = votes, mean_d, int(pid)
+
+    confidence = max(0.0, 1.0 - best_mean) if best_id is not None else 0.0
     return best_id, confidence

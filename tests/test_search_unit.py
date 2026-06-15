@@ -42,6 +42,22 @@ def test_where_person_id_builds_exists_clause():
     assert params == [3, 7]
 
 
+def test_where_person_mode_all_builds_one_exists_per_person():
+    where, params = _where({"person_id": [3, 7], "person_mode": "all"})
+    # Two AND-ed EXISTS subqueries, each matching a single required person.
+    assert where.count("EXISTS (SELECT 1 FROM faces ef") == 2
+    assert "ef.person_id = ?" in where and "IN (" not in where
+    assert " AND " in where
+    assert params == [3, 7]
+
+
+def test_where_person_mode_any_is_the_default_in_clause():
+    where, params = _where({"person_id": [3, 7]})
+    assert "ef.person_id IN (?, ?)" in where
+    assert where.count("EXISTS (SELECT 1 FROM faces ef") == 1
+    assert params == [3, 7]
+
+
 def test_where_camera_is_exact_in():
     # Camera is matched exactly (whole camera_model values from the facet), so
     # the chip count matches the result count even for substring-overlapping names.
@@ -77,6 +93,27 @@ def test_where_q_spans_all_text_columns():
 def test_where_combines_across_facets_with_and():
     where, _params = _where({"scene": "food", "country": "Italy"})
     assert " AND " in where
+
+
+def test_where_people_buckets_build_or_of_literal_predicates():
+    where, params = _where({"people": ["1", "5+"]})
+    assert "p.face_count = 1" in where
+    assert "p.face_count >= 5" in where
+    assert " OR " in where
+    assert params == []  # bucket predicates are literal, not bound params
+
+
+def test_where_people_ignores_unknown_bucket():
+    where, params = _where({"people": ["bogus", ""]})
+    assert where == "" and params == []
+
+
+def test_where_known_people_buckets_use_named_face_subquery():
+    where, params = _where({"known": ["0", "2+"]})
+    assert "person_id IS NOT NULL" in where
+    assert " = 0" in where and " >= 2" in where
+    assert " OR " in where
+    assert params == []  # bucket predicates are literal
 
 
 def test_order_by_falls_back_to_newest():

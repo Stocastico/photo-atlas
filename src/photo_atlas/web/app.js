@@ -23,7 +23,15 @@ const BUFFER_ROWS = 4;    // rows rendered above/below the viewport
 const FILTER_NAMES = {
   person_id: "Person", scene: "Scene", country: "Country", city: "City",
   place: "Place", year: "Year", camera: "Camera", q: "Search",
-  date_from: "From", date_to: "To",
+  date_from: "From", date_to: "To", people: "People", known: "Known",
+};
+// Friendly labels for the number-of-people buckets (tokens come from the API).
+const PEOPLE_LABELS = {
+  "0": "No people", "1": "1 (portrait)", "2-4": "2–4", "5+": "5+",
+};
+// Friendly labels for the number-of-known-(named)-people buckets.
+const KNOWN_LABELS = {
+  "0": "None identified", "1": "1 identified", "2+": "2+ identified",
 };
 const FACET_CAP = 14;
 
@@ -142,7 +150,7 @@ function filterParams() {
 // ---- URL / history state --------------------------------------------------
 // Reflect filters + view + sort in the querystring so the back button undoes a
 // filter and a filtered view is shareable/bookmarkable.
-const SCALAR_FILTERS = new Set(["q", "date_from", "date_to"]);
+const SCALAR_FILTERS = new Set(["q", "date_from", "date_to", "person_mode"]);
 let restoringState = false;
 
 function buildQuery() {
@@ -181,6 +189,7 @@ function activeFilterPairs() {
   const pairs = [];
   for (const [k, v] of Object.entries(state.filters)) {
     if (v == null || v === "") continue;
+    if (k === "person_mode") continue; // a modifier on the person filter, not a value
     if (Array.isArray(v)) v.forEach((x) => (x != null && x !== "") && pairs.push([k, x]));
     else pairs.push([k, v]);
   }
@@ -251,6 +260,9 @@ async function renderSidebar() {
   side.appendChild(quick);
 
   section("People", f.persons, "person_id", (i) => `${i.name}`, (i) => i.id);
+  renderPeopleModeToggle(side);
+  section("Number of people", f.people, "people", (i) => PEOPLE_LABELS[i.value] || i.value);
+  section("Known people", f.known, "known", (i) => KNOWN_LABELS[i.value] || i.value);
   section("Scene", f.scenes, "scene");
   section("Country", f.countries, "country");
   section("City", f.cities, "city");
@@ -294,6 +306,26 @@ function dateSection(side, f) {
   side.appendChild(wrap);
 }
 
+// When 2+ people are selected, offer an any/all switch: "any" (default) matches
+// photos containing any of them, "all" only photos containing every one.
+function renderPeopleModeToggle(side) {
+  const sel = state.filters.person_id;
+  const count = Array.isArray(sel) ? sel.length : sel != null ? 1 : 0;
+  if (count < 2) return;
+  const all = state.filters.person_mode === "all";
+  const btn = document.createElement("button");
+  btn.className = "chip" + (all ? " active" : "");
+  btn.setAttribute("aria-pressed", all ? "true" : "false");
+  btn.textContent = all ? "Match: all of them" : "Match: any of them";
+  btn.title = "Toggle whether a photo must contain all selected people or any of them";
+  btn.onclick = () => {
+    if (state.filters.person_mode === "all") delete state.filters.person_mode;
+    else state.filters.person_mode = "all";
+    refresh();
+  };
+  side.appendChild(btn);
+}
+
 function clearAllFilters() {
   state.filters = {};
   $("#search").value = "";
@@ -306,6 +338,8 @@ function filterValueLabel(key, value) {
     const p = (state.facetData?.persons || []).find((x) => x.id == value);
     return p ? p.name : `#${value}`;
   }
+  if (key === "people") return PEOPLE_LABELS[value] || value;
+  if (key === "known") return KNOWN_LABELS[value] || value;
   return value;
 }
 

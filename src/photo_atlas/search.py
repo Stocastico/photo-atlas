@@ -56,21 +56,70 @@ def _like_escape(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# People-count buckets: token -> SQL predicate on ``p.face_count``. Shared by
+# the ``people`` filter and its facet so chip counts and results always agree.
+# "1" is a portrait; "2-4"/"5+" are groups of people. Predicates are literal
+# (no bound params), so they're safe to splice straight into the WHERE.
+PEOPLE_BUCKETS: list[tuple[str, str]] = [
+    ("0", "p.face_count = 0"),
+    ("1", "p.face_count = 1"),
+    ("2-4", "p.face_count BETWEEN 2 AND 4"),
+    ("5+", "p.face_count >= 5"),
+]
+_PEOPLE_PREDICATE = dict(PEOPLE_BUCKETS)
+
+# A single CASE mapping face_count -> bucket token, for the facet's GROUP BY.
+_PEOPLE_CASE = (
+    "CASE WHEN p.face_count = 0 THEN '0' "
+    "WHEN p.face_count = 1 THEN '1' "
+    "WHEN p.face_count BETWEEN 2 AND 4 THEN '2-4' ELSE '5+' END"
+)
+
+# Number of *known* (named) people in a photo: how many of its faces are assigned
+# to a person. Counted with a correlated subquery over faces (cheap via
+# idx_faces_photo). Buckets: nobody identified / one / two-or-more. A denormalised
+# ``named_face_count`` column would avoid the per-row subquery if this ever shows
+# on a hot path (see TODO).
+_KNOWN_SUBQ = (
+    "(SELECT COUNT(*) FROM faces kf WHERE kf.photo_id = p.id AND kf.person_id IS NOT NULL)"
+)
+KNOWN_BUCKETS: list[tuple[str, str]] = [
+    ("0", f"{_KNOWN_SUBQ} = 0"),
+    ("1", f"{_KNOWN_SUBQ} = 1"),
+    ("2+", f"{_KNOWN_SUBQ} >= 2"),
+]
+_KNOWN_PREDICATE = dict(KNOWN_BUCKETS)
+_KNOWN_CASE = (
+    f"CASE WHEN {_KNOWN_SUBQ} = 0 THEN '0' "
+    f"WHEN {_KNOWN_SUBQ} = 1 THEN '1' ELSE '2+' END"
+)
+
+
 def _where(filters: dict[str, Any]) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
 
     persons = _as_list(filters.get("person_id"))
     if persons:
-        placeholders = ", ".join(["?"] * len(persons))
-        # An EXISTS subquery (rather than a JOIN) keeps the result one row per
-        # photo, so callers never need a `DISTINCT` to undo a fan-out. The `ef`
-        # alias is local to the subquery and won't collide with any outer `f`.
-        clauses.append(
-            f"EXISTS (SELECT 1 FROM faces ef WHERE ef.photo_id = p.id "
-            f"AND ef.person_id IN ({placeholders}))"
-        )
-        params.extend(int(p) for p in persons)
+        # ``person_mode='all'`` requires every selected person to be present
+        # (one AND-ed EXISTS each); the default 'any' matches any of them (a
+        # single EXISTS over an IN). EXISTS keeps the result one row per photo,
+        # so callers never need a DISTINCT. The ``ef`` alias is local to each
+        # subquery and won't collide with any outer ``f``.
+        if filters.get("person_mode") == "all":
+            for pid in persons:
+                clauses.append(
+                    "EXISTS (SELECT 1 FROM faces ef "
+                    "WHERE ef.photo_id = p.id AND ef.person_id = ?)"
+                )
+                params.append(int(pid))
+        else:
+            placeholders = ", ".join(["?"] * len(persons))
+            clauses.append(
+                f"EXISTS (SELECT 1 FROM faces ef WHERE ef.photo_id = p.id "
+                f"AND ef.person_id IN ({placeholders}))"
+            )
+            params.extend(int(p) for p in persons)
 
     def add_in(column: str, key: str, cast=lambda v: v) -> None:
         values = _as_list(filters.get(key))
@@ -98,6 +147,22 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any]]:
         params.append(filters["date_to"])
     if filters.get("has_faces"):
         clauses.append("p.face_count > 0")
+    # Number-of-people buckets (OR within the facet); unknown tokens are ignored.
+    people = [
+        _PEOPLE_PREDICATE[b]
+        for b in _as_list(filters.get("people"))
+        if b in _PEOPLE_PREDICATE
+    ]
+    if people:
+        clauses.append("(" + " OR ".join(people) + ")")
+    # Number-of-known-(named)-people buckets (OR within the facet).
+    known = [
+        _KNOWN_PREDICATE[b]
+        for b in _as_list(filters.get("known"))
+        if b in _KNOWN_PREDICATE
+    ]
+    if known:
+        clauses.append("(" + " OR ".join(known) + ")")
     if filters.get("q"):
         like = f"%{_like_escape(str(filters['q']))}%"
         clauses.append(
@@ -247,6 +312,31 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
         sql = f"SELECT COUNT(*) FROM photos p{where}{glue}p.face_count > 0"
         return int(conn.execute(sql, params).fetchone()[0])
 
+    def people_facet() -> list[dict]:
+        # Number-of-people buckets (portrait = 1, group = 2+), in canonical order,
+        # filter-aware against the other dimensions but not the people bucket itself.
+        sub = {k: v for k, v in filters.items() if k != "people"}
+        where, params = _where(sub)
+        sql = f"SELECT {_PEOPLE_CASE} AS v, COUNT(*) AS c FROM photos p{where} GROUP BY v"
+        counts = {r["v"]: r["c"] for r in conn.execute(sql, params).fetchall()}
+        return [
+            {"value": tok, "count": counts[tok]}
+            for tok, _ in PEOPLE_BUCKETS
+            if counts.get(tok)
+        ]
+
+    def known_facet() -> list[dict]:
+        # Buckets by how many faces in a photo are assigned to a named person.
+        sub = {k: v for k, v in filters.items() if k != "known"}
+        where, params = _where(sub)
+        sql = f"SELECT {_KNOWN_CASE} AS v, COUNT(*) AS c FROM photos p{where} GROUP BY v"
+        counts = {r["v"]: r["c"] for r in conn.execute(sql, params).fetchall()}
+        return [
+            {"value": tok, "count": counts[tok]}
+            for tok, _ in KNOWN_BUCKETS
+            if counts.get(tok)
+        ]
+
     drow = conn.execute(
         "SELECT MIN(substr(taken_at,1,10)), MAX(substr(taken_at,1,10)) "
         "FROM photos WHERE taken_at IS NOT NULL"
@@ -262,6 +352,8 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
         "years": facet("substr(p.taken_at,1,4)", "year", order_by_value=True),
         "cameras": facet("p.camera_model", "camera"),
         "persons": person_facet(),
+        "people": people_facet(),
+        "known": known_facet(),
         "with_faces": with_faces_count(),
         "date_min": drow[0],
         "date_max": drow[1],
