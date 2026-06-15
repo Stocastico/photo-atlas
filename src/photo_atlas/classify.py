@@ -7,8 +7,8 @@ colour / brightness statistics plus the number of faces detected in the image.
 Categories: ``people``, ``landscape``, ``food``, ``document``, ``other``.
 
 The heuristic is deliberately simple and dependency-free (Pillow + numpy). For
-higher accuracy a trained ``image_classifications`` model or a CLIP zero-shot
-classifier can be plugged in later; the indexer only depends on the
+higher accuracy a trained classifier or a CLIP zero-shot model can be plugged in
+later; the indexer only depends on the
 ``tag(path, face_count) -> (label, scores)`` contract.
 """
 

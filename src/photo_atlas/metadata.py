@@ -16,6 +16,17 @@ from pathlib import Path
 from PIL import Image, ImageOps
 from PIL.ExifTags import GPSTAGS, TAGS
 
+# HEIC/HEIF (the default iPhone format) needs the optional ``pillow-heif``
+# plugin; register it when present so those files decode instead of failing.
+# Install with ``uv sync --extra heic`` (or ``pip install 'photo-atlas[heic]'``).
+try:  # pragma: no cover - depends on an optional dependency being installed
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+    _HEIF_AVAILABLE = True
+except Exception:  # pragma: no cover - plugin absent is the common case
+    _HEIF_AVAILABLE = False
+
 SUPPORTED_SUFFIXES = {
     ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".webp", ".heic",
 }
@@ -166,17 +177,6 @@ def make_thumbnail(path: Path, dest: Path, size: int = 320) -> Path:
     """Write an orientation-corrected JPEG thumbnail and return its path."""
 
     return _write_resized(path, dest, size, quality=82)
-
-
-def make_preview(path: Path, dest: Path, size: int = 1600) -> Path:
-    """Write a medium, screen-sized JPEG derivative for the lightbox.
-
-    Decoding a full 50 MP original costs ~200 MB of bitmap memory; flicking
-    through many via the lightbox arrows would spike memory badly. A bounded
-    preview keeps that flat while the true original stays a click away.
-    """
-
-    return _write_resized(path, dest, size, quality=88)
 
 
 def cached_resized(

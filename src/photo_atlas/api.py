@@ -103,6 +103,28 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         rows, total = search.search_photos(conn, filters, limit=limit, offset=offset)
         return {"total": total, "count": len(rows), "offset": offset, "photos": rows}
 
+    @app.get("/api/map")
+    def api_map(
+        conn: sqlite3.Connection = Depends(get_conn),
+        person_id: list[int] | None = Query(None),
+        scene: list[str] | None = Query(None),
+        country: list[str] | None = Query(None),
+        city: list[str] | None = Query(None),
+        place: list[str] | None = Query(None),
+        year: list[str] | None = Query(None),
+        date_from: str | None = None,
+        date_to: str | None = None,
+        camera: list[str] | None = Query(None),
+        has_faces: bool | None = None,
+        q: str | None = None,
+    ):
+        filters = {
+            "person_id": person_id, "scene": scene, "country": country,
+            "city": city, "place": place, "year": year, "date_from": date_from,
+            "date_to": date_to, "camera": camera, "has_faces": has_faces, "q": q,
+        }
+        return {"points": search.map_points(conn, filters)}
+
     @app.get("/api/photos/{photo_id}")
     def api_photo(photo_id: int, conn: sqlite3.Connection = Depends(get_conn)):
         photo = search.photo_detail(conn, photo_id)

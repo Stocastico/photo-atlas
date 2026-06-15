@@ -33,10 +33,13 @@ recognised automatically once a person has been named.
   used to fill in dates EXIF lacks (synthesised as `YYYY-MM-01`,
   `taken_source='folder'`) and to add a filterable **Place** facet. EXIF always
   wins; only dated folders (with a 4-digit year) are trusted.
-- **Web UI** — gallery with lazy thumbnails, a detail lightbox, a People page
-  and a "Name faces" workflow. No build step (vanilla JS).
+- **Web UI** — gallery with lazy thumbnails, a detail lightbox, an interactive
+  **map** of your geotagged photos, a People page and a "Name faces" workflow.
+  No build step (vanilla JS); Leaflet is vendored locally.
 - **Everything local** — a single SQLite catalog plus thumbnails/face crops
-  under `~/.photo_atlas`. Your photos never leave your machine.
+  under `~/.photo_atlas`. Your photos never leave your machine. (The map fetches
+  basemap tiles from OpenStreetMap, so that view needs network — but only tile
+  coordinates are requested; no photo or location data is uploaded.)
 
 ## Install
 
@@ -46,6 +49,7 @@ dependency management:
 ```bash
 uv sync                     # core app + test tooling into .venv (dev group)
 uv sync --extra geo         # + high-resolution offline reverse geocoding
+uv sync --extra heic        # + HEIC/HEIF decoding (default iPhone format)
 uv sync --extra dlib        # + face_recognition (dlib) backend (needs CMake/C++)
 uv run photo-atlas --help   # run the CLI inside the managed environment
 uv run pytest               # run the test suite
@@ -111,6 +115,7 @@ api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces)
 | --- | --- |
 | `GET /api/facets` | counts for the filter sidebar |
 | `GET /api/photos?person_id=&scene=&country=&city=&place=&year=&camera=&q=` | filtered list |
+| `GET /api/map?...` | geotagged `{id, lat, lon, year}` points for the map (same filters) |
 | `GET /api/photos/{id}` | photo detail + faces |
 | `GET /api/image\|preview\|thumb/{id}`, `GET /api/face/{id}` | media (preview = bounded lightbox derivative; `thumb?size=` for retina) |
 | `GET /api/persons`, `PATCH/DELETE /api/persons/{id}` | manage people |
@@ -124,6 +129,10 @@ api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces)
 uv run pytest                            # offline suite (deterministic, no network)
 uv run pytest tests/test_deep_faces.py   # deep YuNet/SFace test on real faces*
 ```
+
+The offline suite is deterministic, runs on every push/PR via GitHub Actions
+(Python 3.10–3.12) and enforces **≥80 % coverage** (`--cov-fail-under=80`); it
+currently sits near 98 %. A coverage summary prints after each run.
 
 \* downloads the models + a few public sample faces; **skips** (never fails)
 when offline. It asserts the deep model puts the same person far closer than two
@@ -147,6 +156,3 @@ different people, and that clustering groups repeat photos of one identity.
   `FaceBackend` (detection via its SCRFD + 512-d embeddings); `face_match_threshold`
   / `cluster_eps` would need re-tuning for the new embedding space. Ask if you'd
   like this wired in as an optional `[insightface]` extra.
-- The original `image_classifications` package (trainable scene classifier +
-  multi-label face service, FastAPI) is retained under `src/image_classifications`
-  and `scripts/`; Photo Atlas is the application built on top of those ideas.

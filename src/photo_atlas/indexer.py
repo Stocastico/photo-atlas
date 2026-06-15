@@ -16,9 +16,10 @@ clusters so the user can name a whole group at once.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -44,6 +45,13 @@ class IndexStats:
     failed: int = 0
     faces: int = 0
     recognized: int = 0
+    #: First few "<path>: <error>" strings for files that failed to index, so a
+    #: bad file is diagnosable instead of vanishing into the ``failed`` count.
+    #: Capped (see ``_MAX_ERRORS``) to stay bounded on huge libraries.
+    errors: list[str] = field(default_factory=list)
+
+
+_MAX_ERRORS = 50
 
 
 def _person_centroids(conn: sqlite3.Connection) -> dict[int, np.ndarray]:
@@ -179,14 +187,24 @@ def index_file(
 
 
 def iter_images(root: Path):
+    """Yield supported image files under ``root`` in a deterministic order.
+
+    Uses :func:`os.walk` and sorts each directory level in place rather than
+    materialising and sorting the *entire* tree up front, so memory stays flat
+    on very large libraries (years of folders, 100k+ files).
+    """
+
     root = Path(root)
     if root.is_file():
         if is_supported(root):
             yield root
         return
-    for path in sorted(root.rglob("*")):
-        if path.is_file() and is_supported(path):
-            yield path
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()  # deterministic descent into subfolders
+        for name in sorted(filenames):
+            path = Path(dirpath) / name
+            if is_supported(path):
+                yield path
 
 
 def index_path(
@@ -237,8 +255,10 @@ def index_path(
                 )
                 stats.indexed += 1
                 conn.commit()
-            except Exception:
+            except Exception as exc:
                 stats.failed += 1
+                if len(stats.errors) < _MAX_ERRORS:
+                    stats.errors.append(f"{path}: {type(exc).__name__}: {exc}")
             if progress is not None:
                 progress(path, stats)
         conn.commit()

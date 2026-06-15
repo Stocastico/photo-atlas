@@ -4,7 +4,7 @@
 // exercise the pure query (de)serialisation: buildQuery / applyQuery / syncURL.
 //
 // Run via ``node tests/js/url_state_harness.mjs`` (or the pytest wrapper in
-// ``tests/test_web_url_state.py``, which skips when Node isn't installed).
+// ``tests/test_web_js.py``, which skips when Node isn't installed).
 import fs from "fs";
 import path from "path";
 import url from "url";

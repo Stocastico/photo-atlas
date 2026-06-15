@@ -499,26 +499,11 @@ async function lightboxStep(delta) {
   openLightbox(i);
 }
 
-async function openLightbox(index) {
-  const wasOpen = $("#lightbox").classList.contains("open");
-  if (!wasOpen) state.lastFocus = document.activeElement;
-  state.lightboxIndex = index;
-  $("#lb-prev").disabled = index <= 0;
-  // "Next" stays enabled at the last loaded photo when more pages remain on the
-  // server, so the arrow can trigger the next load (see lightboxStep).
-  $("#lb-next").disabled = index >= state.photos.length - 1 && state.photos.length >= state.total;
-
-  const base = state.photos[index];
-  $("#lightbox").classList.add("open");
-  if (!wasOpen) $("#lb-close").focus();
-  const p = await api(`/api/photos/${base.id}`);
-  // Guard against a fast prev/next click landing on a different photo.
-  if (state.lightboxIndex !== index) return;
-
-  // The lightbox shows a bounded preview derivative (capped at the server's
-  // preview_size) so flicking through big originals doesn't spike memory; the
-  // true full-resolution file stays behind the "View full size" link.
-  $("#lb-img").src = `/api/preview/${base.id}`;
+// Render the detail side-panel (metadata + editable faces) for a photo. The
+// ``reopen`` thunk is how a face edit refreshes the panel in place — it differs
+// for grid (index-based) vs map (id-based) entry points.
+function renderLightboxSide(p, id, reopen) {
+  $("#lb-img").src = `/api/preview/${id}`;
   const side = $("#lb-side");
   const kv = (k, v) => (v ? `<div class="kv"><span>${k}</span><span>${esc(v)}</span></div>` : "");
   side.innerHTML = `
@@ -529,7 +514,7 @@ async function openLightbox(index) {
     ${kv("Camera", [p.camera_make, p.camera_model].filter(Boolean).join(" "))}
     ${kv("Size", p.width && p.height ? `${p.width}×${p.height}` : "")}
     ${kv("Coordinates", p.lat != null ? `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}` : "")}
-    <p class="lb-actions"><a href="/api/image/${base.id}" target="_blank" rel="noopener">View full size ↗</a></p>
+    <p class="lb-actions"><a href="/api/image/${id}" target="_blank" rel="noopener">View full size ↗</a></p>
     <h3 style="margin-top:16px">Faces (${p.faces.length})</h3>
     <div class="face-list" id="lb-faces"></div>`;
 
@@ -546,7 +531,7 @@ async function openLightbox(index) {
       <button class="primary">Save</button>
       ${face.person_id ? `<button class="ghost icon" data-act="clear" title="Reassign to unknown" aria-label="Reassign face to unknown">✕</button>` : ""}`;
     const input = item.querySelector("input");
-    const refresh = () => { renderSidebar(); openLightbox(index); };
+    const refresh = () => { renderSidebar(); reopen(); };
     item.querySelector('.primary').onclick = async () => {
       if (!input.value.trim()) return;
       await api(`/api/faces/${face.id}/assign`, {
@@ -563,6 +548,95 @@ async function openLightbox(index) {
     input.addEventListener("keydown", (e) => e.key === "Enter" && item.querySelector('.primary').click());
     list.appendChild(item);
   }
+}
+
+async function openLightbox(index) {
+  const wasOpen = $("#lightbox").classList.contains("open");
+  if (!wasOpen) state.lastFocus = document.activeElement;
+  state.lightboxIndex = index;
+  $("#lb-prev").disabled = index <= 0;
+  // "Next" stays enabled at the last loaded photo when more pages remain on the
+  // server, so the arrow can trigger the next load (see lightboxStep).
+  $("#lb-next").disabled = index >= state.photos.length - 1 && state.photos.length >= state.total;
+
+  const base = state.photos[index];
+  $("#lightbox").classList.add("open");
+  if (!wasOpen) $("#lb-close").focus();
+  const p = await api(`/api/photos/${base.id}`);
+  // Guard against a fast prev/next click landing on a different photo.
+  if (state.lightboxIndex !== index) return;
+  // Bounded preview derivative keeps memory flat while flicking; full original
+  // stays behind the "View full size" link (see renderLightboxSide).
+  renderLightboxSide(p, base.id, () => openLightbox(index));
+}
+
+// Open a single photo by id (used by map markers). There's no surrounding
+// result list to page through, so prev/next are disabled.
+async function openPhotoById(id) {
+  const wasOpen = $("#lightbox").classList.contains("open");
+  if (!wasOpen) state.lastFocus = document.activeElement;
+  state.lightboxIndex = null;
+  $("#lb-prev").disabled = true;
+  $("#lb-next").disabled = true;
+  $("#lightbox").classList.add("open");
+  if (!wasOpen) $("#lb-close").focus();
+  const p = await api(`/api/photos/${id}`);
+  if (!$("#lightbox").classList.contains("open")) return; // closed while loading
+  renderLightboxSide(p, id, () => openPhotoById(id));
+}
+
+// ---- map ------------------------------------------------------------------
+let _map = null, _markers = null, _leafletIcons = false;
+
+function ensureLeafletIcons() {
+  if (_leafletIcons || !window.L) return;
+  // Point Leaflet at the locally-vendored marker images (no CDN; offline-safe).
+  delete L.Icon.Default.prototype._getIconUrl;
+  L.Icon.Default.mergeOptions({
+    iconRetinaUrl: "/static/vendor/leaflet/images/marker-icon-2x.png",
+    iconUrl: "/static/vendor/leaflet/images/marker-icon.png",
+    shadowUrl: "/static/vendor/leaflet/images/marker-shadow.png",
+  });
+  _leafletIcons = true;
+}
+
+async function renderMap() {
+  if (!window.L) { toast("Map library failed to load."); return; }
+  ensureLeafletIcons();
+  if (!_map) {
+    _map = L.map("map", { worldCopyJump: true }).setView([20, 0], 2);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, attribution: "© OpenStreetMap contributors",
+    }).addTo(_map);
+  }
+  // The container was display:none until the tab opened; re-measure it.
+  setTimeout(() => _map && _map.invalidateSize(), 0);
+
+  let data;
+  try { data = await api("/api/map?" + filterParams().toString()); }
+  catch (e) { return; }
+
+  if (_markers) { _map.removeLayer(_markers); _markers = null; }
+  _markers = L.markerClusterGroup
+    ? L.markerClusterGroup({ chunkedLoading: true })
+    : L.layerGroup();
+
+  $("#map-empty").style.display = data.points.length ? "none" : "block";
+  const bounds = [];
+  for (const pt of data.points) {
+    if (pt.lat == null || pt.lon == null) continue;
+    const marker = L.marker([pt.lat, pt.lon]);
+    const pop = document.createElement("div");
+    pop.className = "map-pop";
+    pop.innerHTML = `<img src="/api/thumb/${pt.id}" alt="" loading="lazy" />
+      <div class="cap">${esc(String(pt.year || ""))} · open ↗</div>`;
+    pop.onclick = () => openPhotoById(pt.id);
+    marker.bindPopup(pop);
+    _markers.addLayer(marker);
+    bounds.push([pt.lat, pt.lon]);
+  }
+  _map.addLayer(_markers);
+  if (bounds.length) _map.fitBounds(bounds, { maxZoom: 12, padding: [30, 30] });
 }
 
 // ---- people ---------------------------------------------------------------
@@ -726,8 +800,14 @@ async function renderClusters() {
 // ---- view switching -------------------------------------------------------
 function setView(view) {
   state.view = view;
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === view));
+  document.querySelectorAll(".tab").forEach((t) => {
+    const on = t.dataset.view === view;
+    t.classList.toggle("active", on);
+    t.setAttribute("aria-selected", on ? "true" : "false");
+    t.tabIndex = on ? 0 : -1; // roving tabindex for the WAI-ARIA tabs pattern
+  });
   $("#view-photos").style.display = view === "photos" ? "block" : "none";
+  $("#view-map").style.display = view === "map" ? "block" : "none";
   $("#view-people").style.display = view === "people" ? "block" : "none";
   $("#view-clusters").style.display = view === "clusters" ? "block" : "none";
   refresh();
@@ -738,12 +818,29 @@ function refresh() {
   renderActiveFilters();
   renderSidebar();
   if (state.view === "photos") renderPhotos(true);
+  else if (state.view === "map") renderMap();
   else if (state.view === "people") renderPeople();
   else renderClusters();
 }
 
 // ---- wiring ---------------------------------------------------------------
-document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => setView(t.dataset.view)));
+const _tabs = [...document.querySelectorAll(".tab")];
+_tabs.forEach((t) => (t.onclick = () => setView(t.dataset.view)));
+// Arrow/Home/End move focus across the tablist (WAI-ARIA tabs keyboard model).
+const _tabbar = document.querySelector(".tabbar");
+if (_tabbar) _tabbar.addEventListener("keydown", (e) => {
+  const i = _tabs.indexOf(document.activeElement);
+  if (i < 0) return;
+  let j = i;
+  if (e.key === "ArrowRight") j = (i + 1) % _tabs.length;
+  else if (e.key === "ArrowLeft") j = (i - 1 + _tabs.length) % _tabs.length;
+  else if (e.key === "Home") j = 0;
+  else if (e.key === "End") j = _tabs.length - 1;
+  else return;
+  e.preventDefault();
+  _tabs[j].focus();
+  setView(_tabs[j].dataset.view);
+});
 $("#lb-close").onclick = closeLightbox;
 $("#lb-prev").onclick = () => lightboxStep(-1);
 $("#lb-next").onclick = () => lightboxStep(1);
