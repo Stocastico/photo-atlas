@@ -42,6 +42,7 @@ from .geocode import Geocoder
 from .metadata import (
     extract_meta_from_image,
     is_supported,
+    is_video,
     make_thumbnail_from_image,
     sha1_of,
 )
@@ -56,6 +57,9 @@ class IndexStats:
     failed: int = 0
     faces: int = 0
     recognized: int = 0
+    #: Video files seen during the walk. Not indexed (no still-image pipeline),
+    #: but counted so they're reported instead of silently dropped.
+    videos: int = 0
     #: First few "<path>: <error>" strings for files that failed to index, so a
     #: bad file is diagnosable instead of vanishing into the ``failed`` count.
     #: Capped (see ``_MAX_ERRORS``) to stay bounded on huge libraries.
@@ -227,8 +231,8 @@ def _store_indexed(
     return photo_id
 
 
-def iter_images(root: Path):
-    """Yield supported image files under ``root`` in a deterministic order.
+def iter_files(root: Path):
+    """Yield every file under ``root`` in a deterministic order.
 
     Uses :func:`os.walk` and sorts each directory level in place rather than
     materialising and sorting the *entire* tree up front, so memory stays flat
@@ -237,15 +241,20 @@ def iter_images(root: Path):
 
     root = Path(root)
     if root.is_file():
-        if is_supported(root):
-            yield root
+        yield root
         return
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames.sort()  # deterministic descent into subfolders
         for name in sorted(filenames):
-            path = Path(dirpath) / name
-            if is_supported(path):
-                yield path
+            yield Path(dirpath) / name
+
+
+def iter_images(root: Path):
+    """Yield supported image files under ``root`` in a deterministic order."""
+
+    for path in iter_files(root):
+        if is_supported(path):
+            yield path
 
 
 def index_path(
@@ -292,9 +301,24 @@ def index_path(
         existing = {
             r["path"] for r in conn.execute("SELECT path FROM photos").fetchall()
         }
-        for path in iter_images(root):
+        # Never ingest our own generated derivatives (thumbs / face crops /
+        # previews / models) if a library dir happens to sit inside the indexed
+        # tree. Scoped to those dirs so e.g. the demo's photos under home still index.
+        derived = tuple(
+            d.resolve()
+            for d in (config.thumbs_dir, config.faces_dir, config.previews_dir, config.models_dir)
+        )
+        for path in iter_files(root):
+            resolved = path.resolve()
+            if any(resolved == d or d in resolved.parents for d in derived):
+                continue
+            if is_video(path):
+                stats.videos += 1
+                continue
+            if not is_supported(path):
+                continue
             stats.scanned += 1
-            if not recompute and str(path.resolve()) in existing:
+            if not recompute and str(resolved) in existing:
                 stats.skipped += 1
                 continue
             try:

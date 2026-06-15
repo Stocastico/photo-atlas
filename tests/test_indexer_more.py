@@ -37,6 +37,28 @@ def test_iter_images_walks_nested_dirs_deterministically(tmp_path):
     assert found == ["a.png", "c.jpeg", "b.jpg"]  # .txt excluded, recursive
 
 
+def test_videos_are_counted_but_not_indexed(tmp_path):
+    from PIL import Image
+
+    from photo_atlas import db
+
+    Image.new("RGB", (8, 8)).save(tmp_path / "photo.jpg", "JPEG")
+    (tmp_path / "clip.mov").write_bytes(b"\x00\x00\x00\x18ftypqt  ")  # dummy video
+    (tmp_path / "movie.MP4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+    cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    stats = indexer.index_path(cfg, tmp_path, backend_name="none", geocode=False)
+
+    assert stats.indexed == 1            # the jpg
+    assert stats.videos == 2             # .mov + .MP4 (case-insensitive)
+    conn = db.connect(cfg.db_path)
+    try:
+        rows = [r["filename"] for r in conn.execute("SELECT filename FROM photos")]
+    finally:
+        conn.close()
+    assert rows == ["photo.jpg"]         # videos never entered the catalog
+
+
 def test_corrupt_image_is_counted_as_failed_with_diagnostics(tmp_path, capsys):
     cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
     bad = tmp_path / "broken.jpg"  # supported suffix, but not a real image

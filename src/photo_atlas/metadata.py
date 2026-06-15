@@ -31,6 +31,13 @@ SUPPORTED_SUFFIXES = {
     ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".webp", ".heic",
 }
 
+# Video files aren't indexed (no still-image pipeline), but we recognise them so
+# the indexer can *report* how many were skipped instead of dropping them
+# silently — a real library is typically a few percent video.
+VIDEO_SUFFIXES = {
+    ".mov", ".mp4", ".m4v", ".avi", ".3gp", ".mkv", ".webm", ".mts", ".wmv",
+}
+
 
 @dataclass
 class PhotoMeta:
@@ -46,6 +53,10 @@ class PhotoMeta:
 
 def is_supported(path: Path) -> bool:
     return path.suffix.lower() in SUPPORTED_SUFFIXES
+
+
+def is_video(path: Path) -> bool:
+    return path.suffix.lower() in VIDEO_SUFFIXES
 
 
 def sha1_of(path: Path, chunk: int = 1 << 20) -> str:

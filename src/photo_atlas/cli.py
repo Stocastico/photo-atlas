@@ -54,6 +54,11 @@ def _cmd_index(args) -> int:
         f"Done: {stats.indexed} indexed, {stats.skipped} skipped, "
         f"{stats.failed} failed, {stats.faces} faces ({stats.recognized} auto-recognized)."
     )
+    if stats.videos:
+        print(
+            f"Skipped {stats.videos} video file(s) — Photo Atlas indexes still "
+            "images only (videos aren't catalogued)."
+        )
     if stats.errors:
         print(f"{stats.failed} file(s) failed; first errors:", file=sys.stderr)
         for line in stats.errors[:10]:
