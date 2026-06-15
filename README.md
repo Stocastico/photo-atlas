@@ -125,6 +125,10 @@ uv run pytest                            # offline suite (deterministic, no netw
 uv run pytest tests/test_deep_faces.py   # deep YuNet/SFace test on real faces*
 ```
 
+The offline suite is deterministic, runs on every push/PR via GitHub Actions
+(Python 3.10–3.12) and enforces **≥80 % coverage** (`--cov-fail-under=80`); it
+currently sits near 98 %. A coverage summary prints after each run.
+
 \* downloads the models + a few public sample faces; **skips** (never fails)
 when offline. It asserts the deep model puts the same person far closer than two
 different people, and that clustering groups repeat photos of one identity.
@@ -147,6 +151,3 @@ different people, and that clustering groups repeat photos of one identity.
   `FaceBackend` (detection via its SCRFD + 512-d embeddings); `face_match_threshold`
   / `cluster_eps` would need re-tuning for the new embedding space. Ask if you'd
   like this wired in as an optional `[insightface]` extra.
-- The original `image_classifications` package (trainable scene classifier +
-  multi-label face service, FastAPI) is retained under `src/image_classifications`
-  and `scripts/`; Photo Atlas is the application built on top of those ideas.
