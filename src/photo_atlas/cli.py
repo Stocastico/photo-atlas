@@ -54,6 +54,10 @@ def _cmd_index(args) -> int:
         f"Done: {stats.indexed} indexed, {stats.skipped} skipped, "
         f"{stats.failed} failed, {stats.faces} faces ({stats.recognized} auto-recognized)."
     )
+    if stats.errors:
+        print(f"{stats.failed} file(s) failed; first errors:", file=sys.stderr)
+        for line in stats.errors[:10]:
+            print(f"  - {line}", file=sys.stderr)
     if stats.faces:
         print("Tip: run `photo-atlas cluster` then name people in the web UI.")
     return 0

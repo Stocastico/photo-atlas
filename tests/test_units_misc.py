@@ -28,6 +28,15 @@ def test_get_or_create_person_is_idempotent(tmp_path):
         conn.close()
 
 
+def test_connect_enables_wal_and_foreign_keys(tmp_path):
+    conn = db.connect(tmp_path / "wal.db")
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
 # -- config ----------------------------------------------------------------
 def test_default_home_honours_env(monkeypatch, tmp_path):
     monkeypatch.setenv("PHOTO_ATLAS_HOME", str(tmp_path / "custom"))
@@ -64,14 +73,17 @@ def test_parse_exif_datetime_variants():
     assert metadata._parse_exif_datetime(None) is None
 
 
-def test_make_preview_downscales(tmp_path):
+def test_cached_resized_downscales_and_is_reused(tmp_path):
     from PIL import Image
 
     src = tmp_path / "big.jpg"
     Image.new("RGB", (3000, 2000), (20, 40, 60)).save(src, "JPEG")
-    out = metadata.make_preview(src, tmp_path / "prev.jpg", size=800)
+    out = metadata.cached_resized(tmp_path / "cache", src, "deadbeef", 800)
     with Image.open(out) as img:
         assert max(img.size) == 800
+    # Content-addressed: a second call returns the same cached file, not a rebuild.
+    again = metadata.cached_resized(tmp_path / "cache", src, "deadbeef", 800)
+    assert again == out and out.exists()
 
 
 def test_mtime_fallback_when_no_exif(tmp_path):

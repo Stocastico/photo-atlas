@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS photos (
     height       INTEGER,
     bytes        INTEGER,
     taken_at     TEXT,          -- ISO 8601, best available timestamp
-    taken_source TEXT,          -- 'exif' | 'mtime'
+    taken_source TEXT,          -- 'exif' | 'folder' | 'mtime'
     camera_make  TEXT,
     camera_model TEXT,
     lat          REAL,
@@ -99,6 +99,11 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL lets a reader (the web UI) and a writer (a concurrent `index` run)
+    # coexist without "database is locked"; busy_timeout retries briefly instead
+    # of failing immediately when they do contend.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     _migrate(conn)
     conn.executescript(SCHEMA)
     return conn

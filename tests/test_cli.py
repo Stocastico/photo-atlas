@@ -69,6 +69,16 @@ def test_index_missing_path_returns_error(tmp_path, capsys):
     assert "path not found" in capsys.readouterr().err
 
 
+def test_index_reports_failed_files_on_stderr(tmp_path, capsys):
+    pics = tmp_path / "pics"
+    pics.mkdir()
+    (pics / "broken.jpg").write_bytes(b"not a real jpeg")
+    rc = cli.main(["--home", str(tmp_path / "lib"), "index", str(pics), "--faces", "none"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "failed" in err and "broken.jpg" in err
+
+
 def test_serve_invokes_uvicorn(tmp_path, monkeypatch, capsys):
     """`serve` builds the app and hands it to uvicorn (which we stub out)."""
     calls = {}

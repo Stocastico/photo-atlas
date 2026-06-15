@@ -18,13 +18,34 @@ def test_iter_images_accepts_single_file(tmp_path):
     assert list(indexer.iter_images(txt)) == []
 
 
-def test_corrupt_image_is_counted_as_failed(tmp_path, capsys):
+def test_iter_images_walks_nested_dirs_deterministically(tmp_path):
+    from PIL import Image
+
+    # Build a small nested tree; only the image files should come back, sorted.
+    (tmp_path / "2012" / "trip").mkdir(parents=True)
+    (tmp_path / "2013").mkdir()
+    for rel in ("2013/b.jpg", "2012/a.png", "2012/trip/c.jpeg", "2012/notes.txt"):
+        p = tmp_path / rel
+        if p.suffix == ".txt":
+            p.write_text("x")
+        else:
+            Image.new("RGB", (4, 4)).save(p)
+
+    found = [p.name for p in indexer.iter_images(tmp_path)]
+    # Top-down walk, each level sorted: 2012/ before 2013/, and within 2012/ the
+    # file (a.png) before the descent into trip/ (c.jpeg). Deterministic.
+    assert found == ["a.png", "c.jpeg", "b.jpg"]  # .txt excluded, recursive
+
+
+def test_corrupt_image_is_counted_as_failed_with_diagnostics(tmp_path, capsys):
     cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
     bad = tmp_path / "broken.jpg"  # supported suffix, but not a real image
     bad.write_bytes(b"not actually a jpeg")
     stats = indexer.index_path(cfg, tmp_path, backend_name="none", geocode=False)
     assert stats.failed >= 1
     assert stats.indexed == 0
+    # The failure is now diagnosable: the path is captured, not silently dropped.
+    assert stats.errors and "broken.jpg" in stats.errors[0]
 
 
 def test_unavailable_backend_warns_and_indexes_without_faces(tmp_path, capsys):

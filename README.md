@@ -46,6 +46,7 @@ dependency management:
 ```bash
 uv sync                     # core app + test tooling into .venv (dev group)
 uv sync --extra geo         # + high-resolution offline reverse geocoding
+uv sync --extra heic        # + HEIC/HEIF decoding (default iPhone format)
 uv sync --extra dlib        # + face_recognition (dlib) backend (needs CMake/C++)
 uv run photo-atlas --help   # run the CLI inside the managed environment
 uv run pytest               # run the test suite

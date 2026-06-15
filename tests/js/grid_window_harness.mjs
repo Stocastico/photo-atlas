@@ -4,7 +4,7 @@
 // keeps only a bounded window of cards in the DOM.
 //
 // Run via ``node tests/js/grid_window_harness.mjs`` or the pytest wrapper
-// (``tests/test_web_grid_window.py``), which skips when Node isn't installed.
+// (``tests/test_web_js.py``), which skips when Node isn't installed.
 import fs from "fs";
 import path from "path";
 import url from "url";
