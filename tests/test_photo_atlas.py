@@ -387,6 +387,86 @@ def test_cluster_assignment_and_recognition(indexed):
     assert orphaned > 0
 
 
+def test_merge_persons(indexed):
+    conn = db.connect(indexed.db_path)
+    clusters = library.list_clusters(conn)
+    assert len(clusters) >= 2, "need two clusters to exercise a merge"
+
+    a = library.assign_cluster(conn, clusters[0]["cluster_id"], name="Ann")
+    b = library.assign_cluster(conn, clusters[1]["cluster_id"], name="Bob")
+
+    faces_a = {r["id"] for r in conn.execute("SELECT id FROM faces WHERE person_id=?", (a,))}
+    faces_b = {r["id"] for r in conn.execute("SELECT id FROM faces WHERE person_id=?", (b,))}
+    assert faces_a and faces_b
+
+    merged = library.merge_persons(conn, source_id=a, target_id=b)
+    assert merged == b
+    # Ann is gone; all her faces now belong to Bob.
+    assert not any(p["name"] == "Ann" for p in library.list_persons(conn))
+    now_b = {r["id"] for r in conn.execute("SELECT id FROM faces WHERE person_id=?", (b,))}
+    assert now_b == faces_a | faces_b
+
+    import pytest
+
+    with pytest.raises(ValueError):
+        library.merge_persons(conn, source_id=b, target_id=b)
+    with pytest.raises(ValueError):
+        library.merge_persons(conn, source_id=999, target_id=b)
+
+
+def test_cover_face_picker(indexed):
+    import pytest
+
+    conn = db.connect(indexed.db_path)
+    clusters = library.list_clusters(conn)
+    pid = library.assign_cluster(conn, clusters[0]["cluster_id"], name="Cara")
+    faces_of = library.list_person_faces(conn, pid)
+    assert faces_of, "named person should have faces with crops"
+
+    library.set_cover_face(conn, pid, faces_of[0]["id"])
+    cover = conn.execute("SELECT cover_face_id FROM persons WHERE id=?", (pid,)).fetchone()[0]
+    assert cover == faces_of[0]["id"]
+    # list_persons surfaces the pinned cover rather than the first-available one.
+    cara = next(p for p in library.list_persons(conn) if p["id"] == pid)
+    assert cara["cover_face_id"] == faces_of[0]["id"]
+
+    # A face that belongs to nobody (or someone else) is rejected.
+    orphan = conn.execute(
+        "SELECT id FROM faces WHERE person_id IS NULL LIMIT 1"
+    ).fetchone()
+    if orphan is not None:
+        with pytest.raises(ValueError):
+            library.set_cover_face(conn, pid, orphan["id"])
+
+
+def test_person_management_api(indexed):
+    from fastapi.testclient import TestClient
+
+    from photo_atlas.api import create_app
+
+    client = TestClient(create_app(indexed))
+    clusters = client.get("/api/clusters").json()["clusters"]
+    assert len(clusters) >= 2
+    pa = client.post(f"/api/clusters/{clusters[0]['cluster_id']}/assign", json={"name": "Dee"}).json()["person_id"]
+    pb = client.post(f"/api/clusters/{clusters[1]['cluster_id']}/assign", json={"name": "Eve"}).json()["person_id"]
+
+    # Cover picker: list a person's faces, then pin one.
+    faces = client.get(f"/api/persons/{pa}/faces").json()["faces"]
+    assert faces
+    assert client.put(f"/api/persons/{pa}/cover", json={"face_id": faces[0]["id"]}).status_code == 200
+    # Pinning a face that isn't theirs is a 400.
+    other = client.get(f"/api/persons/{pb}/faces").json()["faces"]
+    assert client.put(f"/api/persons/{pa}/cover", json={"face_id": other[0]["id"]}).status_code == 400
+
+    # Empty rename is rejected.
+    assert client.patch(f"/api/persons/{pa}", json={"name": "   "}).status_code == 400
+
+    # Merge Eve into Dee over HTTP.
+    assert client.post(f"/api/persons/{pa}/merge", json={"source_id": pb}).json()["ok"] is True
+    names = [p["name"] for p in client.get("/api/persons").json()["persons"]]
+    assert "Dee" in names and "Eve" not in names
+
+
 def test_auto_recognition_of_new_photos(config, tmp_path):
     """A named person is auto-recognised when new photos are indexed."""
 

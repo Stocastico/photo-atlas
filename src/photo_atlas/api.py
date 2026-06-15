@@ -34,6 +34,14 @@ class RenameRequest(BaseModel):
     name: str
 
 
+class MergeRequest(BaseModel):
+    source_id: int
+
+
+class CoverRequest(BaseModel):
+    face_id: int
+
+
 def create_app(config: AtlasConfig | None = None) -> FastAPI:
     config = (config or AtlasConfig()).ensure_dirs()
     app = FastAPI(title="Photo Atlas", version="0.1.0")
@@ -153,12 +161,34 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
 
     @app.patch("/api/persons/{person_id}")
     def api_rename(person_id: int, payload: RenameRequest, conn: sqlite3.Connection = Depends(get_conn)):
+        if not payload.name.strip():
+            raise HTTPException(400, "name must not be empty")
         library.rename_person(conn, person_id, payload.name)
         return {"ok": True}
 
     @app.delete("/api/persons/{person_id}")
     def api_delete_person(person_id: int, conn: sqlite3.Connection = Depends(get_conn)):
         library.delete_person(conn, person_id)
+        return {"ok": True}
+
+    @app.get("/api/persons/{person_id}/faces")
+    def api_person_faces(person_id: int, conn: sqlite3.Connection = Depends(get_conn)):
+        return {"faces": library.list_person_faces(conn, person_id)}
+
+    @app.post("/api/persons/{person_id}/merge")
+    def api_merge_person(person_id: int, payload: MergeRequest, conn: sqlite3.Connection = Depends(get_conn)):
+        try:
+            library.merge_persons(conn, payload.source_id, person_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return {"ok": True, "person_id": person_id}
+
+    @app.put("/api/persons/{person_id}/cover")
+    def api_set_cover(person_id: int, payload: CoverRequest, conn: sqlite3.Connection = Depends(get_conn)):
+        try:
+            library.set_cover_face(conn, person_id, payload.face_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
         return {"ok": True}
 
     # -- clusters & assignment -------------------------------------------

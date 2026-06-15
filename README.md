@@ -114,6 +114,7 @@ api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces)
 | `GET /api/photos/{id}` | photo detail + faces |
 | `GET /api/image\|preview\|thumb/{id}`, `GET /api/face/{id}` | media (preview = bounded lightbox derivative) |
 | `GET /api/persons`, `PATCH/DELETE /api/persons/{id}` | manage people |
+| `GET /api/persons/{id}/faces`, `PUT .../cover`, `POST .../merge` | cover picker · merge two people |
 | `GET /api/clusters`, `POST /api/clusters/{id}/assign` | name a face group |
 | `POST /api/faces/{id}/assign` | name a single face |
 
