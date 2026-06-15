@@ -177,3 +177,19 @@ def make_preview(path: Path, dest: Path, size: int = 1600) -> Path:
     """
 
     return _write_resized(path, dest, size, quality=88)
+
+
+def cached_resized(
+    cache_dir: Path, src: Path, sha1: str, size: int, *, quality: int = 82
+) -> Path:
+    """Return a content-addressed, on-demand JPEG derivative of ``src``.
+
+    The file is named ``{sha1}_{size}.jpg`` and generated on first request, so
+    repeat requests (and re-indexing) reuse it. Shared by the lightbox preview
+    and the retina (2x) thumbnail ``srcset`` variants.
+    """
+
+    dest = Path(cache_dir) / sha1[:2] / f"{sha1}_{size}.jpg"
+    if not dest.exists():
+        _write_resized(src, dest, size, quality)
+    return dest

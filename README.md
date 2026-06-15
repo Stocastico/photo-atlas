@@ -112,7 +112,7 @@ api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces)
 | `GET /api/facets` | counts for the filter sidebar |
 | `GET /api/photos?person_id=&scene=&country=&city=&place=&year=&camera=&q=` | filtered list |
 | `GET /api/photos/{id}` | photo detail + faces |
-| `GET /api/image\|preview\|thumb/{id}`, `GET /api/face/{id}` | media (preview = bounded lightbox derivative) |
+| `GET /api/image\|preview\|thumb/{id}`, `GET /api/face/{id}` | media (preview = bounded lightbox derivative; `thumb?size=` for retina) |
 | `GET /api/persons`, `PATCH/DELETE /api/persons/{id}` | manage people |
 | `GET /api/persons/{id}/faces`, `PUT .../cover`, `POST .../merge` | cover picker · merge two people |
 | `GET /api/clusters`, `POST /api/clusters/{id}/assign` | name a face group |

@@ -11,7 +11,14 @@ const state = {
   facetData: null,
   lightboxIndex: null,
   facetExpanded: {}, // facet key -> show all values
+  rendered: new Map(), // index -> live card node (virtualised grid window)
+  layout: null,        // last computed grid layout
 };
+
+// Grid windowing constants — GAP/MIN must match the CSS .grid/.card rules.
+const GRID_GAP = 10;
+const CARD_MIN = 160;     // grid-template min column width
+const BUFFER_ROWS = 4;    // rows rendered above/below the viewport
 
 const FILTER_NAMES = {
   person_id: "Person", scene: "Scene", country: "Country", city: "City",
@@ -308,8 +315,14 @@ function photoCard(p, index) {
   card.className = "card";
   const placeText = p.place_label ? p.place_label.split(",")[0] : p.folder_place;
   const place = placeText ? `<span>${esc(placeText)}</span>` : "<span></span>";
+  // srcset lets the browser pull the 2x (retina) thumb only on hi-DPI screens;
+  // the base 320px thumb is pre-generated, the 640px one is cached on demand.
   card.innerHTML = `
-    <img loading="lazy" decoding="async" width="320" height="320" src="/api/thumb/${p.id}" alt="${esc(p.filename)}" />
+    <img loading="lazy" decoding="async" width="320" height="320"
+      src="/api/thumb/${p.id}"
+      srcset="/api/thumb/${p.id} 320w, /api/thumb/${p.id}?size=640 640w"
+      sizes="220px"
+      alt="${esc(p.filename)}" />
     ${p.face_count ? `<span class="badge">👤 ${p.face_count}</span>` : ""}
     <div class="meta">${place}<span>${(p.taken_at || "").slice(0, 4)}</span></div>`;
   card.setAttribute("role", "button");
@@ -322,13 +335,79 @@ function photoCard(p, index) {
   return card;
 }
 
+// -- pure windowing math (unit-tested via tests/js/grid_window_harness.mjs) --
+// The grid takes over its own layout (cards are absolutely positioned) so only
+// a viewport-sized window of card nodes ever exists in the DOM, bounding both
+// node count and decoded-bitmap memory regardless of library size.
+function gridLayout(containerWidth, n) {
+  const w = Math.max(containerWidth, CARD_MIN);
+  const cols = Math.max(1, Math.floor((w + GRID_GAP) / (CARD_MIN + GRID_GAP)));
+  const cardW = (w - (cols - 1) * GRID_GAP) / cols;
+  const cardH = cardW; // square cards (aspect-ratio 1)
+  const rows = Math.ceil(n / cols);
+  const totalH = rows > 0 ? rows * cardH + (rows - 1) * GRID_GAP : 0;
+  return { cols, cardW, cardH, rows, totalH };
+}
+
+function cardOffset(i, layout) {
+  const row = Math.floor(i / layout.cols);
+  const col = i % layout.cols;
+  return { left: col * (layout.cardW + GRID_GAP), top: row * (layout.cardH + GRID_GAP) };
+}
+
+function windowRange(scrollTop, viewportH, layout, n) {
+  const unit = layout.cardH + GRID_GAP;
+  const firstRow = Math.max(0, Math.floor(Math.max(0, scrollTop) / unit) - BUFFER_ROWS);
+  const visRows = Math.ceil(viewportH / unit) + BUFFER_ROWS * 2;
+  const start = firstRow * layout.cols;
+  const end = Math.min(n, (firstRow + visRows) * layout.cols);
+  return { start: Math.min(start, n), end };
+}
+
+// Reconcile the DOM with the currently-visible window: drop cards that scrolled
+// out, create+position the ones that scrolled in, reposition the rest.
+function renderWindow() {
+  if (state.view !== "photos") return;
+  const grid = $("#grid");
+  const n = state.photos.length;
+  const layout = gridLayout(grid.clientWidth || 0, n);
+  state.layout = layout;
+  grid.style.height = layout.totalH + "px";
+
+  const gridTop = grid.getBoundingClientRect().top + window.scrollY;
+  const scrollTop = window.scrollY - gridTop;
+  const { start, end } = windowRange(scrollTop, window.innerHeight, layout, n);
+
+  for (const [i, el] of state.rendered) {
+    if (i < start || i >= end) { el.remove(); state.rendered.delete(i); }
+  }
+  for (let i = start; i < end; i++) {
+    let el = state.rendered.get(i);
+    if (!el) {
+      el = photoCard(state.photos[i], i);
+      grid.appendChild(el);
+      state.rendered.set(i, el);
+    }
+    const off = cardOffset(i, layout);
+    el.style.width = layout.cardW + "px";
+    el.style.height = layout.cardH + "px";
+    el.style.transform = `translate(${off.left}px, ${off.top}px)`;
+  }
+}
+
+function clearGrid() {
+  for (const el of state.rendered.values()) el.remove();
+  state.rendered.clear();
+  $("#grid").style.height = "0px";
+}
+
 async function renderPhotos(reset = true) {
   if (state.loading) return;
   state.loading = true;
   if (reset) {
     state.offset = 0;
     state.photos = [];
-    $("#grid").innerHTML = "";
+    clearGrid();
   }
   $("#grid-loading").style.display = "block";
 
@@ -346,7 +425,6 @@ async function renderPhotos(reset = true) {
     return;
   }
 
-  const baseIndex = state.photos.length;
   state.photos = state.photos.concat(data.photos);
   state.total = data.total;
   state.offset += data.photos.length;
@@ -359,13 +437,16 @@ async function renderPhotos(reset = true) {
   $("#onboarding").style.display = libraryEmpty ? "block" : "none";
   $("#grid-empty").style.display = empty && !libraryEmpty ? "block" : "none";
 
-  const grid = $("#grid");
-  data.photos.forEach((p, i) => grid.appendChild(photoCard(p, baseIndex + i)));
+  renderWindow();
 
   $("#grid-loading").style.display = state.photos.length < state.total ? "block" : "none";
   $("#grid-loading").textContent = "Loading…";
   state.loading = false;
   maybeLoadMore();
+}
+
+function nearBottom() {
+  return window.innerHeight + window.scrollY >= document.body.offsetHeight - 600;
 }
 
 function maybeLoadMore() {
@@ -375,11 +456,20 @@ function maybeLoadMore() {
   if (document.body.offsetHeight <= window.innerHeight + 600) renderPhotos(false);
 }
 
-window.addEventListener("scroll", () => {
-  if (state.view !== "photos" || state.loading) return;
-  if (state.photos.length >= state.total) return;
-  if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 600) renderPhotos(false);
-});
+let frameScheduled = false;
+function onViewportChange() {
+  if (frameScheduled) return;
+  frameScheduled = true;
+  requestAnimationFrame(() => {
+    frameScheduled = false;
+    if (state.view !== "photos") return;
+    renderWindow();
+    if (!state.loading && state.photos.length < state.total && nearBottom()) renderPhotos(false);
+  });
+}
+
+window.addEventListener("scroll", onViewportChange, { passive: true });
+window.addEventListener("resize", onViewportChange);
 
 // ---- lightbox / detail ----------------------------------------------------
 function closeLightbox() {

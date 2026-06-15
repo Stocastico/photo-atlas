@@ -125,21 +125,36 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             raise HTTPException(404, "image not found")
         src = Path(row["path"])
         sha1 = row["sha1"] or metadata.sha1_of(src)
-        dest = config.previews_dir / sha1[:2] / f"{sha1}_{config.preview_size}.jpg"
-        if not dest.exists():
-            try:
-                metadata.make_preview(src, dest, size=config.preview_size)
-            except Exception:
-                # Any decode/encode failure (corrupt or exotic format) falls
-                # back to streaming the original so the lightbox still works.
-                return FileResponse(src)
+        try:
+            dest = metadata.cached_resized(
+                config.previews_dir, src, sha1, config.preview_size, quality=88
+            )
+        except Exception:
+            # Any decode/encode failure (corrupt or exotic format) falls back to
+            # streaming the original so the lightbox still works.
+            return FileResponse(src)
         return FileResponse(dest)
 
     @app.get("/api/thumb/{photo_id}")
-    def api_thumb(photo_id: int, conn: sqlite3.Connection = Depends(get_conn)):
-        row = conn.execute("SELECT thumb_path, path FROM photos WHERE id=?", (photo_id,)).fetchone()
+    def api_thumb(
+        photo_id: int,
+        size: int | None = Query(None, ge=64, le=1024),
+        conn: sqlite3.Connection = Depends(get_conn),
+    ):
+        row = conn.execute(
+            "SELECT thumb_path, path, sha1 FROM photos WHERE id=?", (photo_id,)
+        ).fetchone()
         if row is None:
             raise HTTPException(404, "photo not found")
+        # A non-default size (e.g. the retina 2x ``srcset`` variant) is generated
+        # and cached on demand from the original.
+        if size and size != config.thumb_size and row["path"] and Path(row["path"]).exists():
+            src = Path(row["path"])
+            sha1 = row["sha1"] or metadata.sha1_of(src)
+            try:
+                return FileResponse(metadata.cached_resized(config.thumbs_dir, src, sha1, size))
+            except Exception:
+                pass  # fall back to the pre-generated default thumb
         thumb = row["thumb_path"]
         if thumb and Path(thumb).exists():
             return FileResponse(thumb)

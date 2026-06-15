@@ -42,37 +42,25 @@ responsive/mobile work is intentionally deprioritised.
   `LIMIT/OFFSET` paging stays stable when the sort value ties.
 
 ### Performance & memory at scale
-- [ ] **Virtualize / window the photo grid.** Today infinite scroll *appends*
-  cards and never removes them, so the DOM and the browser's decoded-image cache
-  grow without bound. Thumbnails are small on the wire (~320px JPEG, ~20 KB) and
-  only the lightbox loads originals — so the network/disk story is fine — but a
-  decoded 320×320 thumbnail still costs ~0.4 MB of bitmap memory, so scrolling
-  ~2k+ photos can reach hundreds of MB plus thousands of `<img>` nodes.
-  Options, cheapest first:
-  1. **`content-visibility: auto` + `contain-intrinsic-size`** on each card —
-     a few CSS lines that let the browser skip rendering/decoding offscreen
-     cards and reclaim them. Biggest win for least code; keeps current structure.
-  2. **Recycle offscreen images** — an IntersectionObserver that clears `src`
-     (and restores it) on cards far outside the viewport, so decoded bitmaps are
-     freed while the grid layout stays put.
-  3. **True virtualization / windowing** — render only the visible range (plus a
-     buffer) into a spacer-sized container, recycling card nodes on scroll.
-     Most robust for tens of thousands of photos; most code. A small lib
-     (or a ~100-line custom windower over the fixed-aspect grid) would do.
-  Recommendation: ship (1) now as a safety net, then (3) if libraries get huge.
-  **Done (option 1):** cards now use `content-visibility: auto` +
-  `contain-intrinsic-size: auto 200px`, so the browser skips offscreen cards and
-  reclaims their decoded bitmaps. True windowing (option 3) is still open for
-  tens-of-thousands-of-photo libraries.
+- [x] **Virtualize / window the photo grid.** Implemented option 3 (true
+  windowing): the grid is now a positioned canvas whose height spans the whole
+  result set, and `renderWindow` keeps only a viewport-sized window (+4 buffer
+  rows) of absolutely-positioned, recycled card nodes in the DOM. Node count and
+  decoded-bitmap memory stay flat regardless of library size; scroll/resize are
+  rAF-throttled, and infinite-scroll loading + lightbox indexing are preserved.
+  The layout math (`gridLayout`/`cardOffset`/`windowRange`) is unit-tested via a
+  Node harness (`tests/test_web_js.py`). Cards keep `content-visibility: auto`
+  as a belt-and-suspenders.
 - [x] **Cap the lightbox image size.** The lightbox now loads a bounded
   preview derivative (`preview_size`, default 1600px) from `GET /api/preview/{id}`,
   generated on first request and cached content-addressed under
   `~/.photo_atlas/previews`. The true full-resolution original stays behind a
   "View full size ↗" link to `/api/image/{id}`.
-- [x] **Thumbnail sizing.** Thumbnails now carry `width`/`height` intrinsic
-  hints plus `decoding="async"` so the browser reserves layout and decodes off
-  the main thread. A true `srcset` (1x/2x) still needs extra derivative sizes
-  generated at index time — left as a follow-up since only the 320px thumb exists.
+- [x] **Thumbnail `srcset` / sizing.** Thumbnails carry `width`/`height`
+  intrinsic hints + `decoding="async"`, and a real `srcset` (`320w` default +
+  `640w` retina). The 2x variant is generated and cached on demand via
+  `GET /api/thumb/{id}?size=640` (`metadata.cached_resized`, shared with the
+  lightbox preview), so hi-DPI screens get crisp thumbs without a re-index.
 
 ### Navigation & state
 - [x] **URL / history state.** Filters, view and sort are reflected in the

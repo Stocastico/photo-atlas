@@ -380,6 +380,32 @@ def test_preview_endpoint_caps_size_and_caches(indexed):
     assert client.get("/api/preview/999999").status_code == 404
 
 
+def test_thumb_size_variant(indexed):
+    """The thumb endpoint serves a cached 2x (retina) derivative on demand and
+    leaves the default thumbnail untouched."""
+    import io
+
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    from photo_atlas.api import create_app
+
+    client = TestClient(create_app(indexed))
+    pid = client.get("/api/photos").json()["photos"][0]["id"]
+
+    default = client.get(f"/api/thumb/{pid}")
+    assert default.status_code == 200
+
+    variant = client.get(f"/api/thumb/{pid}", params={"size": 640})
+    assert variant.status_code == 200
+    img = Image.open(io.BytesIO(variant.content))
+    assert max(img.size) <= 640
+    # The on-demand size is cached content-addressed alongside the thumbnails.
+    assert list(indexed.thumbs_dir.rglob("*_640.jpg"))
+    # Out-of-range sizes are rejected by the query validation.
+    assert client.get(f"/api/thumb/{pid}", params={"size": 5000}).status_code == 422
+
+
 def test_cluster_assignment_and_recognition(indexed):
     conn = db.connect(indexed.db_path)
     clusters = library.list_clusters(conn)
