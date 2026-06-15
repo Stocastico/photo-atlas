@@ -82,15 +82,25 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any]]:
 
     persons = _as_list(filters.get("person_id"))
     if persons:
-        placeholders = ", ".join(["?"] * len(persons))
-        # An EXISTS subquery (rather than a JOIN) keeps the result one row per
-        # photo, so callers never need a `DISTINCT` to undo a fan-out. The `ef`
-        # alias is local to the subquery and won't collide with any outer `f`.
-        clauses.append(
-            f"EXISTS (SELECT 1 FROM faces ef WHERE ef.photo_id = p.id "
-            f"AND ef.person_id IN ({placeholders}))"
-        )
-        params.extend(int(p) for p in persons)
+        # ``person_mode='all'`` requires every selected person to be present
+        # (one AND-ed EXISTS each); the default 'any' matches any of them (a
+        # single EXISTS over an IN). EXISTS keeps the result one row per photo,
+        # so callers never need a DISTINCT. The ``ef`` alias is local to each
+        # subquery and won't collide with any outer ``f``.
+        if filters.get("person_mode") == "all":
+            for pid in persons:
+                clauses.append(
+                    "EXISTS (SELECT 1 FROM faces ef "
+                    "WHERE ef.photo_id = p.id AND ef.person_id = ?)"
+                )
+                params.append(int(pid))
+        else:
+            placeholders = ", ".join(["?"] * len(persons))
+            clauses.append(
+                f"EXISTS (SELECT 1 FROM faces ef WHERE ef.photo_id = p.id "
+                f"AND ef.person_id IN ({placeholders}))"
+            )
+            params.extend(int(p) for p in persons)
 
     def add_in(column: str, key: str, cast=lambda v: v) -> None:
         values = _as_list(filters.get(key))

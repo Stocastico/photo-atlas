@@ -46,10 +46,11 @@ A batch of filtering ideas to make "find this kind of photo" sharper. Note that
 **person + place** (and any cross-facet combination) already works today — facets
 AND across dimensions — and **multiple people (OR)** is covered by multi-select;
 these items are the genuinely new pieces.
-- [ ] **People AND-mode.** "Photos containing person A **and** B" (everyone
-  present), as a toggle alongside the current OR multi-select. SQL: one `EXISTS`
-  per required person (AND-ed) instead of a single `IN (...)`; UI: an AND/OR
-  switch on the People facet. (The long-noted follow-up to multi-select.)
+- [x] **People AND-mode.** `person_mode=all` matches only photos containing
+  *every* selected person — one AND-ed `EXISTS` per person — vs the default `any`
+  (a single `EXISTS … IN (…)`). The People facet shows a "Match: any/all of them"
+  toggle once 2+ people are selected; the mode round-trips in the URL as a scalar
+  modifier (no pill). Unit + DB tested.
 - [x] **Filter by number of people portrayed (incl. portrait / group).** A
   "Number of people" facet buckets photos by `face_count` (`0` / `1` / `2-4` / `5+`)
   via a SQL `CASE` — no schema change, no re-index. Bucket `1` is a **portrait** and

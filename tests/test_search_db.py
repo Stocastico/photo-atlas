@@ -84,6 +84,44 @@ def test_people_count_filter_and_facet(tmp_path):
         conn.close()
 
 
+def test_people_and_or_mode(tmp_path):
+    """`person_mode='all'` requires every selected person; the default matches any."""
+
+    conn = db.connect(tmp_path / "s.db")
+    try:
+        p1 = db.get_or_create_person(conn, "P1")
+        p2 = db.get_or_create_person(conn, "P2")
+        pa = _insert(conn, path="/a.jpg")  # persons p1 AND p2
+        pb = _insert(conn, path="/b.jpg")  # person p1 only
+        pc = _insert(conn, path="/c.jpg")  # person p2 only
+
+        def add_face(photo_id, person_id):
+            conn.execute(
+                "INSERT INTO faces (photo_id, person_id) VALUES (?, ?)",
+                (photo_id, person_id),
+            )
+
+        add_face(pa, p1)
+        add_face(pa, p2)
+        add_face(pb, p1)
+        add_face(pc, p2)
+        conn.commit()
+
+        # Default (any-of): all three photos contain person p1 or p2.
+        _, any_total = search.search_photos(conn, {"person_id": [p1, p2]})
+        assert any_total == 3
+        # All-of: only photo A contains both.
+        _, all_total = search.search_photos(
+            conn, {"person_id": [p1, p2], "person_mode": "all"}
+        )
+        assert all_total == 1
+        # A single person behaves the same under either mode.
+        _, one = search.search_photos(conn, {"person_id": [p1], "person_mode": "all"})
+        assert one == 2
+    finally:
+        conn.close()
+
+
 def test_search_skips_count_when_not_requested(tmp_path):
     """``count=False`` (used for every infinite-scroll page after the first)
     returns a sentinel total of -1 and still pages correctly."""

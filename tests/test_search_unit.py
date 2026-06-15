@@ -42,6 +42,22 @@ def test_where_person_id_builds_exists_clause():
     assert params == [3, 7]
 
 
+def test_where_person_mode_all_builds_one_exists_per_person():
+    where, params = _where({"person_id": [3, 7], "person_mode": "all"})
+    # Two AND-ed EXISTS subqueries, each matching a single required person.
+    assert where.count("EXISTS (SELECT 1 FROM faces ef") == 2
+    assert "ef.person_id = ?" in where and "IN (" not in where
+    assert " AND " in where
+    assert params == [3, 7]
+
+
+def test_where_person_mode_any_is_the_default_in_clause():
+    where, params = _where({"person_id": [3, 7]})
+    assert "ef.person_id IN (?, ?)" in where
+    assert where.count("EXISTS (SELECT 1 FROM faces ef") == 1
+    assert params == [3, 7]
+
+
 def test_where_camera_is_exact_in():
     # Camera is matched exactly (whole camera_model values from the facet), so
     # the chip count matches the result count even for substring-overlapping names.
