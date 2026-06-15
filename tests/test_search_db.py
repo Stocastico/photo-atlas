@@ -4,12 +4,78 @@ escaping in free-text search, exact camera matching, and the map endpoint query.
 
 from __future__ import annotations
 
+import sqlite3
+
+import pytest
+
 from photo_atlas import db, search
+
+
+def test_connect_ensure_schema_false_skips_ddl(tmp_path):
+    """A request-time connection can skip the (idempotent but not free) schema
+    create/migrate script; on a fresh DB that means the tables don't exist yet."""
+
+    path = tmp_path / "fresh.db"
+    conn = db.connect(path, ensure_schema=False)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("SELECT COUNT(*) FROM photos").fetchone()
+    finally:
+        conn.close()
+
+    # The default path still builds the schema, and a later skip-schema connection
+    # then sees the tables created by the first.
+    db.connect(path).close()
+    conn = db.connect(path, ensure_schema=False)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0] == 0
+    finally:
+        conn.close()
 
 
 def _insert(conn, **cols):
     cols.setdefault("filename", cols["path"].rsplit("/", 1)[-1])
     return db.upsert_photo(conn, cols)
+
+
+def test_search_photos_omits_scene_scores_but_detail_keeps_it(tmp_path):
+    """The grid/list payload drops the unused ``scene_scores`` JSON blob; the
+    single-photo detail (which the lightbox uses) still carries it."""
+
+    conn = db.connect(tmp_path / "s.db")
+    try:
+        pid = _insert(
+            conn, path="/a/x.jpg", scene_type="people",
+            scene_scores='{"people": 1.0}', width=4, height=3,
+        )
+        rows, _ = search.search_photos(conn, {})
+        assert "scene_scores" not in rows[0]
+        # Other columns the grid/lightbox-from-list rely on are still present.
+        for col in ("id", "filename", "scene_type", "width", "height", "taken_at"):
+            assert col in rows[0]
+
+        detail = search.photo_detail(conn, pid)
+        assert detail["scene_scores"] == '{"people": 1.0}'
+    finally:
+        conn.close()
+
+
+def test_search_skips_count_when_not_requested(tmp_path):
+    """``count=False`` (used for every infinite-scroll page after the first)
+    returns a sentinel total of -1 and still pages correctly."""
+
+    conn = db.connect(tmp_path / "s.db")
+    try:
+        for i in range(5):
+            _insert(conn, path=f"/a/{i}.jpg", taken_at=f"2020-01-0{i + 1}")
+        rows, total = search.search_photos(conn, {}, limit=2, offset=0)
+        assert total == 5 and len(rows) == 2
+        page2, total2 = search.search_photos(conn, {}, limit=2, offset=2, count=False)
+        assert total2 == -1 and len(page2) == 2
+        # The page is still correct, just without re-counting.
+        assert page2[0]["path"] != rows[0]["path"]
+    finally:
+        conn.close()
 
 
 def test_q_escapes_like_wildcards(tmp_path):

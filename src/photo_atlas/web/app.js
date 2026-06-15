@@ -41,6 +41,14 @@ function toast(msg, kind = "error") {
   toastTimer = setTimeout(() => (t.className = "toast"), 4500);
 }
 
+// Facet payloads are filter-aware but otherwise stable, so cache them by the
+// active-filter signature: revisiting a filter state (toggling a chip off and
+// on, back/forward navigation, switching views) then skips the ~11-query
+// /api/facets round-trip. Any mutating request (assign/rename/merge/…) can
+// change the counts, so it clears the cache (see api()).
+const facetCache = new Map();
+const FACET_CACHE_CAP = 50;
+
 // Thin fetch wrapper: surfaces network failures and non-2xx responses as a
 // toast and throws, so a failed request never breaks the UI silently. Callers
 // that await it are skipped (no re-render) when it throws.
@@ -58,6 +66,9 @@ async function api(url, opts) {
     toast(`Error ${res.status}: ${detail}`);
     throw new Error(`${res.status} ${detail}`);
   }
+  // A successful write may shift facet counts (e.g. naming a cluster), so drop
+  // the cached facet payloads rather than show stale numbers.
+  if (opts && opts.method && opts.method !== "GET") facetCache.clear();
   try {
     return await res.json();
   } catch (_) {
@@ -176,8 +187,22 @@ function activeFilterPairs() {
   return pairs;
 }
 
+// Fetch the facet payload for a filter signature, served from the cache on a
+// repeat signature. Kept a tiny pure-ish helper (no DOM) so it's unit-testable.
+async function fetchFacets(key) {
+  let f = facetCache.get(key);
+  if (!f) {
+    f = await api("/api/facets?" + key);
+    if (f) {
+      if (facetCache.size >= FACET_CACHE_CAP) facetCache.clear();
+      facetCache.set(key, f);
+    }
+  }
+  return f;
+}
+
 async function renderSidebar() {
-  const f = await api("/api/facets?" + filterParams().toString());
+  const f = await fetchFacets(filterParams().toString());
   state.facetData = f;
   const side = $("#sidebar");
   side.innerHTML = "";
@@ -426,10 +451,12 @@ async function renderPhotos(reset = true) {
   }
 
   state.photos = state.photos.concat(data.photos);
-  state.total = data.total;
+  // Only the first page carries a total (later pages send null to skip the
+  // server-side COUNT); keep the previously known total across those pages.
+  if (data.total != null) state.total = data.total;
   state.offset += data.photos.length;
 
-  $("#result-count").textContent = `${data.total} result${data.total === 1 ? "" : "s"}`;
+  $("#result-count").textContent = `${state.total} result${state.total === 1 ? "" : "s"}`;
   // Distinguish a genuinely empty library (first-run onboarding) from a filter
   // that simply matched nothing.
   const empty = state.photos.length === 0;
@@ -626,12 +653,18 @@ async function renderMap() {
   for (const pt of data.points) {
     if (pt.lat == null || pt.lon == null) continue;
     const marker = L.marker([pt.lat, pt.lon]);
-    const pop = document.createElement("div");
-    pop.className = "map-pop";
-    pop.innerHTML = `<img src="/api/thumb/${pt.id}" alt="" loading="lazy" />
-      <div class="cap">${esc(String(pt.year || ""))} · open ↗</div>`;
-    pop.onclick = () => openPhotoById(pt.id);
-    marker.bindPopup(pop);
+    // Build the popup (a thumbnail + caption) lazily, only when the marker is
+    // actually clicked. With up to map_point_limit (50k) markers, eagerly
+    // creating a DOM subtree per point would hold tens of thousands of unused
+    // nodes in memory; at most one popup is ever open.
+    marker.bindPopup(() => {
+      const pop = document.createElement("div");
+      pop.className = "map-pop";
+      pop.innerHTML = `<img src="/api/thumb/${pt.id}" alt="" loading="lazy" />
+        <div class="cap">${esc(String(pt.year || ""))} · open ↗</div>`;
+      pop.onclick = () => openPhotoById(pt.id);
+      return pop;
+    });
     _markers.addLayer(marker);
     bounds.push([pt.lat, pt.lon]);
   }

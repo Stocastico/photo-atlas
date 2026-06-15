@@ -323,14 +323,22 @@ def cluster_embeddings(
     if len(embeddings) == 1:
         return [-1]
 
+    import math  # noqa: PLC0415
+
     from sklearn.cluster import DBSCAN  # noqa: PLC0415
 
-    matrix = np.vstack([l2_normalize(e) for e in embeddings])
-    # cosine distance = 1 - cosine similarity; vectors are unit norm.
-    similarity = np.clip(matrix @ matrix.T, -1.0, 1.0)
-    distance = 1.0 - similarity
-    np.fill_diagonal(distance, 0.0)
-    labels = DBSCAN(eps=eps, min_samples=min_samples, metric="precomputed").fit_predict(distance)
+    matrix = np.vstack([l2_normalize(e) for e in embeddings]).astype(np.float32)
+    # On L2-normalised vectors cosine distance is monotonic in Euclidean distance:
+    #   ||a - b||^2 = 2 - 2*cos(a, b)  =>  ||a - b|| = sqrt(2 * cosine_distance).
+    # Clustering with a tree-based Euclidean metric therefore yields the *same*
+    # neighbour graph (and thus the same DBSCAN partition) as a precomputed cosine
+    # matrix, but without materialising that dense n*n matrix — which is ~13 GB at
+    # 40k faces and OOMs. Memory drops from O(n^2) to O(n*d).
+    eps_euclid = math.sqrt(max(0.0, 2.0 * eps))
+    labels = DBSCAN(
+        eps=eps_euclid, min_samples=min_samples,
+        metric="euclidean", algorithm="ball_tree",
+    ).fit_predict(matrix)
     return [int(x) for x in labels]
 
 

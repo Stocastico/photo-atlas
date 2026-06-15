@@ -25,6 +25,16 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from . import db
+
+# Columns returned for grid/list rows: every photo column except the
+# ``scene_scores`` JSON blob, which only the single-photo detail view uses.
+# Shipping it for 60 photos/page bloats the payload (and the browser decodes and
+# discards it), so the list query selects an explicit set instead of ``p.*``.
+_LIST_COLUMNS = ", ".join(
+    ["p.id", *(f"p.{c}" for c in db.PHOTO_COLUMNS if c != "scene_scores")]
+)
+
 
 def _as_list(value: Any) -> list[Any]:
     """Normalise a scalar / list / None filter value to a list of non-empty items."""
@@ -46,15 +56,20 @@ def _like_escape(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def _where(filters: dict[str, Any]) -> tuple[str, list[Any], str]:
+def _where(filters: dict[str, Any]) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
-    join = ""
 
     persons = _as_list(filters.get("person_id"))
     if persons:
         placeholders = ", ".join(["?"] * len(persons))
-        join = f"JOIN faces f ON f.photo_id = p.id AND f.person_id IN ({placeholders})"
+        # An EXISTS subquery (rather than a JOIN) keeps the result one row per
+        # photo, so callers never need a `DISTINCT` to undo a fan-out. The `ef`
+        # alias is local to the subquery and won't collide with any outer `f`.
+        clauses.append(
+            f"EXISTS (SELECT 1 FROM faces ef WHERE ef.photo_id = p.id "
+            f"AND ef.person_id IN ({placeholders}))"
+        )
         params.extend(int(p) for p in persons)
 
     def add_in(column: str, key: str, cast=lambda v: v) -> None:
@@ -94,7 +109,7 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any], str]:
         params.extend([like] * 7)
 
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    return where, params, join
+    return where, params
 
 
 # Sort keys exposed by the API/UI -> ORDER BY clause. Each ends with an ``id``
@@ -114,16 +129,33 @@ def _order_by(sort: Any) -> str:
 
 
 def search_photos(
-    conn: sqlite3.Connection, filters: dict[str, Any], limit: int = 60, offset: int = 0
+    conn: sqlite3.Connection,
+    filters: dict[str, Any],
+    limit: int = 60,
+    offset: int = 0,
+    *,
+    count: bool = True,
 ) -> tuple[list[dict], int]:
-    where, params, join = _where(filters)
-    base = f"FROM photos p {join}{where}"
+    """Return ``(rows, total)`` for one page of results.
 
-    total = conn.execute(f"SELECT COUNT(DISTINCT p.id) {base}", params).fetchone()[0]
+    With the person filter now expressed as an ``EXISTS`` subquery, the query is
+    one row per photo, so neither ``DISTINCT`` (which would otherwise hash every
+    wide row, JSON column included) nor ``COUNT(DISTINCT)`` is needed. ``count``
+    can be ``False`` for infinite-scroll pages after the first — ``total`` is
+    page-invariant, so re-counting the whole filtered set each scroll step is
+    wasted work; the sentinel ``-1`` signals "unchanged".
+    """
+
+    where, params = _where(filters)
+    base = f"FROM photos p{where}"
+
+    total = -1
+    if count:
+        total = conn.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
 
     order = _order_by(filters.get("sort"))
     rows = conn.execute(
-        f"SELECT DISTINCT p.* {base} ORDER BY {order} LIMIT ? OFFSET ?",
+        f"SELECT {_LIST_COLUMNS} {base} ORDER BY {order} LIMIT ? OFFSET ?",
         [*params, int(limit), int(offset)],
     ).fetchall()
     return [dict(r) for r in rows], int(total)
@@ -138,11 +170,11 @@ def map_points(
     ``limit`` bounds the payload for very large libraries.
     """
 
-    where, params, join = _where(filters)
+    where, params = _where(filters)
     glue = " AND " if where else " WHERE "
     sql = (
-        "SELECT DISTINCT p.id, p.lat, p.lon, substr(p.taken_at, 1, 4) AS year "
-        f"FROM photos p {join}{where}{glue}p.lat IS NOT NULL AND p.lon IS NOT NULL "
+        "SELECT p.id, p.lat, p.lon, substr(p.taken_at, 1, 4) AS year "
+        f"FROM photos p{where}{glue}p.lat IS NOT NULL AND p.lon IS NOT NULL "
         "LIMIT ?"
     )
     rows = conn.execute(sql, [*params, int(limit)]).fetchall()
@@ -179,11 +211,13 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
     def facet(column: str, own_key: str, *, order_by_value: bool = False) -> list[dict]:
         # Exclude this facet's own filter so all of its options stay visible.
         sub = {k: v for k, v in filters.items() if k != own_key}
-        where, params, join = _where(sub)
+        where, params = _where(sub)
         order = f"{column} DESC" if order_by_value else "c DESC, v"
+        # One row per photo (person filter is an EXISTS, no join fan-out), so a
+        # plain COUNT(*) per group equals the old COUNT(DISTINCT p.id).
         sql = (
-            f"SELECT {column} AS v, COUNT(DISTINCT p.id) AS c "
-            f"FROM photos p {join}{where} GROUP BY v ORDER BY {order}"
+            f"SELECT {column} AS v, COUNT(*) AS c "
+            f"FROM photos p{where} GROUP BY v ORDER BY {order}"
         )
         return [
             {"value": r["v"], "count": r["c"]}
@@ -193,7 +227,7 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
 
     def person_facet() -> list[dict]:
         sub = {k: v for k, v in filters.items() if k != "person_id"}
-        where, params, _join = _where(sub)
+        where, params = _where(sub)
         sql = (
             "SELECT pr.id AS id, pr.name AS name, COUNT(DISTINCT p.id) AS c "
             "FROM persons pr JOIN faces f ON f.person_id = pr.id "
@@ -208,9 +242,9 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
     def with_faces_count() -> int:
         # Photos containing at least one face, under the other active filters.
         sub = {k: v for k, v in filters.items() if k != "has_faces"}
-        where, params, join = _where(sub)
+        where, params = _where(sub)
         glue = " AND " if where else " WHERE "
-        sql = f"SELECT COUNT(DISTINCT p.id) FROM photos p {join}{where}{glue}p.face_count > 0"
+        sql = f"SELECT COUNT(*) FROM photos p{where}{glue}p.face_count > 0"
         return int(conn.execute(sql, params).fetchone()[0])
 
     drow = conn.execute(

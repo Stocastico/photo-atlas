@@ -129,11 +129,17 @@ A full-app review at ~27k images + ~600 videos drove a round of hardening.
 - [x] **ruff + mypy in CI.** Both clean; new `lint` job. JS harness test made
   tolerant of Node's intermittent exit-time SIGSEGV.
 
-### Deferred (bigger design changes — not yet started)
-- [ ] **Parallel / multiprocess indexing.** Decode + YuNet inference is still
-  single-threaded; ~27k multi-megapixel files take hours. A `ProcessPoolExecutor`
-  over files with DB writes funnelled to the main process would be near-linear.
-  Biggest remaining real-world speedup; deferred for its risk/complexity.
+### Deferred (bigger design changes)
+- [x] **Parallel / multiprocess indexing.** Decode + YuNet inference now fan out
+  over a `ProcessPoolExecutor` (`index --workers N`, default = CPU count). Each
+  file's CPU-bound work (`_prepare_photo`: decode-once, detect, thumbnail, scene
+  tag, crop-encode) runs in a worker; the single main-process SQLite connection
+  performs every write (`_commit_prepared`), so there's no DB contention. Only
+  `workers*4` files are in flight (bounded memory), commits are batched, the ONNX
+  weights are pre-fetched once before fan-out (no download race), and `spawn`
+  workers keep OpenCV/ONNX native libs clean. SHA-1 dedup / scan-skip bookkeeping
+  stays in the main walk. Serial path (`workers<=1`) preserved for the demo/tests;
+  parity is unit-tested (`test_parallel_indexing_matches_serial`).
 - [ ] **Better scene tagging.** `classify.py` is a colour/brightness heuristic
   that mislabels real photos (sunsets→food, snow→document). Replace with a small
   zero-shot model (MobileCLIP/CLIP) or narrow the labels to what's reliable.

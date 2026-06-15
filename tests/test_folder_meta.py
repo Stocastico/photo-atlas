@@ -145,7 +145,7 @@ def test_db_migration_adds_folder_place_column(tmp_path):
     raw.execute(
         "CREATE TABLE photos (id INTEGER PRIMARY KEY, path TEXT UNIQUE, "
         "filename TEXT, taken_at TEXT, scene_type TEXT, place_country TEXT, "
-        "place_city TEXT)"
+        "place_city TEXT, camera_model TEXT, indexed_at TEXT)"
     )
     raw.commit()
     raw.close()

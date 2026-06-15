@@ -68,9 +68,11 @@ CREATE TABLE IF NOT EXISTS faces (
 );
 
 CREATE INDEX IF NOT EXISTS idx_photos_taken   ON photos(taken_at);
+CREATE INDEX IF NOT EXISTS idx_photos_indexed ON photos(indexed_at);
 CREATE INDEX IF NOT EXISTS idx_photos_scene   ON photos(scene_type);
 CREATE INDEX IF NOT EXISTS idx_photos_country ON photos(place_country);
 CREATE INDEX IF NOT EXISTS idx_photos_city    ON photos(place_city);
+CREATE INDEX IF NOT EXISTS idx_photos_camera  ON photos(camera_model);
 CREATE INDEX IF NOT EXISTS idx_photos_folder  ON photos(folder_place);
 CREATE INDEX IF NOT EXISTS idx_faces_photo    ON faces(photo_id);
 CREATE INDEX IF NOT EXISTS idx_faces_person   ON faces(person_id);
@@ -92,8 +94,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE photos ADD COLUMN folder_place TEXT")
 
 
-def connect(db_path: Path) -> sqlite3.Connection:
-    """Open the catalog, creating the schema on first use."""
+def connect(db_path: Path, *, ensure_schema: bool = True) -> sqlite3.Connection:
+    """Open the catalog.
+
+    The per-connection PRAGMAs are always applied. ``ensure_schema`` controls the
+    one-time-ish cost of running the migration + ``CREATE TABLE/INDEX`` script:
+    it is idempotent but still parses and checks ~12 objects against
+    ``sqlite_master`` on every call. The web server creates the schema once at
+    startup and opens its request connections with ``ensure_schema=False`` so a
+    single filter toggle (which fans out to several endpoints) doesn't re-run the
+    DDL each time.
+    """
 
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
@@ -104,8 +115,9 @@ def connect(db_path: Path) -> sqlite3.Connection:
     # of failing immediately when they do contend.
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
-    _migrate(conn)
-    conn.executescript(SCHEMA)
+    if ensure_schema:
+        _migrate(conn)
+        conn.executescript(SCHEMA)
     return conn
 
 
@@ -123,15 +135,21 @@ def blob_to_embedding(blob: bytes | None) -> np.ndarray | None:
 
 
 # -- small repository helpers ---------------------------------------------
+# The writable photo columns (everything but the autoincrement ``id``), in a
+# single place so the writer (upsert) and readers (explicit SELECT lists) can't
+# drift. ``id`` is added by readers that need it.
+PHOTO_COLUMNS = [
+    "path", "filename", "sha1", "width", "height", "bytes", "taken_at",
+    "taken_source", "camera_make", "camera_model", "lat", "lon",
+    "place_city", "place_country", "place_label", "folder_place",
+    "scene_type", "scene_scores", "face_count", "thumb_path", "indexed_at",
+]
+
+
 def upsert_photo(conn: sqlite3.Connection, record: dict) -> int:
     """Insert (or replace) a photo row keyed by ``path`` and return its id."""
 
-    columns = [
-        "path", "filename", "sha1", "width", "height", "bytes", "taken_at",
-        "taken_source", "camera_make", "camera_model", "lat", "lon",
-        "place_city", "place_country", "place_label", "folder_place",
-        "scene_type", "scene_scores", "face_count", "thumb_path", "indexed_at",
-    ]
+    columns = PHOTO_COLUMNS
     values = [record.get(c) for c in columns]
     placeholders = ", ".join(["?"] * len(columns))
     collist = ", ".join(columns)
