@@ -3,25 +3,36 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
   <title>Photo Atlas</title>
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="/static/vendor/leaflet/MarkerCluster.css" />
+  <link rel="stylesheet" href="/static/vendor/leaflet/MarkerCluster.Default.css" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
   <header>
     <h1>Photo<span class="dot">·</span>Atlas</h1>
-    <div class="tabbar">
-      <button class="tab active" data-view="photos">Photos</button>
-      <button class="tab" data-view="people">People</button>
-      <button class="tab" data-view="clusters">Name faces</button>
+    <div class="tabbar" role="tablist" aria-label="Views">
+      <button class="tab active" id="tab-photos" role="tab" aria-selected="true"
+        aria-controls="view-photos" data-view="photos">Photos</button>
+      <button class="tab" id="tab-map" role="tab" aria-selected="false" tabindex="-1"
+        aria-controls="view-map" data-view="map">Map</button>
+      <button class="tab" id="tab-people" role="tab" aria-selected="false" tabindex="-1"
+        aria-controls="view-people" data-view="people">People</button>
+      <button class="tab" id="tab-clusters" role="tab" aria-selected="false" tabindex="-1"
+        aria-controls="view-clusters" data-view="clusters">Name faces</button>
     </div>
     <div class="spacer"></div>
-    <input id="search" placeholder="Search name, place, camera…" />
+    <input id="search" aria-label="Search photos by name, place or camera"
+      placeholder="Search name, place, camera…" />
   </header>
 
   <div class="layout">
-    <aside id="sidebar"></aside>
-    <main>
-      <div id="view-photos">
+    <aside id="sidebar" aria-label="Filters"></aside>
+    <main id="main">
+      <div id="view-photos" role="tabpanel" aria-labelledby="tab-photos">
         <div class="toolbar">
           <span id="result-count">—</span>
           <div class="spacer" style="flex:1"></div>
@@ -49,12 +60,17 @@ photo-atlas serve              # browse, filter, and name people</code></pre>
         <div id="grid-loading" class="loading" style="display:none" role="status" aria-live="polite">Loading…</div>
       </div>
 
-      <div id="view-people" style="display:none">
+      <div id="view-map" role="tabpanel" aria-labelledby="tab-map" style="display:none">
+        <div id="map"></div>
+        <div id="map-empty" class="empty" style="display:none">No geotagged photos match these filters.</div>
+      </div>
+
+      <div id="view-people" role="tabpanel" aria-labelledby="tab-people" style="display:none">
         <div id="people" class="people-grid"></div>
         <div id="people-empty" class="empty" style="display:none">No one named yet. Use “Name faces”.</div>
       </div>
 
-      <div id="view-clusters" style="display:none">
+      <div id="view-clusters" role="tabpanel" aria-labelledby="tab-clusters" style="display:none">
         <p class="tagline">Groups of unrecognised faces. Give a group a name and every photo with that
           person becomes filterable — new imports are recognised automatically.</p>
         <div id="clusters" class="cluster-grid"></div>
@@ -75,6 +91,8 @@ photo-atlas serve              # browse, filter, and name people</code></pre>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
+  <script src="/static/vendor/leaflet/leaflet.js"></script>
+  <script src="/static/vendor/leaflet/leaflet.markercluster.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

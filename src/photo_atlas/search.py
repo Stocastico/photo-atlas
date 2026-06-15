@@ -12,7 +12,7 @@ any of them (OR within the facet, AND across facets).
 ``place``      trip/region label mined from the folder name.
 ``year``       capture year (int or str).
 ``date_from``  / ``date_to`` -- ISO date bounds on ``taken_at``.
-``camera``     camera model substring.
+``camera``     exact ``camera_model`` (the value emitted by the camera facet).
 ``has_faces``  ``True`` -> at least one face.
 ``q``          free-text substring matched across filename, city, country,
                place label, folder/trip and camera make/model.
@@ -35,6 +35,15 @@ def _as_list(value: Any) -> list[Any]:
     if value == "":
         return []
     return [value]
+
+
+def _like_escape(term: str) -> str:
+    r"""Escape LIKE wildcards so a user typing ``%`` or ``_`` matches literally.
+
+    Pairs with an ``ESCAPE '\'`` clause on the LIKE; the backslash itself is
+    escaped first so it can act as the escape character.
+    """
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _where(filters: dict[str, Any]) -> tuple[str, list[Any], str]:
@@ -61,12 +70,10 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any], str]:
     add_in("p.place_city", "city")
     add_in("p.folder_place", "place")
     add_in("substr(p.taken_at, 1, 4)", "year", cast=str)
-
-    cameras = _as_list(filters.get("camera"))
-    if cameras:
-        likes = " OR ".join(["p.camera_model LIKE ?"] * len(cameras))
-        clauses.append(f"({likes})")
-        params.extend(f"%{c}%" for c in cameras)
+    # Camera is matched exactly (the sidebar facet emits whole ``camera_model``
+    # values), so the chip's count matches the result count even when one model
+    # name is a substring of another. Free-text substring search is via ``q``.
+    add_in("p.camera_model", "camera")
 
     if filters.get("date_from"):
         clauses.append("substr(p.taken_at, 1, 10) >= ?")
@@ -77,11 +84,12 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any], str]:
     if filters.get("has_faces"):
         clauses.append("p.face_count > 0")
     if filters.get("q"):
-        like = f"%{filters['q']}%"
+        like = f"%{_like_escape(str(filters['q']))}%"
         clauses.append(
-            "(p.filename LIKE ? OR p.place_city LIKE ? OR p.place_country LIKE ? "
-            "OR p.place_label LIKE ? OR p.folder_place LIKE ? "
-            "OR p.camera_make LIKE ? OR p.camera_model LIKE ?)"
+            "(p.filename LIKE ? ESCAPE '\\' OR p.place_city LIKE ? ESCAPE '\\' "
+            "OR p.place_country LIKE ? ESCAPE '\\' OR p.place_label LIKE ? ESCAPE '\\' "
+            "OR p.folder_place LIKE ? ESCAPE '\\' OR p.camera_make LIKE ? ESCAPE '\\' "
+            "OR p.camera_model LIKE ? ESCAPE '\\')"
         )
         params.extend([like] * 7)
 
@@ -119,6 +127,26 @@ def search_photos(
         [*params, int(limit), int(offset)],
     ).fetchall()
     return [dict(r) for r in rows], int(total)
+
+
+def map_points(
+    conn: sqlite3.Connection, filters: dict[str, Any], limit: int = 20000
+) -> list[dict]:
+    """Geotagged photos matching ``filters`` as ``{id, lat, lon, year}`` points.
+
+    Only rows with both coordinates are returned (the map can't place the rest).
+    ``limit`` bounds the payload for very large libraries.
+    """
+
+    where, params, join = _where(filters)
+    glue = " AND " if where else " WHERE "
+    sql = (
+        "SELECT DISTINCT p.id, p.lat, p.lon, substr(p.taken_at, 1, 4) AS year "
+        f"FROM photos p {join}{where}{glue}p.lat IS NOT NULL AND p.lon IS NOT NULL "
+        "LIMIT ?"
+    )
+    rows = conn.execute(sql, [*params, int(limit)]).fetchall()
+    return [dict(r) for r in rows]
 
 
 def photo_detail(conn: sqlite3.Connection, photo_id: int) -> dict | None:

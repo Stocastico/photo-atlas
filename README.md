@@ -33,10 +33,13 @@ recognised automatically once a person has been named.
   used to fill in dates EXIF lacks (synthesised as `YYYY-MM-01`,
   `taken_source='folder'`) and to add a filterable **Place** facet. EXIF always
   wins; only dated folders (with a 4-digit year) are trusted.
-- **Web UI** — gallery with lazy thumbnails, a detail lightbox, a People page
-  and a "Name faces" workflow. No build step (vanilla JS).
+- **Web UI** — gallery with lazy thumbnails, a detail lightbox, an interactive
+  **map** of your geotagged photos, a People page and a "Name faces" workflow.
+  No build step (vanilla JS); Leaflet is vendored locally.
 - **Everything local** — a single SQLite catalog plus thumbnails/face crops
-  under `~/.photo_atlas`. Your photos never leave your machine.
+  under `~/.photo_atlas`. Your photos never leave your machine. (The map fetches
+  basemap tiles from OpenStreetMap, so that view needs network — but only tile
+  coordinates are requested; no photo or location data is uploaded.)
 
 ## Install
 
@@ -112,6 +115,7 @@ api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces)
 | --- | --- |
 | `GET /api/facets` | counts for the filter sidebar |
 | `GET /api/photos?person_id=&scene=&country=&city=&place=&year=&camera=&q=` | filtered list |
+| `GET /api/map?...` | geotagged `{id, lat, lon, year}` points for the map (same filters) |
 | `GET /api/photos/{id}` | photo detail + faces |
 | `GET /api/image\|preview\|thumb/{id}`, `GET /api/face/{id}` | media (preview = bounded lightbox derivative; `thumb?size=` for retina) |
 | `GET /api/persons`, `PATCH/DELETE /api/persons/{id}` | manage people |

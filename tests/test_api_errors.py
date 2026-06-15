@@ -48,6 +48,20 @@ def test_thumb_size_out_of_range_is_422(client):
     assert client.get(f"/api/thumb/{pid}?size=4096").status_code == 422
 
 
+# -- map -------------------------------------------------------------------
+def test_map_endpoint_returns_geotagged_points(client):
+    data = client.get("/api/map").json()
+    assert data["points"]  # demo photos all carry GPS EXIF
+    pt = data["points"][0]
+    assert pt["lat"] is not None and pt["lon"] is not None and "id" in pt
+
+
+def test_map_endpoint_respects_filters(client):
+    # A country that doesn't exist yields no points but still a valid shape.
+    data = client.get("/api/map?country=Nowhere").json()
+    assert data["points"] == []
+
+
 # -- validation / mutation error branches ----------------------------------
 def test_rename_empty_name_is_400(client, person_id):
     assert client.patch(f"/api/persons/{person_id}", json={"name": "   "}).status_code == 400

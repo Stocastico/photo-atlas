@@ -39,10 +39,18 @@ def test_where_person_id_builds_join_not_clause():
     assert where == ""  # the person constraint lives in the JOIN
 
 
-def test_where_camera_uses_like_or():
-    where, params, _ = _where({"camera": ["iPhone", "Pixel"]})
-    assert where.count("p.camera_model LIKE ?") == 2
-    assert params == ["%iPhone%", "%Pixel%"]
+def test_where_camera_is_exact_in():
+    # Camera is matched exactly (whole camera_model values from the facet), so
+    # the chip count matches the result count even for substring-overlapping names.
+    where, params, _ = _where({"camera": ["iPhone 15", "Pixel 8"]})
+    assert "p.camera_model IN (?, ?)" in where
+    assert params == ["iPhone 15", "Pixel 8"]
+
+
+def test_where_q_escapes_wildcards_and_sets_escape_clause():
+    where, params, _ = _where({"q": "a_b%c"})
+    assert "ESCAPE '\\'" in where
+    assert params == ["%a\\_b\\%c%"] * 7
 
 
 def test_where_date_bounds_and_has_faces():

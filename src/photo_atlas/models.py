@@ -23,6 +23,10 @@ SFACE_NAME = "face_recognition_sface_2021dec.onnx"
 YUNET_URL = f"{ZOO}/face_detection_yunet/{YUNET_NAME}"
 SFACE_URL = f"{ZOO}/face_recognition_sface/{SFACE_NAME}"
 
+# A sanity floor: both real weights are far larger (YuNet ~230 KB, SFace ~37 MB),
+# so anything tiny is a truncated download or an error page, not a model.
+_MIN_MODEL_BYTES = 50_000
+
 
 def _resolve(name: str, url: str, model_dir: Path, env: str, download: bool) -> Path:
     override = os.environ.get(env)
@@ -40,7 +44,20 @@ def _resolve(name: str, url: str, model_dir: Path, env: str, download: bool) -> 
 
     model_dir.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
-    urllib.request.urlretrieve(url, tmp)  # noqa: S310 - fixed, trusted OpenCV Zoo URL
+    _, headers = urllib.request.urlretrieve(url, tmp)  # noqa: S310 - trusted Zoo URL
+
+    # Guard against a truncated/interrupted download caching a corrupt ONNX:
+    # the partial file must be non-trivial and, when the server reports a
+    # Content-Length, match it exactly. On any mismatch, discard and fail.
+    size = tmp.stat().st_size
+    expected = headers.get("Content-Length") if headers else None
+    if size < _MIN_MODEL_BYTES or (expected is not None and int(expected) != size):
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Download of {name} looks incomplete ({size} bytes"
+            + (f", expected {expected}" if expected is not None else "")
+            + "); please retry."
+        )
     tmp.replace(dest)
     return dest
 

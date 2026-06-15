@@ -113,3 +113,51 @@ def test_models_env_override_existing_file(monkeypatch, tmp_path):
 def test_models_download_disabled_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         models._resolve("m.onnx", models.YUNET_URL, tmp_path, "NOPE_ENV", download=False)
+
+
+class _FakeHeaders:
+    def __init__(self, d):
+        self._d = d
+
+    def get(self, key, default=None):
+        return self._d.get(key, default)
+
+
+def test_models_rejects_truncated_download(monkeypatch, tmp_path):
+    def fake(url, filename):  # writes a tiny file (below the sanity floor)
+        from pathlib import Path
+
+        Path(filename).write_bytes(b"<html>error</html>")
+        return filename, _FakeHeaders({"Content-Length": "18"})
+
+    monkeypatch.setattr(models.urllib.request, "urlretrieve", fake)
+    with pytest.raises(RuntimeError, match="incomplete"):
+        models._resolve("m.onnx", models.YUNET_URL, tmp_path, "NOPE_ENV", download=True)
+    assert not (tmp_path / "m.onnx").exists()  # nothing cached
+    assert not (tmp_path / "m.onnx.part").exists()  # partial cleaned up
+
+
+def test_models_rejects_content_length_mismatch(monkeypatch, tmp_path):
+    def fake(url, filename):
+        from pathlib import Path
+
+        Path(filename).write_bytes(b"x" * 60_000)
+        return filename, _FakeHeaders({"Content-Length": "99999"})  # lies about size
+
+    monkeypatch.setattr(models.urllib.request, "urlretrieve", fake)
+    with pytest.raises(RuntimeError, match="incomplete"):
+        models._resolve("m.onnx", models.YUNET_URL, tmp_path, "NOPE_ENV", download=True)
+
+
+def test_models_accepts_complete_download(monkeypatch, tmp_path):
+    payload = b"x" * 60_000
+
+    def fake(url, filename):
+        from pathlib import Path
+
+        Path(filename).write_bytes(payload)
+        return filename, _FakeHeaders({"Content-Length": str(len(payload))})
+
+    monkeypatch.setattr(models.urllib.request, "urlretrieve", fake)
+    got = models._resolve("m.onnx", models.YUNET_URL, tmp_path, "NOPE_ENV", download=True)
+    assert got.exists() and got.read_bytes() == payload
