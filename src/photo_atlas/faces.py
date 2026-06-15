@@ -37,6 +37,37 @@ class FaceBackend(Protocol):
         ...
 
 
+def _read_bgr(image_path: Path) -> np.ndarray | None:
+    """Decode an image to an OpenCV-style BGR ``uint8`` array, or ``None``.
+
+    ``cv2.imread`` is tried first (fast C path for JPEG/PNG/etc.), but OpenCV's
+    bundled ``opencv-python-headless`` build can't decode HEIC/HEIF — the default
+    iPhone format and ~a fifth of a typical library — so it silently returns
+    ``None`` for those. We fall back to Pillow, which decodes HEIC once
+    ``pillow-heif`` has registered its opener (see :mod:`photo_atlas.metadata`).
+    Orientation is left raw (no EXIF transpose) to match ``cv2.imread`` and the
+    indexer's face-crop geometry, which crops the un-transposed original.
+    """
+
+    import cv2  # noqa: PLC0415
+
+    image = cv2.imread(str(image_path))
+    if image is not None:
+        return image
+    try:
+        from PIL import Image  # noqa: PLC0415
+
+        from . import metadata  # noqa: F401,PLC0415 - registers the HEIF opener
+
+        with Image.open(image_path) as img:
+            rgb = np.asarray(img.convert("RGB"))
+    except Exception:
+        return None
+    if rgb.ndim != 3 or rgb.shape[2] != 3:
+        return None
+    return np.ascontiguousarray(rgb[:, :, ::-1])  # RGB -> BGR
+
+
 def l2_normalize(vec: np.ndarray) -> np.ndarray:
     vec = np.asarray(vec, dtype=np.float32)
     norm = np.linalg.norm(vec)
@@ -89,8 +120,7 @@ class YuNetSFaceBackend:
         self._recognizer = cv2.FaceRecognizerSF.create(str(sface_path), "")
 
     def detect(self, image_path: Path) -> list[FaceObservation]:
-        cv2 = self._cv2
-        image = cv2.imread(str(image_path))
+        image = _read_bgr(image_path)
         if image is None:
             return []
         h, w = image.shape[:2]
@@ -132,7 +162,7 @@ class SyntheticFaceBackend:
 
     def detect(self, image_path: Path) -> list[FaceObservation]:
         cv2 = self._cv2
-        image = cv2.imread(str(image_path))
+        image = _read_bgr(image_path)
         if image is None:
             return []
         ih, iw = image.shape[:2]

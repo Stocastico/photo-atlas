@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from photo_atlas import faces
 
@@ -60,4 +61,55 @@ def test_synthetic_backend_detects_demo_faces(tmp_path):
     paths = demo.generate(tmp_path / "p", count=12, seed=5)
     backend = faces.SyntheticFaceBackend()
     total = sum(len(backend.detect(p)) for p in paths)
+    assert total > 0
+
+
+def test_read_bgr_falls_back_to_pil_when_cv2_cannot_decode(tmp_path, monkeypatch):
+    """When OpenCV's bundled build can't decode a file (e.g. HEIC), ``_read_bgr``
+    falls back to Pillow and still returns a correct BGR array."""
+
+    import cv2
+    from PIL import Image
+
+    arr = np.zeros((8, 12, 3), dtype=np.uint8)
+    arr[:, :, 0] = 200  # strong red in RGB
+    src = tmp_path / "img.png"
+    Image.fromarray(arr, "RGB").save(src)
+
+    # Simulate a format OpenCV can't decode (HEIC behaves exactly like this).
+    monkeypatch.setattr(cv2, "imread", lambda *a, **k: None)
+
+    out = faces._read_bgr(src)
+    assert out is not None and out.shape == (8, 12, 3)
+    # Pillow yields RGB; _read_bgr must hand OpenCV its native BGR order.
+    b, g, r = out[..., 0].mean(), out[..., 1].mean(), out[..., 2].mean()
+    assert r > 150 and g < 20 and b < 20
+
+
+def test_synthetic_backend_detects_faces_in_heic(tmp_path):
+    """Regression: HEIC (iPhone's default, ~a fifth of a real library) must yield
+    faces. ``cv2.imread`` returns None for HEIC, so detection has to route the
+    decode through Pillow + pillow-heif."""
+
+    pytest.importorskip("pillow_heif")
+    import cv2
+    import pillow_heif
+    from PIL import Image
+
+    from photo_atlas import demo
+
+    pillow_heif.register_heif_opener()
+    paths = demo.generate(tmp_path / "p", count=12, seed=5)
+    heics = []
+    for i, png in enumerate(paths):
+        heic = tmp_path / f"photo_{i}.heic"
+        with Image.open(png) as im:
+            im.convert("RGB").save(heic, format="HEIF")
+        heics.append(heic)
+
+    # Guard the premise: OpenCV genuinely can't decode these.
+    assert cv2.imread(str(heics[0])) is None
+
+    backend = faces.SyntheticFaceBackend()
+    total = sum(len(backend.detect(p)) for p in heics)
     assert total > 0
