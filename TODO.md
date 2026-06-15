@@ -60,13 +60,19 @@ responsive/mobile work is intentionally deprioritised.
      Most robust for tens of thousands of photos; most code. A small lib
      (or a ~100-line custom windower over the fixed-aspect grid) would do.
   Recommendation: ship (1) now as a safety net, then (3) if libraries get huge.
+  **Done (option 1):** cards now use `content-visibility: auto` +
+  `contain-intrinsic-size: auto 200px`, so the browser skips offscreen cards and
+  reclaims their decoded bitmaps. True windowing (option 3) is still open for
+  tens-of-thousands-of-photo libraries.
 - [x] **Cap the lightbox image size.** The lightbox now loads a bounded
   preview derivative (`preview_size`, default 1600px) from `GET /api/preview/{id}`,
   generated on first request and cached content-addressed under
   `~/.photo_atlas/previews`. The true full-resolution original stays behind a
   "View full size ↗" link to `/api/image/{id}`.
-- [ ] **Thumbnail `srcset` / sizing.** Serve the 320px thumb but hint intrinsic
-  size so the browser reserves layout and avoids reflow on load.
+- [x] **Thumbnail sizing.** Thumbnails now carry `width`/`height` intrinsic
+  hints plus `decoding="async"` so the browser reserves layout and decodes off
+  the main thread. A true `srcset` (1x/2x) still needs extra derivative sizes
+  generated at index time — left as a follow-up since only the 320px thumb exists.
 
 ### Navigation & state
 - [x] **URL / history state.** Filters, view and sort are reflected in the

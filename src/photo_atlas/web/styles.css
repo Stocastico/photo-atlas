@@ -65,7 +65,16 @@ main { padding: 18px 20px 60px; min-height: calc(100vh - 58px); }
 .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; color: var(--muted); font-size: 14px; }
 .toolbar select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
-.card { position: relative; aspect-ratio: 1; background: var(--panel); border-radius: 10px; overflow: hidden; cursor: pointer; border: 1px solid var(--border); }
+.card {
+  position: relative; aspect-ratio: 1; background: var(--panel); border-radius: 10px;
+  overflow: hidden; cursor: pointer; border: 1px solid var(--border);
+  /* Let the browser skip rendering/decoding offscreen cards and reclaim their
+     decoded bitmaps, so an append-only infinite-scroll grid of thousands of
+     photos doesn't grow memory without bound. ``auto`` remembers each card's
+     last rendered size; 200px is the first-paint estimate (square cards). */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 200px;
+}
 .card img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .25s ease; }
 .card:hover img { transform: scale(1.05); }
 .card .meta { position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 8px 6px; font-size: 11px;

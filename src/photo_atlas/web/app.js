@@ -309,7 +309,7 @@ function photoCard(p, index) {
   const placeText = p.place_label ? p.place_label.split(",")[0] : p.folder_place;
   const place = placeText ? `<span>${esc(placeText)}</span>` : "<span></span>";
   card.innerHTML = `
-    <img loading="lazy" src="/api/thumb/${p.id}" alt="${esc(p.filename)}" />
+    <img loading="lazy" decoding="async" width="320" height="320" src="/api/thumb/${p.id}" alt="${esc(p.filename)}" />
     ${p.face_count ? `<span class="badge">👤 ${p.face_count}</span>` : ""}
     <div class="meta">${place}<span>${(p.taken_at || "").slice(0, 4)}</span></div>`;
   card.setAttribute("role", "button");
