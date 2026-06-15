@@ -8,10 +8,8 @@ impact, not by area.
 Legend: **P0** = breaks at scale (OOM / unusable) · **P1** = large, easy win ·
 **P2** = worth doing · **P3** = minor / polish.
 
-> **Status (2026-06-15).** The P0/P1 set plus the two P2 indexes, lazy map
-> popups and the `list_persons` N+1 are now **implemented** on this branch — see
-> the ✅ markers below. The remaining open items (facet consolidation / client
-> cache, trimming `scene_scores` from the grid payload) are noted as future work.
+> **Status (2026-06-15).** Every item in this review is now **implemented** on
+> this branch — see the ✅ markers below.
 
 ---
 
@@ -144,7 +142,14 @@ folder and the face FKs — but not:
 
 ---
 
-## P2 — The facet sidebar issues ~9 aggregations per render
+## P2 ✅ — The facet sidebar issues ~9 aggregations per render
+
+**Fixed (client cache):** the facet payload is cached client-side keyed by the
+active-filter signature (`fetchFacets`), so revisiting a filter state skips the
+round-trip; any mutating request clears the cache so counts never go stale
+(unit-tested in `tests/js/facet_cache_harness.mjs`). The server still issues one
+aggregation per dimension — they can't be merged because each excludes its own
+dimension — so the cache is the pragmatic win. Original analysis below.
 
 `facets()` (`search.py:168-234`) runs one `GROUP BY` per dimension (scenes,
 countries, cities, places, years, cameras), a person aggregation, a
@@ -161,7 +166,11 @@ computed once per process, not per request.
 
 ---
 
-## P2 — `scene_scores` JSON shipped to the grid but never used
+## P2 ✅ — `scene_scores` JSON shipped to the grid but never used
+
+**Fixed:** `search_photos` now selects an explicit column list (all photo
+columns except `scene_scores`, sourced from `db.PHOTO_COLUMNS` so writer/reader
+can't drift); the single-photo detail still returns it. Original analysis below.
 
 `search_photos` returns `p.*`, so each `/api/photos` row carries the
 `scene_scores` JSON blob (`db.py` column) for 60 photos/page. The grid only uses
@@ -204,24 +213,17 @@ cost; the eager popups are not.
 
 ---
 
-## Status of the work
-
-Done on this branch:
+## Status of the work — all done on this branch
 
 1. ✅ **P0 clustering metric swap** — removes the OOM (partition regression-tested).
 2. ✅ **P1 schema-once** — request connections skip the DDL.
 3. ✅ **P1 `EXISTS` instead of `JOIN`+`DISTINCT`** + **skip count after page 0**.
 4. ✅ **P2 indexes** (`indexed_at`, `camera_model`).
-5. ✅ **P2 lazy map popups**; ✅ **P3 `list_persons` N+1**.
-
-Still open (future work):
-
-- **P2 trim `scene_scores` from the `/api/photos` grid payload** (kept on the
-  single-photo detail). Low risk but touches the row-shape several tests assert
-  on, so deferred to its own change.
-- **P2 facet consolidation / client-side facet cache** — the sidebar still issues
-  ~11 aggregations per filter change; correct and acceptable at 27k, but the
-  largest remaining per-interaction cost.
+5. ✅ **P2 lazy map popups**.
+6. ✅ **P2 trim `scene_scores` from the grid payload** (kept on the detail view).
+7. ✅ **P2 client-side facet cache** (invalidated on mutations).
+8. ✅ **P3 `list_persons` N+1**.
 
 Items 1–4 were the high-leverage set: they turn `cluster` from "OOMs" into
-"works", and cut the per-interaction DB cost of the web UI substantially.
+"works", and cut the per-interaction DB cost of the web UI substantially; 5–8
+trim the remaining memory/bandwidth/round-trip overhead.

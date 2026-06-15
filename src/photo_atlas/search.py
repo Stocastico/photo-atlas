@@ -25,6 +25,16 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from . import db
+
+# Columns returned for grid/list rows: every photo column except the
+# ``scene_scores`` JSON blob, which only the single-photo detail view uses.
+# Shipping it for 60 photos/page bloats the payload (and the browser decodes and
+# discards it), so the list query selects an explicit set instead of ``p.*``.
+_LIST_COLUMNS = ", ".join(
+    ["p.id", *(f"p.{c}" for c in db.PHOTO_COLUMNS if c != "scene_scores")]
+)
+
 
 def _as_list(value: Any) -> list[Any]:
     """Normalise a scalar / list / None filter value to a list of non-empty items."""
@@ -145,7 +155,7 @@ def search_photos(
 
     order = _order_by(filters.get("sort"))
     rows = conn.execute(
-        f"SELECT p.* {base} ORDER BY {order} LIMIT ? OFFSET ?",
+        f"SELECT {_LIST_COLUMNS} {base} ORDER BY {order} LIMIT ? OFFSET ?",
         [*params, int(limit), int(offset)],
     ).fetchall()
     return [dict(r) for r in rows], int(total)

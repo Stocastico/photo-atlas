@@ -135,15 +135,21 @@ def blob_to_embedding(blob: bytes | None) -> np.ndarray | None:
 
 
 # -- small repository helpers ---------------------------------------------
+# The writable photo columns (everything but the autoincrement ``id``), in a
+# single place so the writer (upsert) and readers (explicit SELECT lists) can't
+# drift. ``id`` is added by readers that need it.
+PHOTO_COLUMNS = [
+    "path", "filename", "sha1", "width", "height", "bytes", "taken_at",
+    "taken_source", "camera_make", "camera_model", "lat", "lon",
+    "place_city", "place_country", "place_label", "folder_place",
+    "scene_type", "scene_scores", "face_count", "thumb_path", "indexed_at",
+]
+
+
 def upsert_photo(conn: sqlite3.Connection, record: dict) -> int:
     """Insert (or replace) a photo row keyed by ``path`` and return its id."""
 
-    columns = [
-        "path", "filename", "sha1", "width", "height", "bytes", "taken_at",
-        "taken_source", "camera_make", "camera_model", "lat", "lon",
-        "place_city", "place_country", "place_label", "folder_place",
-        "scene_type", "scene_scores", "face_count", "thumb_path", "indexed_at",
-    ]
+    columns = PHOTO_COLUMNS
     values = [record.get(c) for c in columns]
     placeholders = ", ".join(["?"] * len(columns))
     collist = ", ".join(columns)
