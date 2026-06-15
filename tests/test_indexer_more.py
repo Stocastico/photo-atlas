@@ -186,6 +186,103 @@ def test_index_file_decodes_image_once(tmp_path, monkeypatch):
     assert calls["n"] == 1
 
 
+def _photo_snapshot(cfg) -> dict:
+    """Map resolved path -> a comparable tuple of the indexed photo + face count."""
+
+    conn = db.connect(cfg.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT path, sha1, width, height, scene_type, face_count, taken_source "
+            "FROM photos"
+        ).fetchall()
+        return {
+            r["path"]: (
+                r["sha1"], r["width"], r["height"], r["scene_type"],
+                r["face_count"], r["taken_source"],
+            )
+            for r in rows
+        }
+    finally:
+        conn.close()
+
+
+def test_parallel_indexing_matches_serial(tmp_path):
+    """Indexing with multiple worker processes yields exactly the same catalog as
+    the single-process path: same photos, same per-photo metadata and face counts."""
+
+    from photo_atlas import demo
+
+    photos = tmp_path / "p"
+    demo.generate(photos, count=8, seed=11)
+
+    serial = AtlasConfig(home=tmp_path / "serial").ensure_dirs()
+    parallel = AtlasConfig(home=tmp_path / "parallel").ensure_dirs()
+
+    s_stats = indexer.index_path(serial, photos, backend_name="synthetic", geocode=False)
+    p_stats = indexer.index_path(
+        parallel, photos, backend_name="synthetic", geocode=False, workers=2
+    )
+
+    assert p_stats.indexed == s_stats.indexed
+    assert p_stats.faces == s_stats.faces
+    assert p_stats.scanned == s_stats.scanned
+    assert p_stats.failed == 0
+
+    snap_serial = _photo_snapshot(serial)
+    snap_parallel = _photo_snapshot(parallel)
+    # Paths differ only by the library home, not the source photos, so compare by
+    # the source path itself (stored as the resolved photo path, identical here).
+    assert snap_serial == snap_parallel
+    # Face crops landed on disk for the parallel run too (written from the main
+    # process after the worker handed back the encoded crop bytes).
+    conn = db.connect(parallel.db_path)
+    try:
+        crops = [
+            r["crop_path"]
+            for r in conn.execute(
+                "SELECT crop_path FROM faces WHERE crop_path IS NOT NULL"
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+    from pathlib import Path
+
+    assert crops and all(Path(c).exists() for c in crops)
+
+
+def test_parallel_indexing_progress_and_dedup(tmp_path):
+    """The parallel path still reports progress, skips byte-identical duplicates
+    and survives a file that fails to decode."""
+
+    import shutil
+    from pathlib import Path
+
+    from photo_atlas import demo
+
+    photos = tmp_path / "p"
+    paths = demo.generate(photos, count=4, seed=5)
+    # A byte-identical duplicate of the first photo under a second name.
+    shutil.copyfile(paths[0], photos / "dup_copy.jpg")
+    # A corrupt "image" that fails to decode in a worker.
+    (photos / "broken.jpg").write_bytes(b"not a real jpeg")
+
+    cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    seen: list[int] = []
+
+    def progress(_path: Path, stats) -> None:
+        seen.append(stats.indexed)
+
+    stats = indexer.index_path(
+        cfg, photos, backend_name="synthetic", geocode=False, workers=2,
+        progress=progress,
+    )
+
+    assert stats.indexed == 4  # 4 originals; the copy is deduped, broken fails
+    assert stats.duplicates == 1
+    assert stats.failed == 1
+    assert seen  # progress was called as results streamed in
+
+
 def test_prune_removes_rows_for_deleted_files(tmp_path):
     from pathlib import Path
 

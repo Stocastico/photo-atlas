@@ -20,9 +20,10 @@ import json
 import os
 import sqlite3
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import cast
 
@@ -99,12 +100,216 @@ def thumb_path_for(config: AtlasConfig, sha1: str) -> Path:
     return config.thumbs_dir / sha1[:2] / f"{sha1}.jpg"
 
 
-def _save_face_crop(img: Image.Image, bbox: tuple[int, int, int, int], dest: Path) -> None:
+@dataclass
+class _PreparedFace:
+    """A detected face reduced to picklable, DB-ready primitives."""
+
+    bbox: tuple[int, int, int, int]
+    dim: int
+    embedding_blob: bytes | None
+    #: The cropped face encoded as JPEG bytes. Carried in-memory (not written to
+    #: disk yet) because its final path depends on the photo id, which only the
+    #: main process knows after the DB insert.
+    crop_jpeg: bytes | None
+    person_id: int | None
+    confidence: float
+
+
+@dataclass
+class _PreparedPhoto:
+    """Everything derived from one decoded image, ready to persist.
+
+    Holds only picklable primitives/bytes — no open :class:`PIL.Image.Image`, no
+    numpy arrays, no SQLite handle — so it can cross a process boundary when
+    indexing in parallel. The thumbnail is already written to its content-addressed
+    path (safe across processes: the name is the file's SHA-1); face crops travel
+    as encoded bytes and are written by the main process once the photo id exists.
+    """
+
+    path: str
+    filename: str
+    sha1: str
+    width: int | None
+    height: int | None
+    bytes: int
+    taken_at: str | None
+    taken_source: str
+    camera_make: str | None
+    camera_model: str | None
+    lat: float | None
+    lon: float | None
+    folder_place: str | None
+    scene_type: str
+    scene_scores: dict
+    thumb_path: str
+    faces: list[_PreparedFace]
+
+
+def _encode_face_crop(img: Image.Image, bbox: tuple[int, int, int, int]) -> bytes | None:
+    """Crop ``bbox`` from the open image and return JPEG bytes (or ``None``)."""
+
     x, y, w, h = bbox
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    # Detection runs on the non-transposed image, so crop without transpose.
-    crop = img.convert("RGB").crop((x, y, x + w, y + h))
-    crop.save(dest, "JPEG", quality=85)
+    try:
+        # Detection runs on the non-transposed image, so crop without transpose.
+        crop = img.convert("RGB").crop((x, y, x + w, y + h))
+        buf = BytesIO()
+        crop.save(buf, "JPEG", quality=85)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def _prepare_photo(
+    config: AtlasConfig,
+    path: Path,
+    *,
+    backend: FaceBackend | None,
+    tagger: SceneTagger,
+    centroids: dict[int, np.ndarray] | None,
+    sha1: str,
+) -> _PreparedPhoto:
+    """Decode one image exactly once and derive everything but the DB write.
+
+    Geocoding and persistence are left to the caller so this can run in a worker
+    process (it touches neither the SQLite handle nor a shared geocoder table) and
+    is reused unchanged by the serial path. Decoding the file a single time and
+    reusing the one Pillow image across metadata, faces, thumbnail and scene tag
+    (was 4+ decodes per file) is the core per-file speed-up.
+    """
+
+    path = Path(path)
+    with Image.open(path) as img:
+        img.load()
+        meta = extract_meta_from_image(img, path)
+
+        # Folder names (e.g. 2012/2012_05_Sardegna) often carry a year/month/place
+        # the file's EXIF lacks. Use them only to fill gaps: a folder date replaces
+        # the filesystem-mtime fallback but never a real EXIF capture time.
+        folder = extract_folder_meta(path)
+        if meta.taken_source != "exif" and folder.year is not None:
+            synthesized = datetime(folder.year, folder.month or 1, 1)
+            meta.taken_at = synthesized.isoformat(timespec="seconds")
+            meta.taken_source = "folder"
+
+        # Detect faces first so the scene tagger can use the count. The backend
+        # gets the already-decoded BGR array, so it never re-reads the file.
+        bgr = pil_to_bgr(img)
+        observations = backend.detect(path, image=bgr) if backend is not None else []
+
+        thumb_path = thumb_path_for(config, sha1)
+        make_thumbnail_from_image(img, thumb_path, size=config.thumb_size)
+
+        scene_label, scene_scores = tagger.tag_image(img, face_count=len(observations))
+
+        faces: list[_PreparedFace] = []
+        for obs in observations:
+            person_id: int | None = None
+            confidence = 0.0
+            if centroids:
+                person_id, confidence = best_person_match(
+                    obs.embedding, centroids, config.face_match_threshold
+                )
+            x, y, w, h = obs.bbox
+            faces.append(
+                _PreparedFace(
+                    bbox=(int(x), int(y), int(w), int(h)),
+                    dim=int(obs.embedding.shape[0]),
+                    embedding_blob=db.embedding_to_blob(obs.embedding),
+                    crop_jpeg=_encode_face_crop(img, obs.bbox),
+                    person_id=person_id,
+                    confidence=confidence,
+                )
+            )
+
+    return _PreparedPhoto(
+        path=str(path.resolve()),
+        filename=path.name,
+        sha1=sha1,
+        width=meta.width,
+        height=meta.height,
+        bytes=path.stat().st_size,
+        taken_at=meta.taken_at,
+        taken_source=meta.taken_source,
+        camera_make=meta.camera_make,
+        camera_model=meta.camera_model,
+        lat=meta.lat,
+        lon=meta.lon,
+        folder_place=folder.place,
+        scene_type=scene_label,
+        scene_scores=scene_scores,
+        thumb_path=str(thumb_path),
+        faces=faces,
+    )
+
+
+def _commit_prepared(
+    conn: sqlite3.Connection,
+    config: AtlasConfig,
+    prepared: _PreparedPhoto,
+    place,
+    stats: IndexStats | None,
+) -> int:
+    """Persist one prepared photo and its faces; return the photo id.
+
+    This is the only DB-touching half of indexing, so in parallel mode every
+    SQLite write still funnels through the single main-process connection.
+    """
+
+    record = {
+        "path": prepared.path,
+        "filename": prepared.filename,
+        "sha1": prepared.sha1,
+        "width": prepared.width,
+        "height": prepared.height,
+        "bytes": prepared.bytes,
+        "taken_at": prepared.taken_at,
+        "taken_source": prepared.taken_source,
+        "camera_make": prepared.camera_make,
+        "camera_model": prepared.camera_model,
+        "lat": prepared.lat,
+        "lon": prepared.lon,
+        "place_city": place.city if place else None,
+        "place_country": place.country if place else None,
+        "place_label": place.label if place else None,
+        "folder_place": prepared.folder_place,
+        "scene_type": prepared.scene_type,
+        "scene_scores": json.dumps(prepared.scene_scores),
+        "face_count": len(prepared.faces),
+        "thumb_path": prepared.thumb_path,
+        "indexed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    photo_id = db.upsert_photo(conn, record)
+
+    face_rows = []
+    for i, face in enumerate(prepared.faces):
+        crop_path = config.faces_dir / f"{photo_id}" / f"face_{i}.jpg"
+        crop_saved = False
+        if face.crop_jpeg is not None:
+            try:
+                crop_path.parent.mkdir(parents=True, exist_ok=True)
+                crop_path.write_bytes(face.crop_jpeg)
+                crop_saved = True
+            except Exception:
+                crop_saved = False
+        if face.person_id is not None and stats is not None:
+            stats.recognized += 1
+        x, y, w, h = face.bbox
+        face_rows.append(
+            {
+                "person_id": face.person_id,
+                "cluster_id": None,
+                "bbox_x": x, "bbox_y": y, "bbox_w": w, "bbox_h": h,
+                "dim": face.dim,
+                "embedding": face.embedding_blob,
+                "crop_path": str(crop_path) if crop_saved else None,
+                "confidence": face.confidence,
+            }
+        )
+
+    db.replace_faces(conn, photo_id, face_rows)
+    if stats is not None:
+        stats.faces += len(face_rows)
+    return photo_id
 
 
 def index_file(
@@ -124,119 +329,11 @@ def index_file(
     path = Path(path)
     if sha1 is None:
         sha1 = sha1_of(path)
-
-    # Decode the file exactly once and reuse the single Pillow image across
-    # metadata, faces, thumbnail and scene tagging (was 4+ decodes per file).
-    with Image.open(path) as img:
-        img.load()
-        meta = extract_meta_from_image(img, path)
-
-        # Folder names (e.g. 2012/2012_05_Sardegna) often carry a year/month/place
-        # the file's EXIF lacks. Use them only to fill gaps: a folder date replaces
-        # the filesystem-mtime fallback but never a real EXIF capture time.
-        folder = extract_folder_meta(path)
-        if meta.taken_source != "exif" and folder.year is not None:
-            synthesized = datetime(folder.year, folder.month or 1, 1)
-            meta.taken_at = synthesized.isoformat(timespec="seconds")
-            meta.taken_source = "folder"
-
-        place = None
-        if geocoder is not None:
-            place = geocoder.lookup(meta.lat, meta.lon)
-
-        # Detect faces first so the scene tagger can use the count. The backend
-        # gets the already-decoded BGR array, so it never re-reads the file.
-        bgr = pil_to_bgr(img)
-        observations = backend.detect(path, image=bgr) if backend is not None else []
-
-        thumb_path = thumb_path_for(config, sha1)
-        make_thumbnail_from_image(img, thumb_path, size=config.thumb_size)
-
-        scene_label, scene_scores = tagger.tag_image(img, face_count=len(observations))
-
-        return _store_indexed(
-            conn, config, path, sha1, img, meta, place, folder,
-            scene_label, scene_scores, observations, centroids, stats,
-        )
-
-
-def _store_indexed(
-    conn: sqlite3.Connection,
-    config: AtlasConfig,
-    path: Path,
-    sha1: str,
-    img: Image.Image,
-    meta,
-    place,
-    folder,
-    scene_label: str,
-    scene_scores: dict,
-    observations: list,
-    centroids: dict[int, np.ndarray] | None,
-    stats: IndexStats | None,
-) -> int:
-    """Persist one indexed photo and its faces (called within the decode scope)."""
-
-    thumb_path = thumb_path_for(config, sha1)
-    record = {
-        "path": str(path.resolve()),
-        "filename": path.name,
-        "sha1": sha1,
-        "width": meta.width,
-        "height": meta.height,
-        "bytes": path.stat().st_size,
-        "taken_at": meta.taken_at,
-        "taken_source": meta.taken_source,
-        "camera_make": meta.camera_make,
-        "camera_model": meta.camera_model,
-        "lat": meta.lat,
-        "lon": meta.lon,
-        "place_city": place.city if place else None,
-        "place_country": place.country if place else None,
-        "place_label": place.label if place else None,
-        "folder_place": folder.place,
-        "scene_type": scene_label,
-        "scene_scores": json.dumps(scene_scores),
-        "face_count": len(observations),
-        "thumb_path": str(thumb_path),
-        "indexed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    }
-    photo_id = db.upsert_photo(conn, record)
-
-    face_rows = []
-    for i, obs in enumerate(observations):
-        crop_path = config.faces_dir / f"{photo_id}" / f"face_{i}.jpg"
-        try:
-            _save_face_crop(img, obs.bbox, crop_path)
-            crop_saved = True
-        except Exception:
-            crop_saved = False
-
-        person_id, confidence = (None, 0.0)
-        if centroids:
-            person_id, confidence = best_person_match(
-                obs.embedding, centroids, config.face_match_threshold
-            )
-            if person_id is not None and stats is not None:
-                stats.recognized += 1
-
-        x, y, w, h = obs.bbox
-        face_rows.append(
-            {
-                "person_id": person_id,
-                "cluster_id": None,
-                "bbox_x": x, "bbox_y": y, "bbox_w": w, "bbox_h": h,
-                "dim": int(obs.embedding.shape[0]),
-                "embedding": db.embedding_to_blob(obs.embedding),
-                "crop_path": str(crop_path) if crop_saved else None,
-                "confidence": confidence,
-            }
-        )
-
-    db.replace_faces(conn, photo_id, face_rows)
-    if stats is not None:
-        stats.faces += len(face_rows)
-    return photo_id
+    prepared = _prepare_photo(
+        config, path, backend=backend, tagger=tagger, centroids=centroids, sha1=sha1
+    )
+    place = geocoder.lookup(prepared.lat, prepared.lon) if geocoder is not None else None
+    return _commit_prepared(conn, config, prepared, place, stats)
 
 
 def iter_files(root: Path):
@@ -265,6 +362,126 @@ def iter_images(root: Path):
             yield path
 
 
+# -- parallel worker plumbing ---------------------------------------------
+#: Per-process state for the worker pool. Built once by :func:`_worker_init`
+#: (the heavy ONNX backend, the scene tagger, the read-only centroid table) and
+#: reused across every file that worker handles, so the models load once per
+#: process rather than once per image.
+_WORKER_STATE: dict = {}
+
+
+def _worker_init(
+    backend_name: str,
+    model_dir: Path,
+    config: AtlasConfig,
+    centroids: dict[int, np.ndarray] | None,
+) -> None:
+    """Initialise a pool worker with its own backend / tagger (called once)."""
+
+    _WORKER_STATE["backend"] = (
+        get_backend(backend_name, model_dir=model_dir) if backend_name != "none" else None
+    )
+    _WORKER_STATE["tagger"] = SceneTagger()
+    _WORKER_STATE["config"] = config
+    _WORKER_STATE["centroids"] = centroids
+
+
+def _worker_prepare(task: tuple[str, str]) -> tuple[bool, object]:
+    """Prepare one file in a worker; return ``(ok, prepared_or_error_message)``."""
+
+    path_str, sha1 = task
+    try:
+        prepared = _prepare_photo(
+            _WORKER_STATE["config"], Path(path_str),
+            backend=_WORKER_STATE["backend"], tagger=_WORKER_STATE["tagger"],
+            centroids=_WORKER_STATE["centroids"], sha1=sha1,
+        )
+        return True, prepared
+    except Exception as exc:  # pragma: no cover - hit via the broken-file test
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def _index_parallel(
+    conn: sqlite3.Connection,
+    config: AtlasConfig,
+    tasks: Iterator[tuple[str, str]],
+    *,
+    backend_name: str,
+    centroids: dict[int, np.ndarray] | None,
+    geocoder: Geocoder | None,
+    stats: IndexStats,
+    workers: int,
+    progress: Callable[[Path, IndexStats], None] | None,
+) -> None:
+    """Fan the per-file decode/detect/thumbnail work out over a process pool.
+
+    Workers do the CPU-bound preparation; the main process keeps the single
+    SQLite connection and performs every write. Only ``workers * 4`` files are
+    ever in flight, so memory stays bounded regardless of library size, and
+    commits are batched rather than per-file.
+    """
+
+    import multiprocessing as mp
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+
+    # Make sure the ONNX weights are present before fanning out, so N workers
+    # don't race to download the same files into the shared model cache.
+    if backend_name in ("auto", "yunet"):
+        try:
+            from .models import ensure_models
+
+            ensure_models(config.models_dir, download=True)
+        except Exception:  # pragma: no cover - worker surfaces a clearer error
+            pass
+
+    ctx = mp.get_context("spawn")  # clean workers; safe for OpenCV/ONNX native libs
+    max_inflight = workers * 4
+    commit_every = 64
+    since_commit = 0
+
+    with ProcessPoolExecutor(
+        max_workers=workers, mp_context=ctx,
+        initializer=_worker_init,
+        initargs=(backend_name, config.models_dir, config, centroids),
+    ) as pool:
+        inflight: dict = {}
+
+        def submit_one() -> bool:
+            for task in tasks:
+                inflight[pool.submit(_worker_prepare, task)] = task
+                return True
+            return False
+
+        while len(inflight) < max_inflight and submit_one():
+            pass
+
+        while inflight:
+            done, _ = wait(inflight, return_when=FIRST_COMPLETED)
+            for fut in done:
+                path_str, _sha1 = inflight.pop(fut)
+                ok, payload = fut.result()
+                if ok:
+                    prepared = cast(_PreparedPhoto, payload)
+                    place = (
+                        geocoder.lookup(prepared.lat, prepared.lon)
+                        if geocoder is not None else None
+                    )
+                    _commit_prepared(conn, config, prepared, place, stats)
+                    stats.indexed += 1
+                    since_commit += 1
+                    if since_commit >= commit_every:
+                        conn.commit()
+                        since_commit = 0
+                else:
+                    stats.failed += 1
+                    if len(stats.errors) < _MAX_ERRORS:
+                        stats.errors.append(f"{path_str}: {payload}")
+                if progress is not None:
+                    progress(Path(path_str), stats)
+                submit_one()
+    conn.commit()
+
+
 def index_path(
     config: AtlasConfig,
     root: Path,
@@ -272,9 +489,15 @@ def index_path(
     backend_name: str = "auto",
     geocode: bool = True,
     recompute: bool = False,
+    workers: int | None = None,
     progress: Callable[[Path, IndexStats], None] | None = None,
 ) -> IndexStats:
-    """Index every supported image under ``root`` into the library."""
+    """Index every supported image under ``root`` into the library.
+
+    ``workers`` controls fan-out: ``None``/``1`` keeps the in-process path; a
+    larger value decodes and detects across that many worker processes (DB writes
+    still funnel through the single main connection).
+    """
 
     config.ensure_dirs()
     conn = db.connect(config.db_path)
@@ -320,41 +543,67 @@ def index_path(
             d.resolve()
             for d in (config.thumbs_dir, config.faces_dir, config.previews_dir, config.models_dir)
         )
-        for path in iter_files(root):
-            resolved = path.resolve()
-            if any(resolved == d or d in resolved.parents for d in derived):
-                continue
-            if is_video(path):
-                stats.videos += 1
-                continue
-            if not is_supported(path):
-                continue
-            stats.scanned += 1
-            if not recompute and str(resolved) in existing:
-                stats.skipped += 1
-                continue
-            try:
-                sha1 = sha1_of(path)
+
+        def iter_tasks() -> Iterator[tuple[str, str]]:
+            """Walk the tree, filtering + deduping, and yield ``(path, sha1)``.
+
+            All bookkeeping the parallel path can't do safely from a worker —
+            scan/skip/duplicate/video counting and SHA-1 dedup against the
+            catalog — happens here in the main process before a file is handed off.
+            """
+
+            for path in iter_files(root):
+                resolved = path.resolve()
+                if any(resolved == d or d in resolved.parents for d in derived):
+                    continue
+                if is_video(path):
+                    stats.videos += 1
+                    continue
+                if not is_supported(path):
+                    continue
+                stats.scanned += 1
+                if not recompute and str(resolved) in existing:
+                    stats.skipped += 1
+                    continue
+                try:
+                    sha1 = sha1_of(path)
+                except Exception as exc:
+                    stats.failed += 1
+                    if len(stats.errors) < _MAX_ERRORS:
+                        stats.errors.append(f"{path}: {type(exc).__name__}: {exc}")
+                    continue
                 # A byte-identical copy already in the catalog (same photo in two
                 # folders, a re-export, etc.) is skipped rather than duplicated.
                 if not recompute and sha1 in seen_sha1:
                     stats.duplicates += 1
                     continue
-                index_file(
-                    conn, config, path,
-                    backend=backend, geocoder=geocoder, tagger=tagger,
-                    centroids=centroids, stats=stats, sha1=sha1,
-                )
                 seen_sha1.add(sha1)
-                stats.indexed += 1
-                conn.commit()
-            except Exception as exc:
-                stats.failed += 1
-                if len(stats.errors) < _MAX_ERRORS:
-                    stats.errors.append(f"{path}: {type(exc).__name__}: {exc}")
-            if progress is not None:
-                progress(path, stats)
-        conn.commit()
+                yield str(path), sha1
+
+        if workers is not None and workers > 1:
+            _index_parallel(
+                conn, config, iter_tasks(),
+                backend_name=backend_name, centroids=centroids, geocoder=geocoder,
+                stats=stats, workers=workers, progress=progress,
+            )
+        else:
+            for path_str, sha1 in iter_tasks():
+                path = Path(path_str)
+                try:
+                    index_file(
+                        conn, config, path,
+                        backend=backend, geocoder=geocoder, tagger=tagger,
+                        centroids=centroids, stats=stats, sha1=sha1,
+                    )
+                    stats.indexed += 1
+                    conn.commit()
+                except Exception as exc:
+                    stats.failed += 1
+                    if len(stats.errors) < _MAX_ERRORS:
+                        stats.errors.append(f"{path}: {type(exc).__name__}: {exc}")
+                if progress is not None:
+                    progress(path, stats)
+            conn.commit()
     finally:
         conn.close()
     return stats

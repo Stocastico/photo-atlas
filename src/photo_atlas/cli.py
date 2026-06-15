@@ -41,12 +41,16 @@ def _cmd_index(args) -> int:
         )
         sys.stdout.flush()
 
-    print(f"Indexing {root} ...")
+    import os
+
+    workers = args.workers if args.workers is not None else (os.cpu_count() or 1)
+    print(f"Indexing {root} ... (workers={workers})")
     stats = index_path(
         config, root,
         backend_name=args.faces,
         geocode=not args.no_geocode,
         recompute=args.recompute,
+        workers=workers,
         progress=progress,
     )
     print()
@@ -164,6 +168,10 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Face detection backend (yunet = deep YuNet+SFace)")
     p_index.add_argument("--no-geocode", action="store_true", help="Skip reverse geocoding")
     p_index.add_argument("--recompute", action="store_true", help="Re-index already known photos")
+    p_index.add_argument(
+        "--workers", type=int, default=None,
+        help="Worker processes for decode/detect (default: CPU count; 1 = serial)",
+    )
     p_index.set_defaults(func=_cmd_index)
 
     p_cluster = sub.add_parser("cluster", help="Cluster unnamed faces")
