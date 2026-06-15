@@ -254,7 +254,7 @@ async function renderPhotos(reset = true) {
   $("#grid-loading").style.display = "block";
 
   const params = filterParams();
-  if (state.sort === "oldest") params.set("sort", "oldest");
+  if (state.sort && state.sort !== "newest") params.set("sort", state.sort);
   params.set("limit", String(PAGE));
   params.set("offset", String(state.offset));
 

@@ -228,6 +228,43 @@ def test_search_filters(indexed):
     assert sum(p["count"] for p in fp["persons"]) >= 0  # persons facet still resolves
 
 
+def test_sort_options(indexed):
+    conn = db.connect(indexed.db_path)
+
+    newest, _ = search.search_photos(conn, {"sort": "newest"}, limit=500)
+    oldest, _ = search.search_photos(conn, {"sort": "oldest"}, limit=500)
+    # Oldest-first is the exact reverse ordering of newest-first by date.
+    assert [p["id"] for p in oldest][::-1] == [p["id"] for p in newest]
+    dates = [p["taken_at"] for p in newest]
+    assert dates == sorted(dates, reverse=True)
+
+    az, _ = search.search_photos(conn, {"sort": "filename"}, limit=500)
+    za, _ = search.search_photos(conn, {"sort": "filename_desc"}, limit=500)
+    names = [p["filename"].lower() for p in az]
+    assert names == sorted(names)
+    assert [p["id"] for p in za] == [p["id"] for p in az][::-1]
+
+    recent, _ = search.search_photos(conn, {"sort": "indexed"}, limit=500)
+    stamps = [p["indexed_at"] for p in recent]
+    assert stamps == sorted(stamps, reverse=True)
+
+    # An unknown sort key falls back to the default (newest) rather than erroring.
+    fallback, _ = search.search_photos(conn, {"sort": "bogus"}, limit=500)
+    assert [p["id"] for p in fallback] == [p["id"] for p in newest]
+
+
+def test_sort_pagination_is_stable(indexed):
+    """Paging must not drop or duplicate rows even when the sort key ties."""
+    conn = db.connect(indexed.db_path)
+    for sort in ("newest", "oldest", "filename", "filename_desc", "indexed"):
+        full, total = search.search_photos(conn, {"sort": sort}, limit=500)
+        page1, _ = search.search_photos(conn, {"sort": sort}, limit=10, offset=0)
+        page2, _ = search.search_photos(conn, {"sort": sort}, limit=10, offset=10)
+        paged_ids = [p["id"] for p in page1] + [p["id"] for p in page2]
+        assert paged_ids == [p["id"] for p in full][: len(paged_ids)]
+        assert len(set(paged_ids)) == len(paged_ids)  # no duplicates across pages
+
+
 def test_multi_select_filters(indexed):
     conn = db.connect(indexed.db_path)
     f = search.facets(conn)

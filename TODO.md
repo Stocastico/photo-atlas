@@ -37,7 +37,9 @@ responsive/mobile work is intentionally deprioritised.
 - [x] **Facet "show more".** Sidebar sections cap at 14 items with a
   "+N more / Show less" toggle (per-facet expand state) instead of silently
   truncating.
-- [ ] **More sort options** (e.g. by filename / by recently indexed).
+- [x] **More sort options.** Sort dropdown now offers newest/oldest, filename
+  A–Z / Z–A and "recently indexed"; every key carries an `id` tiebreaker so
+  `LIMIT/OFFSET` paging stays stable when the sort value ties.
 
 ### Performance & memory at scale
 - [ ] **Virtualize / window the photo grid.** Today infinite scroll *appends*
