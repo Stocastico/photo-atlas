@@ -87,6 +87,20 @@ def _cmd_prune(args) -> int:
     return 0
 
 
+def _cmd_export_labels(args) -> int:
+    from .export import write_xmp_sidecars
+
+    config = _config(args)
+    dest = Path(args.dest).expanduser() if args.dest else None
+    result = write_xmp_sidecars(config, dest=dest)
+    where = f" into {dest}" if dest else " next to each photo"
+    print(
+        f"Wrote {result['written']} XMP sidecar(s){where} "
+        f"for {result['photos']} photo(s) with named people."
+    )
+    return 0
+
+
 def _cmd_demo(args) -> int:
     from .demo import generate
 
@@ -157,6 +171,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_prune = sub.add_parser("prune", help="Remove catalog entries for deleted files")
     p_prune.set_defaults(func=_cmd_prune)
+
+    p_export = sub.add_parser(
+        "export-labels", help="Write person names to portable XMP sidecars"
+    )
+    p_export.add_argument(
+        "--dest", help="Write sidecars into this directory instead of next to photos"
+    )
+    p_export.set_defaults(func=_cmd_export_labels)
 
     p_demo = sub.add_parser("demo", help="Generate and index a synthetic demo library")
     p_demo.add_argument("--count", type=int, default=24, help="Number of demo photos")

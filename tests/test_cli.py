@@ -80,6 +80,32 @@ def test_prune_command_removes_deleted_files(tmp_path, capsys):
     assert "Pruned 1" in capsys.readouterr().out
 
 
+def test_export_labels_command_writes_sidecars(tmp_path, capsys):
+    from pathlib import Path
+
+    from photo_atlas import db
+    from photo_atlas.config import AtlasConfig
+
+    home = tmp_path / "lib"
+    cfg = AtlasConfig(home=home).ensure_dirs()
+    conn = db.connect(cfg.db_path)
+    try:
+        pid = db.upsert_photo(
+            conn, {"path": str(tmp_path / "p.jpg"), "filename": "p.jpg"}
+        )
+        person = db.get_or_create_person(conn, "Grace")
+        db.replace_faces(conn, pid, [{"person_id": person}])
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = tmp_path / "xmp"
+    rc = cli.main(["--home", str(home), "export-labels", "--dest", str(out)])
+    assert rc == 0
+    assert "1 XMP sidecar" in capsys.readouterr().out
+    assert (out / "p.jpg.xmp").exists()
+
+
 def test_index_missing_path_returns_error(tmp_path, capsys):
     rc = cli.main(["--home", str(tmp_path / "lib"), "index", str(tmp_path / "nope")])
     assert rc == 2
