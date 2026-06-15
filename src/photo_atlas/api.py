@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, library, search
+from . import db, library, metadata, search
 from .config import AtlasConfig
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -109,6 +109,23 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         if row is None or not Path(row["path"]).exists():
             raise HTTPException(404, "image not found")
         return FileResponse(row["path"])
+
+    @app.get("/api/preview/{photo_id}")
+    def api_preview(photo_id: int, conn: sqlite3.Connection = Depends(get_conn)):
+        row = conn.execute("SELECT path, sha1 FROM photos WHERE id=?", (photo_id,)).fetchone()
+        if row is None or not row["path"] or not Path(row["path"]).exists():
+            raise HTTPException(404, "image not found")
+        src = Path(row["path"])
+        sha1 = row["sha1"] or metadata.sha1_of(src)
+        dest = config.previews_dir / sha1[:2] / f"{sha1}_{config.preview_size}.jpg"
+        if not dest.exists():
+            try:
+                metadata.make_preview(src, dest, size=config.preview_size)
+            except Exception:
+                # Any decode/encode failure (corrupt or exotic format) falls
+                # back to streaming the original so the lightbox still works.
+                return FileResponse(src)
+        return FileResponse(dest)
 
     @app.get("/api/thumb/{photo_id}")
     def api_thumb(photo_id: int, conn: sqlite3.Connection = Depends(get_conn)):

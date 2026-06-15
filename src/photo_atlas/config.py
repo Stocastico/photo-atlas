@@ -31,6 +31,10 @@ class AtlasConfig:
     #: Edge size (px) of the long side of generated thumbnails.
     thumb_size: int = 320
 
+    #: Edge size (px) of the long side of lightbox preview derivatives. The
+    #: full-resolution original is still served on demand for download.
+    preview_size: int = 1600
+
     #: Face matches closer than this cosine distance are considered the same
     #: identity when auto-recognising newly indexed photos. Tuned for SFace,
     #: where same-person pairs sit near ~0.1-0.4 and different people near ~0.9.
@@ -62,10 +66,15 @@ class AtlasConfig:
     def faces_dir(self) -> Path:
         return self.home / "faces"
 
+    @property
+    def previews_dir(self) -> Path:
+        return self.home / "previews"
+
     def ensure_dirs(self) -> "AtlasConfig":
         """Create the library directory tree if it does not exist yet."""
 
         self.home.mkdir(parents=True, exist_ok=True)
         self.thumbs_dir.mkdir(parents=True, exist_ok=True)
         self.faces_dir.mkdir(parents=True, exist_ok=True)
+        self.previews_dir.mkdir(parents=True, exist_ok=True)
         return self

@@ -60,11 +60,11 @@ responsive/mobile work is intentionally deprioritised.
      Most robust for tens of thousands of photos; most code. A small lib
      (or a ~100-line custom windower over the fixed-aspect grid) would do.
   Recommendation: ship (1) now as a safety net, then (3) if libraries get huge.
-- [ ] **Cap the lightbox image size.** The lightbox loads the full-resolution
-  original; a 50 MP photo decodes to ~200 MB. Flicking through many via the
-  arrow keys could spike memory. Consider a medium "preview" derivative
-  (e.g. 1600px) served from a new endpoint, with the true original behind a
-  "view full size / download" action.
+- [x] **Cap the lightbox image size.** The lightbox now loads a bounded
+  preview derivative (`preview_size`, default 1600px) from `GET /api/preview/{id}`,
+  generated on first request and cached content-addressed under
+  `~/.photo_atlas/previews`. The true full-resolution original stays behind a
+  "View full size ↗" link to `/api/image/{id}`.
 - [ ] **Thumbnail `srcset` / sizing.** Serve the 320px thumb but hint intrinsic
   size so the browser reserves layout and avoids reflow on load.
 

@@ -103,6 +103,8 @@ button.ghost { background: var(--panel-2); color: var(--text); border: 1px solid
 .lb-side h2 { font-size: 16px; margin: 0 0 4px; }
 .lb-side .kv { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
 .lb-side .kv span:first-child { color: var(--muted); }
+.lb-actions { margin: 12px 0 0; font-size: 13px; }
+.lb-actions a { text-decoration: none; }
 .face-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .face-item { display: flex; align-items: center; gap: 8px; }
 .face-item img { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; }

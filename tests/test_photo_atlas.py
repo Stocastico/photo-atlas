@@ -333,6 +333,36 @@ def test_has_faces_and_date_filters(indexed):
     assert tcomb <= tf and tcomb <= tn
 
 
+def test_preview_endpoint_caps_size_and_caches(indexed):
+    import io
+
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    from photo_atlas.api import create_app
+
+    client = TestClient(create_app(indexed))
+    pid = client.get("/api/photos").json()["photos"][0]["id"]
+
+    res = client.get(f"/api/preview/{pid}")
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("image/")
+
+    img = Image.open(io.BytesIO(res.content))
+    assert max(img.size) <= indexed.preview_size
+
+    # The derivative is cached to disk content-addressed by sha1, so a second
+    # request reuses the file rather than re-encoding.
+    cached = list(indexed.previews_dir.rglob("*.jpg"))
+    assert cached, "preview should be written to the previews cache"
+    again = client.get(f"/api/preview/{pid}")
+    assert again.status_code == 200
+
+    # The full-resolution original is still reachable for download.
+    assert client.get(f"/api/image/{pid}").status_code == 200
+    assert client.get("/api/preview/999999").status_code == 404
+
+
 def test_cluster_assignment_and_recognition(indexed):
     conn = db.connect(indexed.db_path)
     clusters = library.list_clusters(conn)

@@ -320,7 +320,10 @@ async function openLightbox(index) {
   // Guard against a fast prev/next click landing on a different photo.
   if (state.lightboxIndex !== index) return;
 
-  $("#lb-img").src = `/api/image/${base.id}`;
+  // The lightbox shows a bounded preview derivative (capped at the server's
+  // preview_size) so flicking through big originals doesn't spike memory; the
+  // true full-resolution file stays behind the "View full size" link.
+  $("#lb-img").src = `/api/preview/${base.id}`;
   const side = $("#lb-side");
   const kv = (k, v) => (v ? `<div class="kv"><span>${k}</span><span>${esc(v)}</span></div>` : "");
   side.innerHTML = `
@@ -331,6 +334,7 @@ async function openLightbox(index) {
     ${kv("Camera", [p.camera_make, p.camera_model].filter(Boolean).join(" "))}
     ${kv("Size", p.width && p.height ? `${p.width}×${p.height}` : "")}
     ${kv("Coordinates", p.lat != null ? `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}` : "")}
+    <p class="lb-actions"><a href="/api/image/${base.id}" target="_blank" rel="noopener">View full size ↗</a></p>
     <h3 style="margin-top:16px">Faces (${p.faces.length})</h3>
     <div class="face-list" id="lb-faces"></div>`;
 
