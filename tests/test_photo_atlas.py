@@ -333,6 +333,23 @@ def test_has_faces_and_date_filters(indexed):
     assert tcomb <= tf and tcomb <= tn
 
 
+def test_empty_library_onboarding_signal(config):
+    """An empty catalog reports zero totals (the UI's onboarding trigger) and
+    the page ships the onboarding + toast scaffolding."""
+    from fastapi.testclient import TestClient
+
+    from photo_atlas.api import create_app
+
+    client = TestClient(create_app(config))
+    assert client.get("/api/photos").json()["total"] == 0
+    assert client.get("/api/facets").json()["total"] == 0
+
+    html = client.get("/").text
+    assert 'id="onboarding"' in html
+    assert 'id="toast"' in html
+    assert 'photo-atlas index' in html  # onboarding shows the CLI hint
+
+
 def test_preview_endpoint_caps_size_and_caches(indexed):
     import io
 

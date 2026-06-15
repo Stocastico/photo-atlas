@@ -96,6 +96,26 @@ button.icon { padding: 6px 9px; line-height: 1; }
 .cover-grid img.selected { border-color: var(--accent); }
 .empty { color: var(--muted); text-align: center; padding: 60px 0; }
 .loading { color: var(--muted); text-align: center; padding: 24px 0; font-size: 13px; }
+.onboarding { max-width: 640px; margin: 0 auto; }
+.onboarding h2 { color: var(--text); margin-bottom: 6px; }
+.onboarding pre {
+  text-align: left; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px 16px; overflow-x: auto; color: var(--text); font-size: 13px;
+}
+.onboarding code { color: var(--text); }
+/* keyboard focus visibility */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.card:focus-visible { outline-offset: -2px; }
+/* toast / error banner */
+.toast {
+  position: fixed; left: 50%; bottom: 24px;
+  transform: translateX(-50%) translateY(20px);
+  background: #3a1d1d; color: #ffd7d7; border: 1px solid #7a2e2e;
+  padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 80;
+  opacity: 0; pointer-events: none; transition: opacity .2s ease, transform .2s ease; max-width: 80vw;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast.info { background: #16263a; color: #d7e8ff; border-color: #2e567a; }
 /* active filter pills */
 #active-filters { display: none; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 .filter-pill {

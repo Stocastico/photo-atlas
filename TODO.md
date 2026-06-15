@@ -87,12 +87,18 @@ responsive/mobile work is intentionally deprioritised.
   (`PUT /api/persons/{id}/cover`).
 
 ### Robustness & polish
-- [ ] **Error states.** `api()` assumes JSON; a failed request currently breaks
-  silently. Add a thin wrapper with try/catch + a toast/inline message.
-- [ ] **Empty-library onboarding.** First-run hint pointing at
-  `photo-atlas index` / `cluster` when the catalog is empty.
-- [ ] **Accessibility.** Focus-trap the lightbox, restore focus on close, add
-  `aria` labels/roles to chips and pills, keyboard-operable cards.
+- [x] **Error states.** `api()` is now a thin wrapper that catches network
+  failures and non-2xx responses, surfaces them via an `aria-live` toast and
+  throws (so callers skip their re-render) instead of breaking silently.
+- [x] **Empty-library onboarding.** When the library is genuinely empty (no
+  photos and no active filters) a first-run panel shows the
+  `photo-atlas index` / `cluster` / `serve` commands; a filtered no-match still
+  shows the plain "No photos match" message.
+- [x] **Accessibility.** Lightbox is a focus-trapped `role="dialog"` that
+  restores focus to the opening card on close; arrow keys no longer hijack
+  typing in face inputs. Cards are keyboard-operable (`role=button`, Enter/Space),
+  chips expose `aria-pressed`, pills have `aria-label`s, and a visible
+  `:focus-visible` outline was added.
 
 ### Explicitly deferred (browser-only target)
 - [ ] **Responsive / mobile layout.** `.layout` is a fixed `250px 1fr` grid with

@@ -21,8 +21,42 @@ const FILTER_NAMES = {
 const FACET_CAP = 14;
 
 const $ = (s) => document.querySelector(s);
-const api = async (url, opts) => (await fetch(url, opts)).json();
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// Transient status message (errors by default). aria-live announces it.
+let toastTimer;
+function toast(msg, kind = "error") {
+  const t = $("#toast");
+  if (!t) return;
+  t.textContent = msg;
+  t.className = `toast show ${kind}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.className = "toast"), 4500);
+}
+
+// Thin fetch wrapper: surfaces network failures and non-2xx responses as a
+// toast and throws, so a failed request never breaks the UI silently. Callers
+// that await it are skipped (no re-render) when it throws.
+async function api(url, opts) {
+  let res;
+  try {
+    res = await fetch(url, opts);
+  } catch (e) {
+    toast("Network error — is the server still running?");
+    throw e;
+  }
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (_) { /* non-JSON body */ }
+    toast(`Error ${res.status}: ${detail}`);
+    throw new Error(`${res.status} ${detail}`);
+  }
+  try {
+    return await res.json();
+  } catch (_) {
+    return null; // tolerate empty bodies
+  }
+}
 
 function fmtDate(iso) {
   if (!iso) return "—";
@@ -71,6 +105,7 @@ function toggleHasFaces() {
 function chip(label, count, active, onClick) {
   const el = document.createElement("button");
   el.className = "chip" + (active ? " active" : "");
+  el.setAttribute("aria-pressed", active ? "true" : "false");
   el.innerHTML = `${esc(label)}${count != null ? ` <span class="n">${count}</span>` : ""}`;
   el.onclick = onClick;
   return el;
@@ -217,6 +252,7 @@ function renderActiveFilters() {
     const text = k === "has_faces" ? "Has people" : `${FILTER_NAMES[k] || k}: ${filterValueLabel(k, v)}`;
     pill.innerHTML = `<span>${esc(text)}</span><span class="x">✕</span>`;
     pill.title = "Remove filter";
+    pill.setAttribute("aria-label", `Remove filter ${text}`);
     pill.onclick = () => removeFilterValue(k, v);
     bar.appendChild(pill);
   }
@@ -239,7 +275,13 @@ function photoCard(p, index) {
     <img loading="lazy" src="/api/thumb/${p.id}" alt="${esc(p.filename)}" />
     ${p.face_count ? `<span class="badge">👤 ${p.face_count}</span>` : ""}
     <div class="meta">${place}<span>${(p.taken_at || "").slice(0, 4)}</span></div>`;
+  card.setAttribute("role", "button");
+  card.setAttribute("tabindex", "0");
+  card.setAttribute("aria-label", `Open ${p.filename}`);
   card.onclick = () => openLightbox(index);
+  card.onkeydown = (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openLightbox(index); }
+  };
   return card;
 }
 
@@ -273,7 +315,12 @@ async function renderPhotos(reset = true) {
   state.offset += data.photos.length;
 
   $("#result-count").textContent = `${data.total} result${data.total === 1 ? "" : "s"}`;
-  $("#grid-empty").style.display = state.photos.length ? "none" : "block";
+  // Distinguish a genuinely empty library (first-run onboarding) from a filter
+  // that simply matched nothing.
+  const empty = state.photos.length === 0;
+  const libraryEmpty = empty && activeFilterPairs().length === 0;
+  $("#onboarding").style.display = libraryEmpty ? "block" : "none";
+  $("#grid-empty").style.display = empty && !libraryEmpty ? "block" : "none";
 
   const grid = $("#grid");
   data.photos.forEach((p, i) => grid.appendChild(photoCard(p, baseIndex + i)));
@@ -301,6 +348,15 @@ window.addEventListener("scroll", () => {
 function closeLightbox() {
   $("#lightbox").classList.remove("open");
   state.lightboxIndex = null;
+  // Restore focus to whatever opened the lightbox (the photo card).
+  if (state.lastFocus && state.lastFocus.focus) state.lastFocus.focus();
+  state.lastFocus = null;
+}
+
+function focusableInLightbox() {
+  const lb = $("#lightbox");
+  return [...lb.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter((el) => !el.disabled && el.offsetParent !== null);
 }
 
 function lightboxStep(delta) {
@@ -310,12 +366,15 @@ function lightboxStep(delta) {
 }
 
 async function openLightbox(index) {
+  const wasOpen = $("#lightbox").classList.contains("open");
+  if (!wasOpen) state.lastFocus = document.activeElement;
   state.lightboxIndex = index;
   $("#lb-prev").disabled = index <= 0;
   $("#lb-next").disabled = index >= state.photos.length - 1;
 
   const base = state.photos[index];
   $("#lightbox").classList.add("open");
+  if (!wasOpen) $("#lb-close").focus();
   const p = await api(`/api/photos/${base.id}`);
   // Guard against a fast prev/next click landing on a different photo.
   if (state.lightboxIndex !== index) return;
@@ -432,11 +491,10 @@ function startRename(card, person) {
   const save = async () => {
     const name = input.value.trim();
     if (!name || name === person.name) return renderPeople();
-    const res = await api(`/api/persons/${person.id}`, {
+    await api(`/api/persons/${person.id}`, {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     });
-    if (res && res.ok === false) return;
     renderPeople(); renderSidebar();
   };
   box.querySelector("button").onclick = save;
@@ -489,11 +547,10 @@ function openMergePicker(panel, person, allPersons) {
     const target = Number(select.value);
     const targetName = others.find((p) => p.id === target)?.name || "that person";
     if (!confirm(`Merge ${person.name} into ${targetName}? This can't be undone.`)) return;
-    const res = await api(`/api/persons/${target}/merge`, {
+    await api(`/api/persons/${target}/merge`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ source_id: person.id }),
     });
-    if (res && res.ok === false) return;
     renderPeople(); renderSidebar();
   };
 }
@@ -558,9 +615,18 @@ $("#sort").onchange = (e) => { state.sort = e.target.value; renderPhotos(true); 
 
 document.addEventListener("keydown", (e) => {
   if (!$("#lightbox").classList.contains("open")) return;
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
   if (e.key === "Escape") closeLightbox();
-  else if (e.key === "ArrowLeft") lightboxStep(-1);
-  else if (e.key === "ArrowRight") lightboxStep(1);
+  else if (e.key === "ArrowLeft" && !typing) lightboxStep(-1);
+  else if (e.key === "ArrowRight" && !typing) lightboxStep(1);
+  else if (e.key === "Tab") {
+    // Focus trap: keep Tab cycling within the dialog.
+    const f = focusableInLightbox();
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
 });
 
 let searchTimer;
