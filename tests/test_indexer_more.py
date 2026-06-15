@@ -163,6 +163,43 @@ def test_index_file_decodes_image_once(tmp_path, monkeypatch):
     assert calls["n"] == 1
 
 
+def test_prune_removes_rows_for_deleted_files(tmp_path):
+    from pathlib import Path
+
+    from photo_atlas import db, demo
+
+    photos = tmp_path / "p"
+    paths = demo.generate(photos, count=3, seed=7)
+    cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    indexer.index_path(cfg, photos, backend_name="synthetic", geocode=False)
+
+    # The user deletes one source file on disk.
+    victim = Path(paths[0])
+    conn = db.connect(cfg.db_path)
+    try:
+        row = conn.execute(
+            "SELECT id, thumb_path FROM photos WHERE path=?", (str(victim.resolve()),)
+        ).fetchone()
+        victim_id, thumb = row["id"], row["thumb_path"]
+    finally:
+        conn.close()
+    victim.unlink()
+
+    result = indexer.prune_library(cfg)
+    assert result["removed"] == 1 and result["kept"] == 2
+
+    conn = db.connect(cfg.db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0] == 2
+        # Its faces went too (cascade), and the row is gone.
+        assert conn.execute(
+            "SELECT COUNT(*) FROM faces WHERE photo_id=?", (victim_id,)
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+    assert not Path(thumb).exists()  # derivative cleaned up
+
+
 def test_reindex_reuses_content_addressed_thumb(tmp_path):
     from photo_atlas import demo
 

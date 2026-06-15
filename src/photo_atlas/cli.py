@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import db
 from .config import AtlasConfig
-from .indexer import cluster_library, index_path
+from .indexer import cluster_library, index_path, prune_library
 from .search import facets
 
 
@@ -73,6 +73,16 @@ def _cmd_cluster(args) -> int:
     result = cluster_library(config)
     print(f"Clustered {result['faces']} unnamed faces into {result['clusters']} groups.")
     print("Open the web UI (`photo-atlas serve`) to name them.")
+    return 0
+
+
+def _cmd_prune(args) -> int:
+    config = _config(args)
+    result = prune_library(config)
+    print(
+        f"Pruned {result['removed']} photo(s) whose files are gone; "
+        f"{result['kept']} still present."
+    )
     return 0
 
 
@@ -143,6 +153,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_cluster = sub.add_parser("cluster", help="Cluster unnamed faces")
     p_cluster.set_defaults(func=_cmd_cluster)
+
+    p_prune = sub.add_parser("prune", help="Remove catalog entries for deleted files")
+    p_prune.set_defaults(func=_cmd_prune)
 
     p_demo = sub.add_parser("demo", help="Generate and index a synthetic demo library")
     p_demo.add_argument("--count", type=int, default=24, help="Number of demo photos")

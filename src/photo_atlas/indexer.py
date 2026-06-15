@@ -341,6 +341,38 @@ def index_path(
     return stats
 
 
+def prune_library(config: AtlasConfig) -> dict[str, int]:
+    """Drop catalog rows whose source file no longer exists on disk.
+
+    Indexing only ever adds or updates rows, so moved/deleted photos linger as
+    dead entries that 404 in the UI. ``prune`` reconciles the catalog with the
+    filesystem: for each missing file it removes the photo row (its faces cascade
+    away) and deletes the now-orphaned thumbnail and face crops.
+    """
+
+    import shutil
+
+    conn = db.connect(config.db_path)
+    removed = kept = 0
+    try:
+        rows = conn.execute("SELECT id, path, thumb_path FROM photos").fetchall()
+        for row in rows:
+            if Path(row["path"]).exists():
+                kept += 1
+                continue
+            if row["thumb_path"]:
+                Path(row["thumb_path"]).unlink(missing_ok=True)
+            crop_dir = config.faces_dir / str(row["id"])
+            if crop_dir.exists():
+                shutil.rmtree(crop_dir, ignore_errors=True)
+            conn.execute("DELETE FROM photos WHERE id=?", (row["id"],))
+            removed += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return {"removed": removed, "kept": kept}
+
+
 def cluster_library(config: AtlasConfig) -> dict[str, int]:
     """Cluster all unnamed faces so groups can be labelled in one go."""
 

@@ -63,6 +63,23 @@ def test_index_real_directory(tmp_path, capsys):
     assert "0 indexed, 5 skipped" in capsys.readouterr().out
 
 
+def test_prune_command_removes_deleted_files(tmp_path, capsys):
+    from pathlib import Path
+
+    from photo_atlas import demo
+
+    photos = tmp_path / "pics"
+    paths = demo.generate(photos, count=3, seed=4)
+    home = tmp_path / "lib"
+    cli.main(["--home", str(home), "index", str(photos), "--faces", "none"])
+    capsys.readouterr()
+
+    Path(paths[0]).unlink()
+    rc = cli.main(["--home", str(home), "prune"])
+    assert rc == 0
+    assert "Pruned 1" in capsys.readouterr().out
+
+
 def test_index_missing_path_returns_error(tmp_path, capsys):
     rc = cli.main(["--home", str(tmp_path / "lib"), "index", str(tmp_path / "nope")])
     assert rc == 2
