@@ -63,6 +63,39 @@ def test_unavailable_backend_warns_and_indexes_without_faces(tmp_path, capsys):
     assert stats.faces == 0
 
 
+def test_index_warns_when_geocoder_is_low_resolution(tmp_path):
+    from photo_atlas import demo
+
+    photos = tmp_path / "p"
+    demo.generate(photos, count=2, seed=1)
+    cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    # reverse_geocoder isn't installed in the test env, so geocoding falls back
+    # to the coarse bundled table — the user should be told.
+    import io
+    import contextlib
+
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        indexer.index_path(cfg, photos, backend_name="none", geocode=True)
+    msg = err.getvalue()
+    assert "reverse_geocoder" in msg or "--extra geo" in msg
+
+
+def test_no_geocode_run_does_not_warn_about_resolution(tmp_path):
+    from photo_atlas import demo
+
+    photos = tmp_path / "p"
+    demo.generate(photos, count=1, seed=1)
+    cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    import io
+    import contextlib
+
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        indexer.index_path(cfg, photos, backend_name="none", geocode=False)
+    assert "reverse_geocoder" not in err.getvalue()
+
+
 def test_progress_callback_is_invoked(tmp_path):
     from photo_atlas import demo
 

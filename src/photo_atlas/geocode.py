@@ -80,6 +80,17 @@ class Geocoder:
             except ModuleNotFoundError:
                 self._rg = None
 
+    @property
+    def high_resolution(self) -> bool:
+        """True when the fine-grained ``reverse_geocoder`` backend is active.
+
+        Without it, lookups fall back to the bundled ~120-city table, which can
+        mislabel a location by tens of kilometres (the nearest of 120 world
+        cities, not the actual town).
+        """
+
+        return self._rg is not None
+
     def lookup(self, lat: float | None, lon: float | None) -> Place | None:
         if lat is None or lon is None:
             return None

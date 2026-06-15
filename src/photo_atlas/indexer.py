@@ -275,6 +275,15 @@ def index_path(
             file=sys.stderr,
         )
     geocoder = Geocoder() if geocode else None
+    if geocoder is not None and not geocoder.high_resolution:
+        import sys
+
+        print(
+            "warning: reverse geocoding is using the bundled ~120-city table, so "
+            "city/country labels will be coarse and often wrong. Install the "
+            "high-resolution backend with `uv sync --extra geo` (reverse_geocoder).",
+            file=sys.stderr,
+        )
     tagger = SceneTagger()
     stats = IndexStats()
 
