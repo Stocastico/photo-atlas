@@ -60,6 +60,30 @@ def test_search_photos_omits_scene_scores_but_detail_keeps_it(tmp_path):
         conn.close()
 
 
+def test_people_count_filter_and_facet(tmp_path):
+    """Number-of-people buckets filter on face_count and the facet counts agree."""
+
+    conn = db.connect(tmp_path / "s.db")
+    try:
+        for i, fc in enumerate([0, 1, 1, 3, 7]):
+            _insert(conn, path=f"/a/{i}.jpg", face_count=fc)
+
+        # Portrait = exactly one face.
+        _, portraits = search.search_photos(conn, {"people": ["1"]})
+        assert portraits == 2
+        # Groups = 2-4 OR 5+ (OR within the facet).
+        _, groups = search.search_photos(conn, {"people": ["2-4", "5+"]})
+        assert groups == 2
+        # No-people bucket.
+        _, none = search.search_photos(conn, {"people": ["0"]})
+        assert none == 1
+
+        buckets = {b["value"]: b["count"] for b in search.facets(conn)["people"]}
+        assert buckets == {"0": 1, "1": 2, "2-4": 1, "5+": 1}
+    finally:
+        conn.close()
+
+
 def test_search_skips_count_when_not_requested(tmp_path):
     """``count=False`` (used for every infinite-scroll page after the first)
     returns a sentinel total of -1 and still pages correctly."""

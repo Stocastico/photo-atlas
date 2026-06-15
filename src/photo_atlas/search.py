@@ -56,6 +56,26 @@ def _like_escape(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# People-count buckets: token -> SQL predicate on ``p.face_count``. Shared by
+# the ``people`` filter and its facet so chip counts and results always agree.
+# "1" is a portrait; "2-4"/"5+" are groups of people. Predicates are literal
+# (no bound params), so they're safe to splice straight into the WHERE.
+PEOPLE_BUCKETS: list[tuple[str, str]] = [
+    ("0", "p.face_count = 0"),
+    ("1", "p.face_count = 1"),
+    ("2-4", "p.face_count BETWEEN 2 AND 4"),
+    ("5+", "p.face_count >= 5"),
+]
+_PEOPLE_PREDICATE = dict(PEOPLE_BUCKETS)
+
+# A single CASE mapping face_count -> bucket token, for the facet's GROUP BY.
+_PEOPLE_CASE = (
+    "CASE WHEN p.face_count = 0 THEN '0' "
+    "WHEN p.face_count = 1 THEN '1' "
+    "WHEN p.face_count BETWEEN 2 AND 4 THEN '2-4' ELSE '5+' END"
+)
+
+
 def _where(filters: dict[str, Any]) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
@@ -98,6 +118,14 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any]]:
         params.append(filters["date_to"])
     if filters.get("has_faces"):
         clauses.append("p.face_count > 0")
+    # Number-of-people buckets (OR within the facet); unknown tokens are ignored.
+    people = [
+        _PEOPLE_PREDICATE[b]
+        for b in _as_list(filters.get("people"))
+        if b in _PEOPLE_PREDICATE
+    ]
+    if people:
+        clauses.append("(" + " OR ".join(people) + ")")
     if filters.get("q"):
         like = f"%{_like_escape(str(filters['q']))}%"
         clauses.append(
@@ -247,6 +275,19 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
         sql = f"SELECT COUNT(*) FROM photos p{where}{glue}p.face_count > 0"
         return int(conn.execute(sql, params).fetchone()[0])
 
+    def people_facet() -> list[dict]:
+        # Number-of-people buckets (portrait = 1, group = 2+), in canonical order,
+        # filter-aware against the other dimensions but not the people bucket itself.
+        sub = {k: v for k, v in filters.items() if k != "people"}
+        where, params = _where(sub)
+        sql = f"SELECT {_PEOPLE_CASE} AS v, COUNT(*) AS c FROM photos p{where} GROUP BY v"
+        counts = {r["v"]: r["c"] for r in conn.execute(sql, params).fetchall()}
+        return [
+            {"value": tok, "count": counts[tok]}
+            for tok, _ in PEOPLE_BUCKETS
+            if counts.get(tok)
+        ]
+
     drow = conn.execute(
         "SELECT MIN(substr(taken_at,1,10)), MAX(substr(taken_at,1,10)) "
         "FROM photos WHERE taken_at IS NOT NULL"
@@ -262,6 +303,7 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
         "years": facet("substr(p.taken_at,1,4)", "year", order_by_value=True),
         "cameras": facet("p.camera_model", "camera"),
         "persons": person_facet(),
+        "people": people_facet(),
         "with_faces": with_faces_count(),
         "date_min": drow[0],
         "date_max": drow[1],

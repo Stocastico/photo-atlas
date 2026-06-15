@@ -50,14 +50,15 @@ these items are the genuinely new pieces.
   present), as a toggle alongside the current OR multi-select. SQL: one `EXISTS`
   per required person (AND-ed) instead of a single `IN (...)`; UI: an AND/OR
   switch on the People facet. (The long-noted follow-up to multi-select.)
-- [ ] **Picture-type filter incl. portrait / group.** Extend the "type of picture"
-  facet beyond the scene tags (landscape/food/document/other) with face-count-derived
-  classes: **portrait** (exactly one face) and **group / multiple people** (2+). Cheap
-  to derive from the existing `face_count` — no re-index needed; could be a synthetic
-  facet computed in SQL (`CASE` on `face_count`) rather than a stored column.
-- [ ] **Filter by number of people portrayed.** Range/bucket filter on `face_count`
-  (e.g. 0, 1, 2–4, 5+), with filter-aware counts in the sidebar. `face_count` is
-  already stored and indexed-friendly.
+- [x] **Filter by number of people portrayed (incl. portrait / group).** A
+  "Number of people" facet buckets photos by `face_count` (`0` / `1` / `2-4` / `5+`)
+  via a SQL `CASE` — no schema change, no re-index. Bucket `1` is a **portrait** and
+  `2-4`/`5+` are **groups**, so this also covers the portrait/group picture-type ask.
+  Implemented as `search.PEOPLE_BUCKETS` + a filter-aware `people` facet; the API
+  takes repeated `people=` params and the sidebar renders friendly bucket chips with
+  removable pills. Unit + DB + API (chip-count == result-count) tested.
+  Possible follow-up: fold the scene tags and these people buckets into one unified
+  "type of picture" facet.
 - [ ] **Filter by number of *known* (named) people.** How many faces in a photo are
   assigned to a named person (vs unknown). Needs a per-photo count of faces with
   `person_id IS NOT NULL` — either a correlated subquery/`HAVING` at query time or a

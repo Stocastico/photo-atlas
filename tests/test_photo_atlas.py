@@ -573,6 +573,13 @@ def test_api_endpoints(indexed):
     # has_faces toggle and the inclusive date range round-trip over HTTP.
     hf = client.get("/api/photos", params={"has_faces": "true"}).json()
     assert hf["total"] == facets["with_faces"]
+
+    # Number-of-people buckets: the facet is present and each bucket's count
+    # matches what filtering by that bucket returns (chip count == result count).
+    assert "people" in facets and facets["people"]
+    for bucket in facets["people"]:
+        got = client.get("/api/photos", params={"people": bucket["value"]}).json()
+        assert got["total"] == bucket["count"]
     dated = client.get(
         "/api/photos", params={"date_from": facets["date_min"], "date_to": facets["date_max"]}
     ).json()

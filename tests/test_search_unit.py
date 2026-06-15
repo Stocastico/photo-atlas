@@ -79,6 +79,19 @@ def test_where_combines_across_facets_with_and():
     assert " AND " in where
 
 
+def test_where_people_buckets_build_or_of_literal_predicates():
+    where, params = _where({"people": ["1", "5+"]})
+    assert "p.face_count = 1" in where
+    assert "p.face_count >= 5" in where
+    assert " OR " in where
+    assert params == []  # bucket predicates are literal, not bound params
+
+
+def test_where_people_ignores_unknown_bucket():
+    where, params = _where({"people": ["bogus", ""]})
+    assert where == "" and params == []
+
+
 def test_order_by_falls_back_to_newest():
     assert _order_by(None) == search.SORTS["newest"]
     assert _order_by("bogus") == search.SORTS["newest"]

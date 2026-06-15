@@ -71,13 +71,15 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         date_from: str | None = None,
         date_to: str | None = None,
         camera: list[str] | None = Query(None),
+        people: list[str] | None = Query(None),
         has_faces: bool | None = None,
         q: str | None = None,
     ):
         filters = {
             "person_id": person_id, "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
-            "date_to": date_to, "camera": camera, "has_faces": has_faces, "q": q,
+            "date_to": date_to, "camera": camera, "people": people,
+            "has_faces": has_faces, "q": q,
         }
         return search.facets(conn, filters)
 
@@ -93,6 +95,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         date_from: str | None = None,
         date_to: str | None = None,
         camera: list[str] | None = Query(None),
+        people: list[str] | None = Query(None),
         has_faces: bool | None = None,
         q: str | None = None,
         sort: str | None = None,
@@ -102,8 +105,8 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         filters = {
             "person_id": person_id, "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
-            "date_to": date_to, "camera": camera, "has_faces": has_faces,
-            "q": q, "sort": sort,
+            "date_to": date_to, "camera": camera, "people": people,
+            "has_faces": has_faces, "q": q, "sort": sort,
         }
         # ``total`` is page-invariant, so only count on the first page; later
         # infinite-scroll pages send ``total: null`` and the client keeps its copy.
@@ -127,13 +130,15 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         date_from: str | None = None,
         date_to: str | None = None,
         camera: list[str] | None = Query(None),
+        people: list[str] | None = Query(None),
         has_faces: bool | None = None,
         q: str | None = None,
     ):
         filters = {
             "person_id": person_id, "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
-            "date_to": date_to, "camera": camera, "has_faces": has_faces, "q": q,
+            "date_to": date_to, "camera": camera, "people": people,
+            "has_faces": has_faces, "q": q,
         }
         return {"points": search.map_points(conn, filters, limit=config.map_point_limit)}
 
