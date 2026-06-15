@@ -45,6 +45,11 @@ class AtlasConfig:
     #: where same-person pairs sit near ~0.1-0.4 and different people near ~0.9.
     face_match_threshold: float = 0.5
 
+    #: Number of nearest enrolled faces consulted when auto-recognising a new
+    #: face (k-NN majority vote). More robust than a single per-person centroid
+    #: when a person's appearance drifts over the years.
+    recognition_k: int = 5
+
     #: DBSCAN epsilon (cosine distance) used when clustering unknown faces.
     cluster_eps: float = 0.5
 

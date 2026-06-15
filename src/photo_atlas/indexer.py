@@ -19,7 +19,6 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from collections import defaultdict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -34,10 +33,11 @@ from . import db
 from .classify import SceneTagger
 from .config import AtlasConfig
 from .faces import (
+    Enrollment,
     FaceBackend,
-    best_person_match,
     cluster_embeddings,
     get_backend,
+    knn_person_match,
     pil_to_bgr,
 )
 from .folder_meta import extract_folder_meta
@@ -74,19 +74,24 @@ class IndexStats:
 _MAX_ERRORS = 50
 
 
-def _person_centroids(conn: sqlite3.Connection) -> dict[int, np.ndarray]:
-    """Average embedding per named person, for auto-recognition."""
+def _load_enrollment(conn: sqlite3.Connection) -> Enrollment:
+    """Collect every named face for k-NN auto-recognition.
+
+    Unlike the old per-person centroid, this keeps each enrolled face as its own
+    vector, so recognition matches the nearest individual examples rather than an
+    average that blurs a person's look across years.
+    """
 
     rows = conn.execute(
-        "SELECT person_id, embedding, dim FROM faces "
+        "SELECT person_id, embedding FROM faces "
         "WHERE person_id IS NOT NULL AND embedding IS NOT NULL"
     ).fetchall()
-    buckets: dict[int, list[np.ndarray]] = defaultdict(list)
+    pairs: list[tuple[int, np.ndarray]] = []
     for row in rows:
         vec = db.blob_to_embedding(row["embedding"])
         if vec is not None:
-            buckets[int(row["person_id"])].append(vec)
-    return {pid: np.mean(np.vstack(vs), axis=0) for pid, vs in buckets.items() if vs}
+            pairs.append((int(row["person_id"]), vec))
+    return Enrollment.from_pairs(pairs)
 
 
 def thumb_path_for(config: AtlasConfig, sha1: str) -> Path:
@@ -165,7 +170,7 @@ def _prepare_photo(
     *,
     backend: FaceBackend | None,
     tagger: SceneTagger,
-    centroids: dict[int, np.ndarray] | None,
+    enrollment: Enrollment | None,
     sha1: str,
 ) -> _PreparedPhoto:
     """Decode one image exactly once and derive everything but the DB write.
@@ -205,9 +210,10 @@ def _prepare_photo(
         for obs in observations:
             person_id: int | None = None
             confidence = 0.0
-            if centroids:
-                person_id, confidence = best_person_match(
-                    obs.embedding, centroids, config.face_match_threshold
+            if enrollment is not None and not enrollment.is_empty:
+                person_id, confidence = knn_person_match(
+                    obs.embedding, enrollment,
+                    k=config.recognition_k, threshold=config.face_match_threshold,
                 )
             x, y, w, h = obs.bbox
             faces.append(
@@ -320,7 +326,7 @@ def index_file(
     backend: FaceBackend | None,
     geocoder: Geocoder | None,
     tagger: SceneTagger,
-    centroids: dict[int, np.ndarray] | None = None,
+    enrollment: Enrollment | None = None,
     stats: IndexStats | None = None,
     sha1: str | None = None,
 ) -> int:
@@ -330,7 +336,7 @@ def index_file(
     if sha1 is None:
         sha1 = sha1_of(path)
     prepared = _prepare_photo(
-        config, path, backend=backend, tagger=tagger, centroids=centroids, sha1=sha1
+        config, path, backend=backend, tagger=tagger, enrollment=enrollment, sha1=sha1
     )
     place = geocoder.lookup(prepared.lat, prepared.lon) if geocoder is not None else None
     return _commit_prepared(conn, config, prepared, place, stats)
@@ -364,7 +370,7 @@ def iter_images(root: Path):
 
 # -- parallel worker plumbing ---------------------------------------------
 #: Per-process state for the worker pool. Built once by :func:`_worker_init`
-#: (the heavy ONNX backend, the scene tagger, the read-only centroid table) and
+#: (the heavy ONNX backend, the scene tagger, the read-only enrollment) and
 #: reused across every file that worker handles, so the models load once per
 #: process rather than once per image.
 _WORKER_STATE: dict = {}
@@ -374,7 +380,7 @@ def _worker_init(
     backend_name: str,
     model_dir: Path,
     config: AtlasConfig,
-    centroids: dict[int, np.ndarray] | None,
+    enrollment: Enrollment | None,
 ) -> None:
     """Initialise a pool worker with its own backend / tagger (called once)."""
 
@@ -383,7 +389,7 @@ def _worker_init(
     )
     _WORKER_STATE["tagger"] = SceneTagger()
     _WORKER_STATE["config"] = config
-    _WORKER_STATE["centroids"] = centroids
+    _WORKER_STATE["enrollment"] = enrollment
 
 
 def _worker_prepare(task: tuple[str, str]) -> tuple[bool, object]:
@@ -394,7 +400,7 @@ def _worker_prepare(task: tuple[str, str]) -> tuple[bool, object]:
         prepared = _prepare_photo(
             _WORKER_STATE["config"], Path(path_str),
             backend=_WORKER_STATE["backend"], tagger=_WORKER_STATE["tagger"],
-            centroids=_WORKER_STATE["centroids"], sha1=sha1,
+            enrollment=_WORKER_STATE["enrollment"], sha1=sha1,
         )
         return True, prepared
     except Exception as exc:  # pragma: no cover - hit via the broken-file test
@@ -407,7 +413,7 @@ def _index_parallel(
     tasks: Iterator[tuple[str, str]],
     *,
     backend_name: str,
-    centroids: dict[int, np.ndarray] | None,
+    enrollment: Enrollment | None,
     geocoder: Geocoder | None,
     stats: IndexStats,
     workers: int,
@@ -442,7 +448,7 @@ def _index_parallel(
     with ProcessPoolExecutor(
         max_workers=workers, mp_context=ctx,
         initializer=_worker_init,
-        initargs=(backend_name, config.models_dir, config, centroids),
+        initargs=(backend_name, config.models_dir, config, enrollment),
     ) as pool:
         inflight: dict = {}
 
@@ -528,7 +534,7 @@ def index_path(
     stats = IndexStats()
 
     try:
-        centroids = _person_centroids(conn)
+        enrollment = _load_enrollment(conn)
         existing = {
             r["path"] for r in conn.execute("SELECT path FROM photos").fetchall()
         }
@@ -583,7 +589,7 @@ def index_path(
         if workers is not None and workers > 1:
             _index_parallel(
                 conn, config, iter_tasks(),
-                backend_name=backend_name, centroids=centroids, geocoder=geocoder,
+                backend_name=backend_name, enrollment=enrollment, geocoder=geocoder,
                 stats=stats, workers=workers, progress=progress,
             )
         else:
@@ -593,7 +599,7 @@ def index_path(
                     index_file(
                         conn, config, path,
                         backend=backend, geocoder=geocoder, tagger=tagger,
-                        centroids=centroids, stats=stats, sha1=sha1,
+                        enrollment=enrollment, stats=stats, sha1=sha1,
                     )
                     stats.indexed += 1
                     conn.commit()

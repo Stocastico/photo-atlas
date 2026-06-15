@@ -41,6 +41,29 @@ responsive/mobile work is intentionally deprioritised.
   A–Z / Z–A and "recently indexed"; every key carries an `id` tiebreaker so
   `LIMIT/OFFSET` paging stays stable when the sort value ties.
 
+### Richer people / content filters (requested 2026-06-15)
+A batch of filtering ideas to make "find this kind of photo" sharper. Note that
+**person + place** (and any cross-facet combination) already works today — facets
+AND across dimensions — and **multiple people (OR)** is covered by multi-select;
+these items are the genuinely new pieces.
+- [ ] **People AND-mode.** "Photos containing person A **and** B" (everyone
+  present), as a toggle alongside the current OR multi-select. SQL: one `EXISTS`
+  per required person (AND-ed) instead of a single `IN (...)`; UI: an AND/OR
+  switch on the People facet. (The long-noted follow-up to multi-select.)
+- [ ] **Picture-type filter incl. portrait / group.** Extend the "type of picture"
+  facet beyond the scene tags (landscape/food/document/other) with face-count-derived
+  classes: **portrait** (exactly one face) and **group / multiple people** (2+). Cheap
+  to derive from the existing `face_count` — no re-index needed; could be a synthetic
+  facet computed in SQL (`CASE` on `face_count`) rather than a stored column.
+- [ ] **Filter by number of people portrayed.** Range/bucket filter on `face_count`
+  (e.g. 0, 1, 2–4, 5+), with filter-aware counts in the sidebar. `face_count` is
+  already stored and indexed-friendly.
+- [ ] **Filter by number of *known* (named) people.** How many faces in a photo are
+  assigned to a named person (vs unknown). Needs a per-photo count of faces with
+  `person_id IS NOT NULL` — either a correlated subquery/`HAVING` at query time or a
+  denormalised `named_face_count` column maintained alongside `face_count`. Enables
+  "photos where everyone is identified" / "photos with at least one stranger".
+
 ### Performance & memory at scale
 - [x] **Virtualize / window the photo grid.** Implemented option 3 (true
   windowing): the grid is now a positioned canvas whose height spans the whole
@@ -143,9 +166,14 @@ A full-app review at ~27k images + ~600 videos drove a round of hardening.
 - [ ] **Better scene tagging.** `classify.py` is a colour/brightness heuristic
   that mislabels real photos (sunsets→food, snow→document). Replace with a small
   zero-shot model (MobileCLIP/CLIP) or narrow the labels to what's reliable.
-- [ ] **Recognition beyond a single centroid.** Each person is one averaged
-  embedding, fragile across a 15-year span (child→adult, beards, glasses). k-NN to
-  the nearest few enrolled faces would be more robust.
+- [x] **Recognition beyond a single centroid.** Auto-recognition now matches each
+  new face by **k-NN majority vote** (`faces.knn_person_match`, `config.recognition_k`,
+  default 5) over every named ("enrolled") face, instead of one averaged centroid
+  per person — robust when a look drifts over a 15-year span (child→adult, beards,
+  glasses), since a far-apart pair of enrolments no longer pulls a centroid into the
+  empty space between them. Enrolled faces are loaded once per run (`_load_enrollment`)
+  and shipped to the parallel workers as a picklable `Enrollment` (matrix + ids).
+  Unit-tested incl. a "centroid would miss, k-NN finds" case.
 - [ ] **Video thumbnails/metadata.** Videos are only counted today; extracting a
   poster frame + capture date (ffmpeg) would make them browsable on the timeline
   and map.

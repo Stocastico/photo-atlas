@@ -120,9 +120,11 @@ indexer ─┬─ metadata.py    EXIF date / camera / GPS  + thumbnails
 api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces)
 ```
 
-- **Recognition.** Each named person gets an averaged "centroid" embedding. When
-  new photos are indexed, every detected face within
-  `face_match_threshold` cosine distance of a centroid is auto-assigned.
+- **Recognition.** When new photos are indexed, each detected face is matched by
+  **k-nearest-neighbour vote** against every already-named face: the `recognition_k`
+  closest enrolled faces within `face_match_threshold` cosine distance vote, and
+  the majority person wins. Matching the nearest individual examples (rather than a
+  single averaged "centroid") is more robust when a person's look drifts over years.
 - **Clustering.** Unnamed faces are grouped with DBSCAN over cosine distance
   (`cluster_eps`, `cluster_min_samples`) so you can name a whole group at once.
 - **Tunables** live in `photo_atlas.config.AtlasConfig`.
