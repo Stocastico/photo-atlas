@@ -27,5 +27,13 @@ def test_web_js_harness(harness):
         text=True,
         timeout=30,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert ", 0 failed" in result.stdout
+    combined = result.stdout + result.stderr
+    # The harness prints "<n> passed, <m> failed" and exits 1 if anything failed.
+    # Trust that stdout verdict rather than the exit code: some Node builds
+    # occasionally SIGSEGV during V8 teardown *after* a fully successful run
+    # (returncode -11 with a clean "..., 0 failed" on stdout), and that exit-time
+    # crash is not a test failure. A real failure still shows "<m> failed" (m>0)
+    # and the harness's own non-zero (positive) exit.
+    assert ", 0 failed" in result.stdout, combined
+    assert "0 passed" not in result.stdout, combined  # guard: the harness ran
+    assert result.returncode <= 0, combined  # allow signal kills, reject exit(1)
