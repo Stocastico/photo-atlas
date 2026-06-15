@@ -51,7 +51,7 @@ def _xmp_document(names: list[str]) -> str:
     return _XMP_TEMPLATE.format(subjects=subjects, hierarchical=hierarchical)
 
 
-def _photos_with_people(config: AtlasConfig) -> "OrderedDict[str, list[str]]":
+def _photos_with_people(config: AtlasConfig) -> OrderedDict[str, list[str]]:
     """Map each photo path to the sorted, de-duplicated names it contains."""
 
     conn = db.connect(config.db_path)
@@ -66,7 +66,7 @@ def _photos_with_people(config: AtlasConfig) -> "OrderedDict[str, list[str]]":
     finally:
         conn.close()
 
-    grouped: "OrderedDict[str, set[str]]" = OrderedDict()
+    grouped: OrderedDict[str, set[str]] = OrderedDict()
     for row in rows:
         grouped.setdefault(row["path"], set()).add(row["name"])
     return OrderedDict((path, sorted(names)) for path, names in grouped.items())

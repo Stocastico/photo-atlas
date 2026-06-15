@@ -16,13 +16,15 @@ clusters so the user can name a whole group at once.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import cast
 
 import numpy as np
 from PIL import Image
@@ -46,7 +48,6 @@ from .metadata import (
     make_thumbnail_from_image,
     sha1_of,
 )
-import json
 
 
 @dataclass
@@ -76,7 +77,8 @@ def _person_centroids(conn: sqlite3.Connection) -> dict[int, np.ndarray]:
     """Average embedding per named person, for auto-recognition."""
 
     rows = conn.execute(
-        "SELECT person_id, embedding, dim FROM faces WHERE person_id IS NOT NULL AND embedding IS NOT NULL"
+        "SELECT person_id, embedding, dim FROM faces "
+        "WHERE person_id IS NOT NULL AND embedding IS NOT NULL"
     ).fetchall()
     buckets: dict[int, list[np.ndarray]] = defaultdict(list)
     for row in rows:
@@ -206,8 +208,9 @@ def _store_indexed(
         crop_path = config.faces_dir / f"{photo_id}" / f"face_{i}.jpg"
         try:
             _save_face_crop(img, obs.bbox, crop_path)
+            crop_saved = True
         except Exception:
-            crop_path = None
+            crop_saved = False
 
         person_id, confidence = (None, 0.0)
         if centroids:
@@ -225,7 +228,7 @@ def _store_indexed(
                 "bbox_x": x, "bbox_y": y, "bbox_w": w, "bbox_h": h,
                 "dim": int(obs.embedding.shape[0]),
                 "embedding": db.embedding_to_blob(obs.embedding),
-                "crop_path": str(crop_path) if crop_path else None,
+                "crop_path": str(crop_path) if crop_saved else None,
                 "confidence": confidence,
             }
         )
@@ -398,7 +401,9 @@ def cluster_library(config: AtlasConfig) -> dict[str, int]:
             "SELECT id, embedding FROM faces WHERE person_id IS NULL AND embedding IS NOT NULL"
         ).fetchall()
         ids = [int(r["id"]) for r in rows]
-        embeddings = [db.blob_to_embedding(r["embedding"]) for r in rows]
+        # The WHERE clause guarantees non-NULL embeddings, so each decodes to an
+        # array (never None); cast to keep the list type aligned with ``ids``.
+        embeddings = [cast(np.ndarray, db.blob_to_embedding(r["embedding"])) for r in rows]
         labels = cluster_embeddings(
             embeddings, eps=config.cluster_eps, min_samples=config.cluster_min_samples
         )
@@ -407,7 +412,7 @@ def cluster_library(config: AtlasConfig) -> dict[str, int]:
         conn.execute("UPDATE faces SET cluster_id=NULL WHERE person_id IS NULL")
         n_clusters = 0
         seen: set[int] = set()
-        for face_id, label in zip(ids, labels):
+        for face_id, label in zip(ids, labels, strict=True):
             if label < 0:
                 continue
             conn.execute("UPDATE faces SET cluster_id=? WHERE id=?", (label, face_id))

@@ -166,7 +166,9 @@ def test_index_populates_catalog(indexed):
     assert total == 24
     assert faces_n > 0
     # Every photo got a scene tag and most got a place from GPS.
-    placed = conn.execute("SELECT COUNT(*) FROM photos WHERE place_country IS NOT NULL").fetchone()[0]
+    placed = conn.execute(
+        "SELECT COUNT(*) FROM photos WHERE place_country IS NOT NULL"
+    ).fetchone()[0]
     assert placed == 24
 
 
@@ -490,16 +492,26 @@ def test_person_management_api(indexed):
     client = TestClient(create_app(indexed))
     clusters = client.get("/api/clusters").json()["clusters"]
     assert len(clusters) >= 2
-    pa = client.post(f"/api/clusters/{clusters[0]['cluster_id']}/assign", json={"name": "Dee"}).json()["person_id"]
-    pb = client.post(f"/api/clusters/{clusters[1]['cluster_id']}/assign", json={"name": "Eve"}).json()["person_id"]
+    pa = client.post(
+        f"/api/clusters/{clusters[0]['cluster_id']}/assign", json={"name": "Dee"}
+    ).json()["person_id"]
+    pb = client.post(
+        f"/api/clusters/{clusters[1]['cluster_id']}/assign", json={"name": "Eve"}
+    ).json()["person_id"]
 
     # Cover picker: list a person's faces, then pin one.
     faces = client.get(f"/api/persons/{pa}/faces").json()["faces"]
     assert faces
-    assert client.put(f"/api/persons/{pa}/cover", json={"face_id": faces[0]["id"]}).status_code == 200
+    assert (
+        client.put(f"/api/persons/{pa}/cover", json={"face_id": faces[0]["id"]}).status_code
+        == 200
+    )
     # Pinning a face that isn't theirs is a 400.
     other = client.get(f"/api/persons/{pb}/faces").json()["faces"]
-    assert client.put(f"/api/persons/{pa}/cover", json={"face_id": other[0]["id"]}).status_code == 400
+    assert (
+        client.put(f"/api/persons/{pa}/cover", json={"face_id": other[0]["id"]}).status_code
+        == 400
+    )
 
     # Empty rename is rejected.
     assert client.patch(f"/api/persons/{pa}", json={"name": "   "}).status_code == 400

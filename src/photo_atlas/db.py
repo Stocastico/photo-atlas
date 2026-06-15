@@ -14,8 +14,8 @@ this module convert to and from :class:`numpy.ndarray`.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 
@@ -182,4 +182,5 @@ def get_or_create_person(conn: sqlite3.Connection, name: str) -> int:
         "INSERT INTO persons (name, created_at) VALUES (?, ?)",
         (name, datetime.now(timezone.utc).isoformat(timespec="seconds")),
     )
+    assert cur.lastrowid is not None  # row was just inserted
     return int(cur.lastrowid)

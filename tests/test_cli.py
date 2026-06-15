@@ -81,7 +81,6 @@ def test_prune_command_removes_deleted_files(tmp_path, capsys):
 
 
 def test_export_labels_command_writes_sidecars(tmp_path, capsys):
-    from pathlib import Path
 
     from photo_atlas import db
     from photo_atlas.config import AtlasConfig

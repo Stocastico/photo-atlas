@@ -75,7 +75,7 @@ class AtlasConfig:
     def previews_dir(self) -> Path:
         return self.home / "previews"
 
-    def ensure_dirs(self) -> "AtlasConfig":
+    def ensure_dirs(self) -> AtlasConfig:
         """Create the library directory tree if it does not exist yet."""
 
         self.home.mkdir(parents=True, exist_ok=True)

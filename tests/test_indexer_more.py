@@ -116,8 +116,8 @@ def test_index_warns_when_geocoder_is_low_resolution(tmp_path):
     cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
     # reverse_geocoder isn't installed in the test env, so geocoding falls back
     # to the coarse bundled table — the user should be told.
-    import io
     import contextlib
+    import io
 
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
@@ -132,8 +132,8 @@ def test_no_geocode_run_does_not_warn_about_resolution(tmp_path):
     photos = tmp_path / "p"
     demo.generate(photos, count=1, seed=1)
     cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
-    import io
     import contextlib
+    import io
 
     err = io.StringIO()
     with contextlib.redirect_stderr(err):

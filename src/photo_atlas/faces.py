@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 import numpy as np
 
@@ -170,7 +170,10 @@ class YuNetSFaceBackend:
         observations: list[FaceObservation] = []
         if results is None:
             return observations
-        for row in results:
+        for raw_row in results:
+            # cv2's stubs type each detection row as a scalar; it's really a
+            # 1-D [x, y, w, h, 5×landmark, score] array.
+            row = cast(np.ndarray, raw_row)
             score = float(row[-1])
             # Map the box + 5 landmarks (indices 0..13) back to full-res coords;
             # the trailing score (index 14) is left untouched.
@@ -268,7 +271,7 @@ class DlibFaceBackend:  # pragma: no cover - optional heavy dependency
         locations = fr.face_locations(image)
         encodings = fr.face_encodings(image, locations)
         observations: list[FaceObservation] = []
-        for (top, right, bottom, left), enc in zip(locations, encodings):
+        for (top, right, bottom, left), enc in zip(locations, encodings, strict=True):
             observations.append(
                 FaceObservation(
                     bbox=(int(left), int(top), int(right - left), int(bottom - top)),
