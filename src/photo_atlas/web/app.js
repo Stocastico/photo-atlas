@@ -23,11 +23,15 @@ const BUFFER_ROWS = 4;    // rows rendered above/below the viewport
 const FILTER_NAMES = {
   person_id: "Person", scene: "Scene", country: "Country", city: "City",
   place: "Place", year: "Year", camera: "Camera", q: "Search",
-  date_from: "From", date_to: "To", people: "People",
+  date_from: "From", date_to: "To", people: "People", known: "Known",
 };
 // Friendly labels for the number-of-people buckets (tokens come from the API).
 const PEOPLE_LABELS = {
   "0": "No people", "1": "1 (portrait)", "2-4": "2–4", "5+": "5+",
+};
+// Friendly labels for the number-of-known-(named)-people buckets.
+const KNOWN_LABELS = {
+  "0": "None identified", "1": "1 identified", "2+": "2+ identified",
 };
 const FACET_CAP = 14;
 
@@ -258,6 +262,7 @@ async function renderSidebar() {
   section("People", f.persons, "person_id", (i) => `${i.name}`, (i) => i.id);
   renderPeopleModeToggle(side);
   section("Number of people", f.people, "people", (i) => PEOPLE_LABELS[i.value] || i.value);
+  section("Known people", f.known, "known", (i) => KNOWN_LABELS[i.value] || i.value);
   section("Scene", f.scenes, "scene");
   section("Country", f.countries, "country");
   section("City", f.cities, "city");
@@ -334,6 +339,7 @@ function filterValueLabel(key, value) {
     return p ? p.name : `#${value}`;
   }
   if (key === "people") return PEOPLE_LABELS[value] || value;
+  if (key === "known") return KNOWN_LABELS[value] || value;
   return value;
 }
 

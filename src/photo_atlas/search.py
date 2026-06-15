@@ -75,6 +75,25 @@ _PEOPLE_CASE = (
     "WHEN p.face_count BETWEEN 2 AND 4 THEN '2-4' ELSE '5+' END"
 )
 
+# Number of *known* (named) people in a photo: how many of its faces are assigned
+# to a person. Counted with a correlated subquery over faces (cheap via
+# idx_faces_photo). Buckets: nobody identified / one / two-or-more. A denormalised
+# ``named_face_count`` column would avoid the per-row subquery if this ever shows
+# on a hot path (see TODO).
+_KNOWN_SUBQ = (
+    "(SELECT COUNT(*) FROM faces kf WHERE kf.photo_id = p.id AND kf.person_id IS NOT NULL)"
+)
+KNOWN_BUCKETS: list[tuple[str, str]] = [
+    ("0", f"{_KNOWN_SUBQ} = 0"),
+    ("1", f"{_KNOWN_SUBQ} = 1"),
+    ("2+", f"{_KNOWN_SUBQ} >= 2"),
+]
+_KNOWN_PREDICATE = dict(KNOWN_BUCKETS)
+_KNOWN_CASE = (
+    f"CASE WHEN {_KNOWN_SUBQ} = 0 THEN '0' "
+    f"WHEN {_KNOWN_SUBQ} = 1 THEN '1' ELSE '2+' END"
+)
+
 
 def _where(filters: dict[str, Any]) -> tuple[str, list[Any]]:
     clauses: list[str] = []
@@ -136,6 +155,14 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any]]:
     ]
     if people:
         clauses.append("(" + " OR ".join(people) + ")")
+    # Number-of-known-(named)-people buckets (OR within the facet).
+    known = [
+        _KNOWN_PREDICATE[b]
+        for b in _as_list(filters.get("known"))
+        if b in _KNOWN_PREDICATE
+    ]
+    if known:
+        clauses.append("(" + " OR ".join(known) + ")")
     if filters.get("q"):
         like = f"%{_like_escape(str(filters['q']))}%"
         clauses.append(
@@ -298,6 +325,18 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
             if counts.get(tok)
         ]
 
+    def known_facet() -> list[dict]:
+        # Buckets by how many faces in a photo are assigned to a named person.
+        sub = {k: v for k, v in filters.items() if k != "known"}
+        where, params = _where(sub)
+        sql = f"SELECT {_KNOWN_CASE} AS v, COUNT(*) AS c FROM photos p{where} GROUP BY v"
+        counts = {r["v"]: r["c"] for r in conn.execute(sql, params).fetchall()}
+        return [
+            {"value": tok, "count": counts[tok]}
+            for tok, _ in KNOWN_BUCKETS
+            if counts.get(tok)
+        ]
+
     drow = conn.execute(
         "SELECT MIN(substr(taken_at,1,10)), MAX(substr(taken_at,1,10)) "
         "FROM photos WHERE taken_at IS NOT NULL"
@@ -314,6 +353,7 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
         "cameras": facet("p.camera_model", "camera"),
         "persons": person_facet(),
         "people": people_facet(),
+        "known": known_facet(),
         "with_faces": with_faces_count(),
         "date_min": drow[0],
         "date_max": drow[1],

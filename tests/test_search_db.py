@@ -84,6 +84,45 @@ def test_people_count_filter_and_facet(tmp_path):
         conn.close()
 
 
+def test_known_people_filter_and_facet(tmp_path):
+    """`known` buckets photos by how many of their faces are assigned to a person."""
+
+    conn = db.connect(tmp_path / "s.db")
+    try:
+        p1 = db.get_or_create_person(conn, "P1")
+        p2 = db.get_or_create_person(conn, "P2")
+        # A: 2 named; B: 1 named + 1 unknown; C: all unknown; D: no faces at all.
+        pa = _insert(conn, path="/a.jpg", face_count=2)
+        pb = _insert(conn, path="/b.jpg", face_count=2)
+        pc = _insert(conn, path="/c.jpg", face_count=1)
+        _insert(conn, path="/d.jpg", face_count=0)
+
+        def add_face(photo_id, person_id):
+            conn.execute(
+                "INSERT INTO faces (photo_id, person_id) VALUES (?, ?)",
+                (photo_id, person_id),
+            )
+
+        add_face(pa, p1)
+        add_face(pa, p2)
+        add_face(pb, p1)
+        add_face(pb, None)
+        add_face(pc, None)
+        conn.commit()
+
+        _, none = search.search_photos(conn, {"known": ["0"]})
+        assert none == 2  # C (unknown only) and D (no faces)
+        _, one = search.search_photos(conn, {"known": ["1"]})
+        assert one == 1  # B
+        _, two_plus = search.search_photos(conn, {"known": ["2+"]})
+        assert two_plus == 1  # A
+
+        buckets = {b["value"]: b["count"] for b in search.facets(conn)["known"]}
+        assert buckets == {"0": 2, "1": 1, "2+": 1}
+    finally:
+        conn.close()
+
+
 def test_people_and_or_mode(tmp_path):
     """`person_mode='all'` requires every selected person; the default matches any."""
 

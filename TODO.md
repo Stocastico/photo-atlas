@@ -60,11 +60,15 @@ these items are the genuinely new pieces.
   removable pills. Unit + DB + API (chip-count == result-count) tested.
   Possible follow-up: fold the scene tags and these people buckets into one unified
   "type of picture" facet.
-- [ ] **Filter by number of *known* (named) people.** How many faces in a photo are
-  assigned to a named person (vs unknown). Needs a per-photo count of faces with
-  `person_id IS NOT NULL` — either a correlated subquery/`HAVING` at query time or a
-  denormalised `named_face_count` column maintained alongside `face_count`. Enables
-  "photos where everyone is identified" / "photos with at least one stranger".
+- [x] **Filter by number of *known* (named) people.** A "Known people" facet
+  buckets photos by how many faces are assigned to a named person
+  (`0` / `1` / `2+`), via a correlated subquery over `faces` (cheap through
+  `idx_faces_photo`). `search.KNOWN_BUCKETS` + a filter-aware `known` facet; API
+  takes repeated `known=` params; sidebar shows friendly chips/pills. Unit + DB +
+  API (chip-count == result-count) tested.
+  Perf follow-up: if this ever lands on a hot path, denormalise a
+  `named_face_count` column (maintained on assign/unassign/merge/delete) to drop
+  the per-row subquery.
 
 ### Performance & memory at scale
 - [x] **Virtualize / window the photo grid.** Implemented option 3 (true

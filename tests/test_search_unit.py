@@ -108,6 +108,14 @@ def test_where_people_ignores_unknown_bucket():
     assert where == "" and params == []
 
 
+def test_where_known_people_buckets_use_named_face_subquery():
+    where, params = _where({"known": ["0", "2+"]})
+    assert "person_id IS NOT NULL" in where
+    assert " = 0" in where and " >= 2" in where
+    assert " OR " in where
+    assert params == []  # bucket predicates are literal
+
+
 def test_order_by_falls_back_to_newest():
     assert _order_by(None) == search.SORTS["newest"]
     assert _order_by("bogus") == search.SORTS["newest"]

@@ -73,6 +73,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         date_to: str | None = None,
         camera: list[str] | None = Query(None),
         people: list[str] | None = Query(None),
+        known: list[str] | None = Query(None),
         has_faces: bool | None = None,
         q: str | None = None,
     ):
@@ -80,7 +81,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "person_id": person_id, "person_mode": person_mode,
             "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
-            "date_to": date_to, "camera": camera, "people": people,
+            "date_to": date_to, "camera": camera, "people": people, "known": known,
             "has_faces": has_faces, "q": q,
         }
         return search.facets(conn, filters)
@@ -99,6 +100,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         date_to: str | None = None,
         camera: list[str] | None = Query(None),
         people: list[str] | None = Query(None),
+        known: list[str] | None = Query(None),
         has_faces: bool | None = None,
         q: str | None = None,
         sort: str | None = None,
@@ -109,7 +111,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "person_id": person_id, "person_mode": person_mode,
             "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
-            "date_to": date_to, "camera": camera, "people": people,
+            "date_to": date_to, "camera": camera, "people": people, "known": known,
             "has_faces": has_faces, "q": q, "sort": sort,
         }
         # ``total`` is page-invariant, so only count on the first page; later
@@ -136,6 +138,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         date_to: str | None = None,
         camera: list[str] | None = Query(None),
         people: list[str] | None = Query(None),
+        known: list[str] | None = Query(None),
         has_faces: bool | None = None,
         q: str | None = None,
     ):
@@ -143,7 +146,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "person_id": person_id, "person_mode": person_mode,
             "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
-            "date_to": date_to, "camera": camera, "people": people,
+            "date_to": date_to, "camera": camera, "people": people, "known": known,
             "has_faces": has_faces, "q": q,
         }
         return {"points": search.map_points(conn, filters, limit=config.map_point_limit)}
