@@ -45,8 +45,45 @@ def delete_person(conn: sqlite3.Connection, person_id: int) -> None:
 
 
 def set_cover_face(conn: sqlite3.Connection, person_id: int, face_id: int) -> None:
+    """Pin ``face_id`` as the person's avatar (it must belong to them)."""
+
+    row = conn.execute("SELECT person_id FROM faces WHERE id=?", (face_id,)).fetchone()
+    if row is None:
+        raise ValueError("face not found")
+    if row["person_id"] != person_id:
+        raise ValueError("face does not belong to this person")
     conn.execute("UPDATE persons SET cover_face_id=? WHERE id=?", (face_id, person_id))
     conn.commit()
+
+
+def list_person_faces(conn: sqlite3.Connection, person_id: int, limit: int = 200) -> list[dict]:
+    """Faces assigned to a person (for the avatar/cover picker), oldest first."""
+
+    rows = conn.execute(
+        "SELECT id, photo_id, crop_path FROM faces "
+        "WHERE person_id=? AND crop_path IS NOT NULL ORDER BY id LIMIT ?",
+        (person_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def merge_persons(conn: sqlite3.Connection, source_id: int, target_id: int) -> int:
+    """Fold ``source_id``'s faces into ``target_id`` and drop the source person.
+
+    Used when two named clusters turn out to be the same individual. Returns the
+    surviving ``target_id``.
+    """
+
+    if source_id == target_id:
+        raise ValueError("Cannot merge a person into themselves")
+    for pid in (source_id, target_id):
+        if conn.execute("SELECT 1 FROM persons WHERE id=?", (pid,)).fetchone() is None:
+            raise ValueError(f"person {pid} not found")
+    conn.execute("UPDATE faces SET person_id=? WHERE person_id=?", (target_id, source_id))
+    # The source's pinned cover face now belongs to the target; drop the row.
+    conn.execute("DELETE FROM persons WHERE id=?", (source_id,))
+    conn.commit()
+    return target_id
 
 
 def assign_cluster(

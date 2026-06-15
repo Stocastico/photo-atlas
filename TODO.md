@@ -37,55 +37,65 @@ responsive/mobile work is intentionally deprioritised.
 - [x] **Facet "show more".** Sidebar sections cap at 14 items with a
   "+N more / Show less" toggle (per-facet expand state) instead of silently
   truncating.
-- [ ] **More sort options** (e.g. by filename / by recently indexed).
+- [x] **More sort options.** Sort dropdown now offers newest/oldest, filename
+  A–Z / Z–A and "recently indexed"; every key carries an `id` tiebreaker so
+  `LIMIT/OFFSET` paging stays stable when the sort value ties.
 
 ### Performance & memory at scale
-- [ ] **Virtualize / window the photo grid.** Today infinite scroll *appends*
-  cards and never removes them, so the DOM and the browser's decoded-image cache
-  grow without bound. Thumbnails are small on the wire (~320px JPEG, ~20 KB) and
-  only the lightbox loads originals — so the network/disk story is fine — but a
-  decoded 320×320 thumbnail still costs ~0.4 MB of bitmap memory, so scrolling
-  ~2k+ photos can reach hundreds of MB plus thousands of `<img>` nodes.
-  Options, cheapest first:
-  1. **`content-visibility: auto` + `contain-intrinsic-size`** on each card —
-     a few CSS lines that let the browser skip rendering/decoding offscreen
-     cards and reclaim them. Biggest win for least code; keeps current structure.
-  2. **Recycle offscreen images** — an IntersectionObserver that clears `src`
-     (and restores it) on cards far outside the viewport, so decoded bitmaps are
-     freed while the grid layout stays put.
-  3. **True virtualization / windowing** — render only the visible range (plus a
-     buffer) into a spacer-sized container, recycling card nodes on scroll.
-     Most robust for tens of thousands of photos; most code. A small lib
-     (or a ~100-line custom windower over the fixed-aspect grid) would do.
-  Recommendation: ship (1) now as a safety net, then (3) if libraries get huge.
-- [ ] **Cap the lightbox image size.** The lightbox loads the full-resolution
-  original; a 50 MP photo decodes to ~200 MB. Flicking through many via the
-  arrow keys could spike memory. Consider a medium "preview" derivative
-  (e.g. 1600px) served from a new endpoint, with the true original behind a
-  "view full size / download" action.
-- [ ] **Thumbnail `srcset` / sizing.** Serve the 320px thumb but hint intrinsic
-  size so the browser reserves layout and avoids reflow on load.
+- [x] **Virtualize / window the photo grid.** Implemented option 3 (true
+  windowing): the grid is now a positioned canvas whose height spans the whole
+  result set, and `renderWindow` keeps only a viewport-sized window (+4 buffer
+  rows) of absolutely-positioned, recycled card nodes in the DOM. Node count and
+  decoded-bitmap memory stay flat regardless of library size; scroll/resize are
+  rAF-throttled, and infinite-scroll loading + lightbox indexing are preserved.
+  The layout math (`gridLayout`/`cardOffset`/`windowRange`) is unit-tested via a
+  Node harness (`tests/test_web_js.py`). Cards keep `content-visibility: auto`
+  as a belt-and-suspenders.
+- [x] **Cap the lightbox image size.** The lightbox now loads a bounded
+  preview derivative (`preview_size`, default 1600px) from `GET /api/preview/{id}`,
+  generated on first request and cached content-addressed under
+  `~/.photo_atlas/previews`. The true full-resolution original stays behind a
+  "View full size ↗" link to `/api/image/{id}`.
+- [x] **Thumbnail `srcset` / sizing.** Thumbnails carry `width`/`height`
+  intrinsic hints + `decoding="async"`, and a real `srcset` (`320w` default +
+  `640w` retina). The 2x variant is generated and cached on demand via
+  `GET /api/thumb/{id}?size=640` (`metadata.cached_resized`, shared with the
+  lightbox preview), so hi-DPI screens get crisp thumbs without a re-index.
 
 ### Navigation & state
-- [ ] **URL / history state.** Reflect filters + view in the querystring so the
-  back button undoes a filter and views are shareable/bookmarkable.
-- [ ] **Infinite scroll near the lightbox end.** Stepping "next" past the last
-  loaded photo should trigger the next page load instead of stopping.
+- [x] **URL / history state.** Filters, view and sort are reflected in the
+  querystring (`pushState`); the back/forward buttons restore them via
+  `popstate`, and a link is shareable/bookmarkable. Covered by a Node-driven
+  fake-DOM harness (`tests/test_web_url_state.py`, skips without Node).
+- [x] **Infinite scroll near the lightbox end.** Stepping "next" past the last
+  loaded photo now pulls the next page (when more remain) and continues; the
+  on-screen next arrow stays enabled while more pages exist on the server.
 
 ### People / management
-- [ ] **Rename in the People page.** `PATCH /api/persons/{id}` exists but the UI
-  only offers View/Delete — add inline rename.
-- [ ] **Merge people** (two clusters of the same person) and **reassign a face**
-  to a different/again-unknown person from the lightbox.
-- [ ] **Person cover photo picker.**
+- [x] **Rename in the People page.** Each person card has an inline **Rename**
+  (Enter saves, Esc cancels) backed by `PATCH /api/persons/{id}`.
+- [x] **Merge people** (two clusters of the same person) and **reassign a face**
+  to a different/again-unknown person from the lightbox. A card's **Merge**
+  control folds it into another person (`POST /api/persons/{id}/merge`); in the
+  lightbox, typing a name reassigns a face and a **✕** sends it back to unknown
+  (`POST /api/faces/{id}/unassign`).
+- [x] **Person cover photo picker.** The **Cover** control lists the person's
+  face crops (`GET /api/persons/{id}/faces`) and pins the chosen one
+  (`PUT /api/persons/{id}/cover`).
 
 ### Robustness & polish
-- [ ] **Error states.** `api()` assumes JSON; a failed request currently breaks
-  silently. Add a thin wrapper with try/catch + a toast/inline message.
-- [ ] **Empty-library onboarding.** First-run hint pointing at
-  `photo-atlas index` / `cluster` when the catalog is empty.
-- [ ] **Accessibility.** Focus-trap the lightbox, restore focus on close, add
-  `aria` labels/roles to chips and pills, keyboard-operable cards.
+- [x] **Error states.** `api()` is now a thin wrapper that catches network
+  failures and non-2xx responses, surfaces them via an `aria-live` toast and
+  throws (so callers skip their re-render) instead of breaking silently.
+- [x] **Empty-library onboarding.** When the library is genuinely empty (no
+  photos and no active filters) a first-run panel shows the
+  `photo-atlas index` / `cluster` / `serve` commands; a filtered no-match still
+  shows the plain "No photos match" message.
+- [x] **Accessibility.** Lightbox is a focus-trapped `role="dialog"` that
+  restores focus to the opening card on close; arrow keys no longer hijack
+  typing in face inputs. Cards are keyboard-operable (`role=button`, Enter/Space),
+  chips expose `aria-pressed`, pills have `aria-label`s, and a visible
+  `:focus-visible` outline was added.
 
 ### Explicitly deferred (browser-only target)
 - [ ] **Responsive / mobile layout.** `.layout` is a fixed `250px 1fr` grid with

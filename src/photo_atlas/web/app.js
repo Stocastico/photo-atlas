@@ -11,7 +11,14 @@ const state = {
   facetData: null,
   lightboxIndex: null,
   facetExpanded: {}, // facet key -> show all values
+  rendered: new Map(), // index -> live card node (virtualised grid window)
+  layout: null,        // last computed grid layout
 };
+
+// Grid windowing constants — GAP/MIN must match the CSS .grid/.card rules.
+const GRID_GAP = 10;
+const CARD_MIN = 160;     // grid-template min column width
+const BUFFER_ROWS = 4;    // rows rendered above/below the viewport
 
 const FILTER_NAMES = {
   person_id: "Person", scene: "Scene", country: "Country", city: "City",
@@ -21,8 +28,42 @@ const FILTER_NAMES = {
 const FACET_CAP = 14;
 
 const $ = (s) => document.querySelector(s);
-const api = async (url, opts) => (await fetch(url, opts)).json();
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// Transient status message (errors by default). aria-live announces it.
+let toastTimer;
+function toast(msg, kind = "error") {
+  const t = $("#toast");
+  if (!t) return;
+  t.textContent = msg;
+  t.className = `toast show ${kind}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.className = "toast"), 4500);
+}
+
+// Thin fetch wrapper: surfaces network failures and non-2xx responses as a
+// toast and throws, so a failed request never breaks the UI silently. Callers
+// that await it are skipped (no re-render) when it throws.
+async function api(url, opts) {
+  let res;
+  try {
+    res = await fetch(url, opts);
+  } catch (e) {
+    toast("Network error — is the server still running?");
+    throw e;
+  }
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (_) { /* non-JSON body */ }
+    toast(`Error ${res.status}: ${detail}`);
+    throw new Error(`${res.status} ${detail}`);
+  }
+  try {
+    return await res.json();
+  } catch (_) {
+    return null; // tolerate empty bodies
+  }
+}
 
 function fmtDate(iso) {
   if (!iso) return "—";
@@ -71,6 +112,7 @@ function toggleHasFaces() {
 function chip(label, count, active, onClick) {
   const el = document.createElement("button");
   el.className = "chip" + (active ? " active" : "");
+  el.setAttribute("aria-pressed", active ? "true" : "false");
   el.innerHTML = `${esc(label)}${count != null ? ` <span class="n">${count}</span>` : ""}`;
   el.onclick = onClick;
   return el;
@@ -84,6 +126,43 @@ function filterParams() {
     else params.set(k, v);
   }
   return params;
+}
+
+// ---- URL / history state --------------------------------------------------
+// Reflect filters + view + sort in the querystring so the back button undoes a
+// filter and a filtered view is shareable/bookmarkable.
+const SCALAR_FILTERS = new Set(["q", "date_from", "date_to"]);
+let restoringState = false;
+
+function buildQuery() {
+  const params = filterParams();
+  if (state.view !== "photos") params.set("view", state.view);
+  if (state.sort && state.sort !== "newest") params.set("sort", state.sort);
+  return params.toString();
+}
+
+function syncURL() {
+  if (restoringState) return;
+  const qs = buildQuery();
+  const target = qs ? "?" + qs : location.pathname;
+  const current = location.search || location.pathname;
+  if (target !== current) history.pushState(null, "", target);
+}
+
+function applyQuery() {
+  const params = new URLSearchParams(location.search);
+  const filters = {};
+  for (const [k, v] of params.entries()) {
+    if (k === "view" || k === "sort") continue;
+    if (k === "has_faces") filters.has_faces = true;
+    else if (SCALAR_FILTERS.has(k)) filters[k] = v;
+    else (filters[k] = filters[k] || []).push(v);
+  }
+  state.filters = filters;
+  state.view = params.get("view") || "photos";
+  state.sort = params.get("sort") || "newest";
+  const search = $("#search"); if (search) search.value = filters.q || "";
+  const sort = $("#sort"); if (sort) sort.value = state.sort;
 }
 
 // Flatten state.filters into [key, value] pairs (one per selected value).
@@ -217,6 +296,7 @@ function renderActiveFilters() {
     const text = k === "has_faces" ? "Has people" : `${FILTER_NAMES[k] || k}: ${filterValueLabel(k, v)}`;
     pill.innerHTML = `<span>${esc(text)}</span><span class="x">✕</span>`;
     pill.title = "Remove filter";
+    pill.setAttribute("aria-label", `Remove filter ${text}`);
     pill.onclick = () => removeFilterValue(k, v);
     bar.appendChild(pill);
   }
@@ -235,12 +315,90 @@ function photoCard(p, index) {
   card.className = "card";
   const placeText = p.place_label ? p.place_label.split(",")[0] : p.folder_place;
   const place = placeText ? `<span>${esc(placeText)}</span>` : "<span></span>";
+  // srcset lets the browser pull the 2x (retina) thumb only on hi-DPI screens;
+  // the base 320px thumb is pre-generated, the 640px one is cached on demand.
   card.innerHTML = `
-    <img loading="lazy" src="/api/thumb/${p.id}" alt="${esc(p.filename)}" />
+    <img loading="lazy" decoding="async" width="320" height="320"
+      src="/api/thumb/${p.id}"
+      srcset="/api/thumb/${p.id} 320w, /api/thumb/${p.id}?size=640 640w"
+      sizes="220px"
+      alt="${esc(p.filename)}" />
     ${p.face_count ? `<span class="badge">👤 ${p.face_count}</span>` : ""}
     <div class="meta">${place}<span>${(p.taken_at || "").slice(0, 4)}</span></div>`;
+  card.setAttribute("role", "button");
+  card.setAttribute("tabindex", "0");
+  card.setAttribute("aria-label", `Open ${p.filename}`);
   card.onclick = () => openLightbox(index);
+  card.onkeydown = (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openLightbox(index); }
+  };
   return card;
+}
+
+// -- pure windowing math (unit-tested via tests/js/grid_window_harness.mjs) --
+// The grid takes over its own layout (cards are absolutely positioned) so only
+// a viewport-sized window of card nodes ever exists in the DOM, bounding both
+// node count and decoded-bitmap memory regardless of library size.
+function gridLayout(containerWidth, n) {
+  const w = Math.max(containerWidth, CARD_MIN);
+  const cols = Math.max(1, Math.floor((w + GRID_GAP) / (CARD_MIN + GRID_GAP)));
+  const cardW = (w - (cols - 1) * GRID_GAP) / cols;
+  const cardH = cardW; // square cards (aspect-ratio 1)
+  const rows = Math.ceil(n / cols);
+  const totalH = rows > 0 ? rows * cardH + (rows - 1) * GRID_GAP : 0;
+  return { cols, cardW, cardH, rows, totalH };
+}
+
+function cardOffset(i, layout) {
+  const row = Math.floor(i / layout.cols);
+  const col = i % layout.cols;
+  return { left: col * (layout.cardW + GRID_GAP), top: row * (layout.cardH + GRID_GAP) };
+}
+
+function windowRange(scrollTop, viewportH, layout, n) {
+  const unit = layout.cardH + GRID_GAP;
+  const firstRow = Math.max(0, Math.floor(Math.max(0, scrollTop) / unit) - BUFFER_ROWS);
+  const visRows = Math.ceil(viewportH / unit) + BUFFER_ROWS * 2;
+  const start = firstRow * layout.cols;
+  const end = Math.min(n, (firstRow + visRows) * layout.cols);
+  return { start: Math.min(start, n), end };
+}
+
+// Reconcile the DOM with the currently-visible window: drop cards that scrolled
+// out, create+position the ones that scrolled in, reposition the rest.
+function renderWindow() {
+  if (state.view !== "photos") return;
+  const grid = $("#grid");
+  const n = state.photos.length;
+  const layout = gridLayout(grid.clientWidth || 0, n);
+  state.layout = layout;
+  grid.style.height = layout.totalH + "px";
+
+  const gridTop = grid.getBoundingClientRect().top + window.scrollY;
+  const scrollTop = window.scrollY - gridTop;
+  const { start, end } = windowRange(scrollTop, window.innerHeight, layout, n);
+
+  for (const [i, el] of state.rendered) {
+    if (i < start || i >= end) { el.remove(); state.rendered.delete(i); }
+  }
+  for (let i = start; i < end; i++) {
+    let el = state.rendered.get(i);
+    if (!el) {
+      el = photoCard(state.photos[i], i);
+      grid.appendChild(el);
+      state.rendered.set(i, el);
+    }
+    const off = cardOffset(i, layout);
+    el.style.width = layout.cardW + "px";
+    el.style.height = layout.cardH + "px";
+    el.style.transform = `translate(${off.left}px, ${off.top}px)`;
+  }
+}
+
+function clearGrid() {
+  for (const el of state.rendered.values()) el.remove();
+  state.rendered.clear();
+  $("#grid").style.height = "0px";
 }
 
 async function renderPhotos(reset = true) {
@@ -249,12 +407,12 @@ async function renderPhotos(reset = true) {
   if (reset) {
     state.offset = 0;
     state.photos = [];
-    $("#grid").innerHTML = "";
+    clearGrid();
   }
   $("#grid-loading").style.display = "block";
 
   const params = filterParams();
-  if (state.sort === "oldest") params.set("sort", "oldest");
+  if (state.sort && state.sort !== "newest") params.set("sort", state.sort);
   params.set("limit", String(PAGE));
   params.set("offset", String(state.offset));
 
@@ -267,21 +425,28 @@ async function renderPhotos(reset = true) {
     return;
   }
 
-  const baseIndex = state.photos.length;
   state.photos = state.photos.concat(data.photos);
   state.total = data.total;
   state.offset += data.photos.length;
 
   $("#result-count").textContent = `${data.total} result${data.total === 1 ? "" : "s"}`;
-  $("#grid-empty").style.display = state.photos.length ? "none" : "block";
+  // Distinguish a genuinely empty library (first-run onboarding) from a filter
+  // that simply matched nothing.
+  const empty = state.photos.length === 0;
+  const libraryEmpty = empty && activeFilterPairs().length === 0;
+  $("#onboarding").style.display = libraryEmpty ? "block" : "none";
+  $("#grid-empty").style.display = empty && !libraryEmpty ? "block" : "none";
 
-  const grid = $("#grid");
-  data.photos.forEach((p, i) => grid.appendChild(photoCard(p, baseIndex + i)));
+  renderWindow();
 
   $("#grid-loading").style.display = state.photos.length < state.total ? "block" : "none";
   $("#grid-loading").textContent = "Loading…";
   state.loading = false;
   maybeLoadMore();
+}
+
+function nearBottom() {
+  return window.innerHeight + window.scrollY >= document.body.offsetHeight - 600;
 }
 
 function maybeLoadMore() {
@@ -291,36 +456,69 @@ function maybeLoadMore() {
   if (document.body.offsetHeight <= window.innerHeight + 600) renderPhotos(false);
 }
 
-window.addEventListener("scroll", () => {
-  if (state.view !== "photos" || state.loading) return;
-  if (state.photos.length >= state.total) return;
-  if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 600) renderPhotos(false);
-});
+let frameScheduled = false;
+function onViewportChange() {
+  if (frameScheduled) return;
+  frameScheduled = true;
+  requestAnimationFrame(() => {
+    frameScheduled = false;
+    if (state.view !== "photos") return;
+    renderWindow();
+    if (!state.loading && state.photos.length < state.total && nearBottom()) renderPhotos(false);
+  });
+}
+
+window.addEventListener("scroll", onViewportChange, { passive: true });
+window.addEventListener("resize", onViewportChange);
 
 // ---- lightbox / detail ----------------------------------------------------
 function closeLightbox() {
   $("#lightbox").classList.remove("open");
   state.lightboxIndex = null;
+  // Restore focus to whatever opened the lightbox (the photo card).
+  if (state.lastFocus && state.lastFocus.focus) state.lastFocus.focus();
+  state.lastFocus = null;
 }
 
-function lightboxStep(delta) {
+function focusableInLightbox() {
+  const lb = $("#lightbox");
+  return [...lb.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter((el) => !el.disabled && el.offsetParent !== null);
+}
+
+async function lightboxStep(delta) {
   const i = state.lightboxIndex + delta;
-  if (i < 0 || i >= state.photos.length) return;
+  if (i < 0) return;
+  if (i >= state.photos.length) {
+    // Stepping past the last loaded photo pulls the next page (if any) so the
+    // lightbox keeps going instead of dead-ending mid-library.
+    if (state.photos.length >= state.total) return;
+    await renderPhotos(false);
+    if (i >= state.photos.length) return;
+  }
   openLightbox(i);
 }
 
 async function openLightbox(index) {
+  const wasOpen = $("#lightbox").classList.contains("open");
+  if (!wasOpen) state.lastFocus = document.activeElement;
   state.lightboxIndex = index;
   $("#lb-prev").disabled = index <= 0;
-  $("#lb-next").disabled = index >= state.photos.length - 1;
+  // "Next" stays enabled at the last loaded photo when more pages remain on the
+  // server, so the arrow can trigger the next load (see lightboxStep).
+  $("#lb-next").disabled = index >= state.photos.length - 1 && state.photos.length >= state.total;
 
   const base = state.photos[index];
   $("#lightbox").classList.add("open");
+  if (!wasOpen) $("#lb-close").focus();
   const p = await api(`/api/photos/${base.id}`);
   // Guard against a fast prev/next click landing on a different photo.
   if (state.lightboxIndex !== index) return;
 
-  $("#lb-img").src = `/api/image/${base.id}`;
+  // The lightbox shows a bounded preview derivative (capped at the server's
+  // preview_size) so flicking through big originals doesn't spike memory; the
+  // true full-resolution file stays behind the "View full size" link.
+  $("#lb-img").src = `/api/preview/${base.id}`;
   const side = $("#lb-side");
   const kv = (k, v) => (v ? `<div class="kv"><span>${k}</span><span>${esc(v)}</span></div>` : "");
   side.innerHTML = `
@@ -331,6 +529,7 @@ async function openLightbox(index) {
     ${kv("Camera", [p.camera_make, p.camera_model].filter(Boolean).join(" "))}
     ${kv("Size", p.width && p.height ? `${p.width}×${p.height}` : "")}
     ${kv("Coordinates", p.lat != null ? `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}` : "")}
+    <p class="lb-actions"><a href="/api/image/${base.id}" target="_blank" rel="noopener">View full size ↗</a></p>
     <h3 style="margin-top:16px">Faces (${p.faces.length})</h3>
     <div class="face-list" id="lb-faces"></div>`;
 
@@ -339,20 +538,29 @@ async function openLightbox(index) {
   for (const face of p.faces) {
     const item = document.createElement("div");
     item.className = "face-item";
+    // A named face also gets a "✕" to reassign it back to unknown; typing a
+    // different name and saving reassigns it to that (new or existing) person.
     item.innerHTML = `
       <img src="/api/face/${face.id}" onerror="this.style.visibility='hidden'" />
-      <input placeholder="name…" value="${esc(face.person_name || "")}" />
-      <button class="primary">Save</button>`;
+      <input placeholder="name…" value="${esc(face.person_name || "")}" aria-label="Assign face to a person" />
+      <button class="primary">Save</button>
+      ${face.person_id ? `<button class="ghost icon" data-act="clear" title="Reassign to unknown" aria-label="Reassign face to unknown">✕</button>` : ""}`;
     const input = item.querySelector("input");
-    item.querySelector("button").onclick = async () => {
+    const refresh = () => { renderSidebar(); openLightbox(index); };
+    item.querySelector('.primary').onclick = async () => {
       if (!input.value.trim()) return;
       await api(`/api/faces/${face.id}/assign`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: input.value.trim() }),
       });
-      renderSidebar();
+      refresh();
     };
-    input.addEventListener("keydown", (e) => e.key === "Enter" && item.querySelector("button").click());
+    const clear = item.querySelector('[data-act="clear"]');
+    if (clear) clear.onclick = async () => {
+      await api(`/api/faces/${face.id}/unassign`, { method: "POST" });
+      refresh();
+    };
+    input.addEventListener("keydown", (e) => e.key === "Enter" && item.querySelector('.primary').click());
     list.appendChild(item);
   }
 }
@@ -363,30 +571,124 @@ async function renderPeople() {
   const wrap = $("#people");
   wrap.innerHTML = "";
   $("#people-empty").style.display = persons.length ? "none" : "block";
-  for (const person of persons) {
-    const el = document.createElement("div");
-    el.className = "person-card";
-    const avatar = person.cover_face_id
-      ? `<img class="avatar" src="/api/face/${person.cover_face_id}" onerror="this.style.visibility='hidden'"/>`
-      : `<div class="avatar"></div>`;
-    el.innerHTML = `
-      ${avatar}
-      <div class="name">${esc(person.name)}</div>
-      <div class="sub">${person.photo_count} photos · ${person.face_count} faces</div>
-      <div class="row">
-        <button class="ghost" data-act="view">View photos</button>
-        <button class="ghost" data-act="del">Delete</button>
-      </div>`;
-    el.querySelector('[data-act="view"]').onclick = () => {
-      state.filters = { person_id: [person.id] }; setView("photos");
+  for (const person of persons) wrap.appendChild(personCard(person, persons));
+}
+
+function personCard(person, allPersons) {
+  const el = document.createElement("div");
+  el.className = "person-card";
+  const avatar = person.cover_face_id
+    ? `<img class="avatar" src="/api/face/${person.cover_face_id}" onerror="this.style.visibility='hidden'"/>`
+    : `<div class="avatar"></div>`;
+  el.innerHTML = `
+    ${avatar}
+    <div class="name" data-role="name">${esc(person.name)}</div>
+    <div class="sub">${person.photo_count} photos · ${person.face_count} faces</div>
+    <div class="row">
+      <button class="ghost" data-act="view" aria-label="View ${esc(person.name)}'s photos">View</button>
+      <button class="ghost" data-act="rename" aria-label="Rename ${esc(person.name)}">Rename</button>
+    </div>
+    <div class="row">
+      <button class="ghost" data-act="cover" aria-label="Choose cover photo">Cover</button>
+      <button class="ghost" data-act="merge" aria-label="Merge ${esc(person.name)} into another person">Merge</button>
+      <button class="ghost danger" data-act="del" aria-label="Delete ${esc(person.name)}">Delete</button>
+    </div>
+    <div class="person-panel" data-role="panel" hidden></div>`;
+
+  const panel = el.querySelector('[data-role="panel"]');
+  const closePanel = () => { panel.hidden = true; panel.innerHTML = ""; };
+
+  el.querySelector('[data-act="view"]').onclick = () => {
+    state.filters = { person_id: [person.id] }; setView("photos");
+  };
+  el.querySelector('[data-act="rename"]').onclick = () => startRename(el, person);
+  el.querySelector('[data-act="del"]').onclick = async () => {
+    if (!confirm(`Remove ${person.name}? Faces are kept for re-clustering.`)) return;
+    await api(`/api/persons/${person.id}`, { method: "DELETE" });
+    renderPeople(); renderSidebar();
+  };
+  el.querySelector('[data-act="cover"]').onclick = () =>
+    panel.hidden ? openCoverPicker(panel, person) : closePanel();
+  el.querySelector('[data-act="merge"]').onclick = () =>
+    panel.hidden ? openMergePicker(panel, person, allPersons) : closePanel();
+  return el;
+}
+
+function startRename(card, person) {
+  const nameEl = card.querySelector('[data-role="name"]');
+  if (card.querySelector(".rename-box")) return; // already editing
+  const box = document.createElement("div");
+  box.className = "rename-box row";
+  box.innerHTML = `<input value="${esc(person.name)}" aria-label="New name" />
+    <button class="primary">Save</button>`;
+  nameEl.replaceWith(box);
+  const input = box.querySelector("input");
+  input.focus(); input.select();
+  const save = async () => {
+    const name = input.value.trim();
+    if (!name || name === person.name) return renderPeople();
+    await api(`/api/persons/${person.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    renderPeople(); renderSidebar();
+  };
+  box.querySelector("button").onclick = save;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") save();
+    else if (e.key === "Escape") renderPeople();
+  });
+}
+
+async function openCoverPicker(panel, person) {
+  panel.hidden = false;
+  panel.innerHTML = `<div class="tagline">Pick a cover photo…</div>`;
+  const { faces } = await api(`/api/persons/${person.id}/faces`);
+  if (!faces.length) { panel.innerHTML = `<div class="tagline">No face crops available.</div>`; return; }
+  panel.innerHTML = "";
+  const grid = document.createElement("div");
+  grid.className = "cover-grid";
+  faces.forEach((face) => {
+    const img = document.createElement("img");
+    img.src = `/api/face/${face.id}`;
+    img.alt = "face crop";
+    img.title = "Set as cover";
+    if (face.id === person.cover_face_id) img.classList.add("selected");
+    img.onclick = async () => {
+      await api(`/api/persons/${person.id}/cover`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ face_id: face.id }),
+      });
+      renderPeople();
     };
-    el.querySelector('[data-act="del"]').onclick = async () => {
-      if (!confirm(`Remove ${person.name}? Faces are kept for re-clustering.`)) return;
-      await api(`/api/persons/${person.id}`, { method: "DELETE" });
-      renderPeople(); renderSidebar();
-    };
-    wrap.appendChild(el);
-  }
+    grid.appendChild(img);
+  });
+  panel.appendChild(grid);
+}
+
+function openMergePicker(panel, person, allPersons) {
+  const others = allPersons.filter((p) => p.id !== person.id);
+  panel.hidden = false;
+  if (!others.length) { panel.innerHTML = `<div class="tagline">No other people to merge into.</div>`; return; }
+  panel.innerHTML = `
+    <div class="tagline">Merge <b>${esc(person.name)}</b> into…</div>
+    <div class="row">
+      <select aria-label="Merge target">
+        ${others.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}
+      </select>
+      <button class="primary">Merge</button>
+    </div>`;
+  const select = panel.querySelector("select");
+  panel.querySelector("button").onclick = async () => {
+    const target = Number(select.value);
+    const targetName = others.find((p) => p.id === target)?.name || "that person";
+    if (!confirm(`Merge ${person.name} into ${targetName}? This can't be undone.`)) return;
+    await api(`/api/persons/${target}/merge`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_id: person.id }),
+    });
+    renderPeople(); renderSidebar();
+  };
 }
 
 // ---- clusters (name faces) ------------------------------------------------
@@ -432,6 +734,7 @@ function setView(view) {
 }
 
 function refresh() {
+  syncURL();
   renderActiveFilters();
   renderSidebar();
   if (state.view === "photos") renderPhotos(true);
@@ -445,13 +748,22 @@ $("#lb-close").onclick = closeLightbox;
 $("#lb-prev").onclick = () => lightboxStep(-1);
 $("#lb-next").onclick = () => lightboxStep(1);
 $("#lightbox").onclick = (e) => { if (e.target.id === "lightbox") closeLightbox(); };
-$("#sort").onchange = (e) => { state.sort = e.target.value; renderPhotos(true); };
+$("#sort").onchange = (e) => { state.sort = e.target.value; syncURL(); renderPhotos(true); };
 
 document.addEventListener("keydown", (e) => {
   if (!$("#lightbox").classList.contains("open")) return;
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
   if (e.key === "Escape") closeLightbox();
-  else if (e.key === "ArrowLeft") lightboxStep(-1);
-  else if (e.key === "ArrowRight") lightboxStep(1);
+  else if (e.key === "ArrowLeft" && !typing) lightboxStep(-1);
+  else if (e.key === "ArrowRight" && !typing) lightboxStep(1);
+  else if (e.key === "Tab") {
+    // Focus trap: keep Tab cycling within the dialog.
+    const f = focusableInLightbox();
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
 });
 
 let searchTimer;
@@ -464,4 +776,14 @@ $("#search").oninput = (e) => {
   }, 250);
 };
 
-setView("photos");
+// Restore filters/view from the URL on back/forward navigation.
+window.addEventListener("popstate", () => {
+  restoringState = true;
+  applyQuery();
+  setView(state.view); // refresh()'s syncURL is skipped while restoring
+  restoringState = false;
+});
+
+// Initial load: hydrate from any querystring (shared/bookmarked link).
+applyQuery();
+setView(state.view);

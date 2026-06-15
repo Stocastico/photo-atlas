@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, library, search
+from . import db, library, metadata, search
 from .config import AtlasConfig
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -32,6 +32,14 @@ class AssignRequest(BaseModel):
 
 class RenameRequest(BaseModel):
     name: str
+
+
+class MergeRequest(BaseModel):
+    source_id: int
+
+
+class CoverRequest(BaseModel):
+    face_id: int
 
 
 def create_app(config: AtlasConfig | None = None) -> FastAPI:
@@ -110,11 +118,43 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             raise HTTPException(404, "image not found")
         return FileResponse(row["path"])
 
+    @app.get("/api/preview/{photo_id}")
+    def api_preview(photo_id: int, conn: sqlite3.Connection = Depends(get_conn)):
+        row = conn.execute("SELECT path, sha1 FROM photos WHERE id=?", (photo_id,)).fetchone()
+        if row is None or not row["path"] or not Path(row["path"]).exists():
+            raise HTTPException(404, "image not found")
+        src = Path(row["path"])
+        sha1 = row["sha1"] or metadata.sha1_of(src)
+        try:
+            dest = metadata.cached_resized(
+                config.previews_dir, src, sha1, config.preview_size, quality=88
+            )
+        except Exception:
+            # Any decode/encode failure (corrupt or exotic format) falls back to
+            # streaming the original so the lightbox still works.
+            return FileResponse(src)
+        return FileResponse(dest)
+
     @app.get("/api/thumb/{photo_id}")
-    def api_thumb(photo_id: int, conn: sqlite3.Connection = Depends(get_conn)):
-        row = conn.execute("SELECT thumb_path, path FROM photos WHERE id=?", (photo_id,)).fetchone()
+    def api_thumb(
+        photo_id: int,
+        size: int | None = Query(None, ge=64, le=1024),
+        conn: sqlite3.Connection = Depends(get_conn),
+    ):
+        row = conn.execute(
+            "SELECT thumb_path, path, sha1 FROM photos WHERE id=?", (photo_id,)
+        ).fetchone()
         if row is None:
             raise HTTPException(404, "photo not found")
+        # A non-default size (e.g. the retina 2x ``srcset`` variant) is generated
+        # and cached on demand from the original.
+        if size and size != config.thumb_size and row["path"] and Path(row["path"]).exists():
+            src = Path(row["path"])
+            sha1 = row["sha1"] or metadata.sha1_of(src)
+            try:
+                return FileResponse(metadata.cached_resized(config.thumbs_dir, src, sha1, size))
+            except Exception:
+                pass  # fall back to the pre-generated default thumb
         thumb = row["thumb_path"]
         if thumb and Path(thumb).exists():
             return FileResponse(thumb)
@@ -136,12 +176,34 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
 
     @app.patch("/api/persons/{person_id}")
     def api_rename(person_id: int, payload: RenameRequest, conn: sqlite3.Connection = Depends(get_conn)):
+        if not payload.name.strip():
+            raise HTTPException(400, "name must not be empty")
         library.rename_person(conn, person_id, payload.name)
         return {"ok": True}
 
     @app.delete("/api/persons/{person_id}")
     def api_delete_person(person_id: int, conn: sqlite3.Connection = Depends(get_conn)):
         library.delete_person(conn, person_id)
+        return {"ok": True}
+
+    @app.get("/api/persons/{person_id}/faces")
+    def api_person_faces(person_id: int, conn: sqlite3.Connection = Depends(get_conn)):
+        return {"faces": library.list_person_faces(conn, person_id)}
+
+    @app.post("/api/persons/{person_id}/merge")
+    def api_merge_person(person_id: int, payload: MergeRequest, conn: sqlite3.Connection = Depends(get_conn)):
+        try:
+            library.merge_persons(conn, payload.source_id, person_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return {"ok": True, "person_id": person_id}
+
+    @app.put("/api/persons/{person_id}/cover")
+    def api_set_cover(person_id: int, payload: CoverRequest, conn: sqlite3.Connection = Depends(get_conn)):
+        try:
+            library.set_cover_face(conn, person_id, payload.face_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
         return {"ok": True}
 
     # -- clusters & assignment -------------------------------------------

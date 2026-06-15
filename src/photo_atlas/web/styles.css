@@ -64,8 +64,18 @@ aside h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; co
 main { padding: 18px 20px 60px; min-height: calc(100vh - 58px); }
 .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; color: var(--muted); font-size: 14px; }
 .toolbar select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
-.card { position: relative; aspect-ratio: 1; background: var(--panel); border-radius: 10px; overflow: hidden; cursor: pointer; border: 1px solid var(--border); }
+/* The grid is virtualised in JS (renderWindow): it becomes a positioned canvas
+   whose height spans the whole result set, and only a viewport-sized window of
+   absolutely-positioned cards is kept in the DOM. This bounds both `<img>` node
+   count and decoded-bitmap memory no matter how large the library is. */
+.grid { position: relative; width: 100%; }
+.card {
+  position: absolute; top: 0; left: 0; will-change: transform;
+  background: var(--panel); border-radius: 10px;
+  overflow: hidden; cursor: pointer; border: 1px solid var(--border);
+  /* width/height/transform are assigned by the windower. */
+  content-visibility: auto;
+}
 .card img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .25s ease; }
 .card:hover img { transform: scale(1.05); }
 .card .meta { position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 8px 6px; font-size: 11px;
@@ -82,8 +92,40 @@ main { padding: 18px 20px 60px; min-height: calc(100vh - 58px); }
 .row input { flex: 1; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 6px 8px; border-radius: 6px; }
 button.primary { background: var(--accent); color: #fff; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
 button.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+button.ghost.danger:hover { border-color: #c93c3c; color: #ff8585; }
+button.icon { padding: 6px 9px; line-height: 1; }
+/* person card management panel */
+.person-card .row { justify-content: center; flex-wrap: wrap; }
+.rename-box { margin-top: 8px; }
+.rename-box input { flex: 1; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 6px 8px; border-radius: 6px; }
+.person-panel { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; text-align: left; }
+.person-panel select { flex: 1; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
+.cover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(46px, 1fr)); gap: 6px; max-height: 180px; overflow-y: auto; }
+.cover-grid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; cursor: pointer; border: 2px solid transparent; }
+.cover-grid img:hover { border-color: var(--muted); }
+.cover-grid img.selected { border-color: var(--accent); }
 .empty { color: var(--muted); text-align: center; padding: 60px 0; }
 .loading { color: var(--muted); text-align: center; padding: 24px 0; font-size: 13px; }
+.onboarding { max-width: 640px; margin: 0 auto; }
+.onboarding h2 { color: var(--text); margin-bottom: 6px; }
+.onboarding pre {
+  text-align: left; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px 16px; overflow-x: auto; color: var(--text); font-size: 13px;
+}
+.onboarding code { color: var(--text); }
+/* keyboard focus visibility */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.card:focus-visible { outline-offset: -2px; }
+/* toast / error banner */
+.toast {
+  position: fixed; left: 50%; bottom: 24px;
+  transform: translateX(-50%) translateY(20px);
+  background: #3a1d1d; color: #ffd7d7; border: 1px solid #7a2e2e;
+  padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 80;
+  opacity: 0; pointer-events: none; transition: opacity .2s ease, transform .2s ease; max-width: 80vw;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast.info { background: #16263a; color: #d7e8ff; border-color: #2e567a; }
 /* active filter pills */
 #active-filters { display: none; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 .filter-pill {
@@ -103,6 +145,8 @@ button.ghost { background: var(--panel-2); color: var(--text); border: 1px solid
 .lb-side h2 { font-size: 16px; margin: 0 0 4px; }
 .lb-side .kv { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
 .lb-side .kv span:first-child { color: var(--muted); }
+.lb-actions { margin: 12px 0 0; font-size: 13px; }
+.lb-actions a { text-decoration: none; }
 .face-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .face-item { display: flex; align-items: center; gap: 8px; }
 .face-item img { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; }

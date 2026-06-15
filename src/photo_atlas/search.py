@@ -16,6 +16,8 @@ any of them (OR within the facet, AND across facets).
 ``has_faces``  ``True`` -> at least one face.
 ``q``          free-text substring matched across filename, city, country,
                place label, folder/trip and camera make/model.
+``sort``       result ordering: ``newest`` (default), ``oldest``, ``filename``,
+               ``filename_desc`` or ``indexed`` (most recently indexed first).
 """
 
 from __future__ import annotations
@@ -87,6 +89,22 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any], str]:
     return where, params, join
 
 
+# Sort keys exposed by the API/UI -> ORDER BY clause. Each ends with an ``id``
+# tiebreaker so paging through ``LIMIT/OFFSET`` is stable when the primary key
+# ties (e.g. many photos sharing a folder-synthesised date).
+SORTS: dict[str, str] = {
+    "newest": "p.taken_at DESC, p.id DESC",
+    "oldest": "p.taken_at ASC, p.id ASC",
+    "filename": "p.filename COLLATE NOCASE ASC, p.id ASC",
+    "filename_desc": "p.filename COLLATE NOCASE DESC, p.id DESC",
+    "indexed": "p.indexed_at DESC, p.id DESC",
+}
+
+
+def _order_by(sort: Any) -> str:
+    return SORTS.get(sort or "newest", SORTS["newest"])
+
+
 def search_photos(
     conn: sqlite3.Connection, filters: dict[str, Any], limit: int = 60, offset: int = 0
 ) -> tuple[list[dict], int]:
@@ -95,7 +113,7 @@ def search_photos(
 
     total = conn.execute(f"SELECT COUNT(DISTINCT p.id) {base}", params).fetchone()[0]
 
-    order = "p.taken_at DESC" if filters.get("sort") != "oldest" else "p.taken_at ASC"
+    order = _order_by(filters.get("sort"))
     rows = conn.execute(
         f"SELECT DISTINCT p.* {base} ORDER BY {order} LIMIT ? OFFSET ?",
         [*params, int(limit), int(offset)],

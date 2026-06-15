@@ -228,6 +228,43 @@ def test_search_filters(indexed):
     assert sum(p["count"] for p in fp["persons"]) >= 0  # persons facet still resolves
 
 
+def test_sort_options(indexed):
+    conn = db.connect(indexed.db_path)
+
+    newest, _ = search.search_photos(conn, {"sort": "newest"}, limit=500)
+    oldest, _ = search.search_photos(conn, {"sort": "oldest"}, limit=500)
+    # Oldest-first is the exact reverse ordering of newest-first by date.
+    assert [p["id"] for p in oldest][::-1] == [p["id"] for p in newest]
+    dates = [p["taken_at"] for p in newest]
+    assert dates == sorted(dates, reverse=True)
+
+    az, _ = search.search_photos(conn, {"sort": "filename"}, limit=500)
+    za, _ = search.search_photos(conn, {"sort": "filename_desc"}, limit=500)
+    names = [p["filename"].lower() for p in az]
+    assert names == sorted(names)
+    assert [p["id"] for p in za] == [p["id"] for p in az][::-1]
+
+    recent, _ = search.search_photos(conn, {"sort": "indexed"}, limit=500)
+    stamps = [p["indexed_at"] for p in recent]
+    assert stamps == sorted(stamps, reverse=True)
+
+    # An unknown sort key falls back to the default (newest) rather than erroring.
+    fallback, _ = search.search_photos(conn, {"sort": "bogus"}, limit=500)
+    assert [p["id"] for p in fallback] == [p["id"] for p in newest]
+
+
+def test_sort_pagination_is_stable(indexed):
+    """Paging must not drop or duplicate rows even when the sort key ties."""
+    conn = db.connect(indexed.db_path)
+    for sort in ("newest", "oldest", "filename", "filename_desc", "indexed"):
+        full, total = search.search_photos(conn, {"sort": sort}, limit=500)
+        page1, _ = search.search_photos(conn, {"sort": sort}, limit=10, offset=0)
+        page2, _ = search.search_photos(conn, {"sort": sort}, limit=10, offset=10)
+        paged_ids = [p["id"] for p in page1] + [p["id"] for p in page2]
+        assert paged_ids == [p["id"] for p in full][: len(paged_ids)]
+        assert len(set(paged_ids)) == len(paged_ids)  # no duplicates across pages
+
+
 def test_multi_select_filters(indexed):
     conn = db.connect(indexed.db_path)
     f = search.facets(conn)
@@ -296,6 +333,79 @@ def test_has_faces_and_date_filters(indexed):
     assert tcomb <= tf and tcomb <= tn
 
 
+def test_empty_library_onboarding_signal(config):
+    """An empty catalog reports zero totals (the UI's onboarding trigger) and
+    the page ships the onboarding + toast scaffolding."""
+    from fastapi.testclient import TestClient
+
+    from photo_atlas.api import create_app
+
+    client = TestClient(create_app(config))
+    assert client.get("/api/photos").json()["total"] == 0
+    assert client.get("/api/facets").json()["total"] == 0
+
+    html = client.get("/").text
+    assert 'id="onboarding"' in html
+    assert 'id="toast"' in html
+    assert 'photo-atlas index' in html  # onboarding shows the CLI hint
+
+
+def test_preview_endpoint_caps_size_and_caches(indexed):
+    import io
+
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    from photo_atlas.api import create_app
+
+    client = TestClient(create_app(indexed))
+    pid = client.get("/api/photos").json()["photos"][0]["id"]
+
+    res = client.get(f"/api/preview/{pid}")
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("image/")
+
+    img = Image.open(io.BytesIO(res.content))
+    assert max(img.size) <= indexed.preview_size
+
+    # The derivative is cached to disk content-addressed by sha1, so a second
+    # request reuses the file rather than re-encoding.
+    cached = list(indexed.previews_dir.rglob("*.jpg"))
+    assert cached, "preview should be written to the previews cache"
+    again = client.get(f"/api/preview/{pid}")
+    assert again.status_code == 200
+
+    # The full-resolution original is still reachable for download.
+    assert client.get(f"/api/image/{pid}").status_code == 200
+    assert client.get("/api/preview/999999").status_code == 404
+
+
+def test_thumb_size_variant(indexed):
+    """The thumb endpoint serves a cached 2x (retina) derivative on demand and
+    leaves the default thumbnail untouched."""
+    import io
+
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    from photo_atlas.api import create_app
+
+    client = TestClient(create_app(indexed))
+    pid = client.get("/api/photos").json()["photos"][0]["id"]
+
+    default = client.get(f"/api/thumb/{pid}")
+    assert default.status_code == 200
+
+    variant = client.get(f"/api/thumb/{pid}", params={"size": 640})
+    assert variant.status_code == 200
+    img = Image.open(io.BytesIO(variant.content))
+    assert max(img.size) <= 640
+    # The on-demand size is cached content-addressed alongside the thumbnails.
+    assert list(indexed.thumbs_dir.rglob("*_640.jpg"))
+    # Out-of-range sizes are rejected by the query validation.
+    assert client.get(f"/api/thumb/{pid}", params={"size": 5000}).status_code == 422
+
+
 def test_cluster_assignment_and_recognition(indexed):
     conn = db.connect(indexed.db_path)
     clusters = library.list_clusters(conn)
@@ -318,6 +428,86 @@ def test_cluster_assignment_and_recognition(indexed):
     # Faces are detached, not deleted, so they can be re-clustered later.
     orphaned = conn.execute("SELECT COUNT(*) FROM faces WHERE person_id IS NULL").fetchone()[0]
     assert orphaned > 0
+
+
+def test_merge_persons(indexed):
+    conn = db.connect(indexed.db_path)
+    clusters = library.list_clusters(conn)
+    assert len(clusters) >= 2, "need two clusters to exercise a merge"
+
+    a = library.assign_cluster(conn, clusters[0]["cluster_id"], name="Ann")
+    b = library.assign_cluster(conn, clusters[1]["cluster_id"], name="Bob")
+
+    faces_a = {r["id"] for r in conn.execute("SELECT id FROM faces WHERE person_id=?", (a,))}
+    faces_b = {r["id"] for r in conn.execute("SELECT id FROM faces WHERE person_id=?", (b,))}
+    assert faces_a and faces_b
+
+    merged = library.merge_persons(conn, source_id=a, target_id=b)
+    assert merged == b
+    # Ann is gone; all her faces now belong to Bob.
+    assert not any(p["name"] == "Ann" for p in library.list_persons(conn))
+    now_b = {r["id"] for r in conn.execute("SELECT id FROM faces WHERE person_id=?", (b,))}
+    assert now_b == faces_a | faces_b
+
+    import pytest
+
+    with pytest.raises(ValueError):
+        library.merge_persons(conn, source_id=b, target_id=b)
+    with pytest.raises(ValueError):
+        library.merge_persons(conn, source_id=999, target_id=b)
+
+
+def test_cover_face_picker(indexed):
+    import pytest
+
+    conn = db.connect(indexed.db_path)
+    clusters = library.list_clusters(conn)
+    pid = library.assign_cluster(conn, clusters[0]["cluster_id"], name="Cara")
+    faces_of = library.list_person_faces(conn, pid)
+    assert faces_of, "named person should have faces with crops"
+
+    library.set_cover_face(conn, pid, faces_of[0]["id"])
+    cover = conn.execute("SELECT cover_face_id FROM persons WHERE id=?", (pid,)).fetchone()[0]
+    assert cover == faces_of[0]["id"]
+    # list_persons surfaces the pinned cover rather than the first-available one.
+    cara = next(p for p in library.list_persons(conn) if p["id"] == pid)
+    assert cara["cover_face_id"] == faces_of[0]["id"]
+
+    # A face that belongs to nobody (or someone else) is rejected.
+    orphan = conn.execute(
+        "SELECT id FROM faces WHERE person_id IS NULL LIMIT 1"
+    ).fetchone()
+    if orphan is not None:
+        with pytest.raises(ValueError):
+            library.set_cover_face(conn, pid, orphan["id"])
+
+
+def test_person_management_api(indexed):
+    from fastapi.testclient import TestClient
+
+    from photo_atlas.api import create_app
+
+    client = TestClient(create_app(indexed))
+    clusters = client.get("/api/clusters").json()["clusters"]
+    assert len(clusters) >= 2
+    pa = client.post(f"/api/clusters/{clusters[0]['cluster_id']}/assign", json={"name": "Dee"}).json()["person_id"]
+    pb = client.post(f"/api/clusters/{clusters[1]['cluster_id']}/assign", json={"name": "Eve"}).json()["person_id"]
+
+    # Cover picker: list a person's faces, then pin one.
+    faces = client.get(f"/api/persons/{pa}/faces").json()["faces"]
+    assert faces
+    assert client.put(f"/api/persons/{pa}/cover", json={"face_id": faces[0]["id"]}).status_code == 200
+    # Pinning a face that isn't theirs is a 400.
+    other = client.get(f"/api/persons/{pb}/faces").json()["faces"]
+    assert client.put(f"/api/persons/{pa}/cover", json={"face_id": other[0]["id"]}).status_code == 400
+
+    # Empty rename is rejected.
+    assert client.patch(f"/api/persons/{pa}", json={"name": "   "}).status_code == 400
+
+    # Merge Eve into Dee over HTTP.
+    assert client.post(f"/api/persons/{pa}/merge", json={"source_id": pb}).json()["ok"] is True
+    names = [p["name"] for p in client.get("/api/persons").json()["persons"]]
+    assert "Dee" in names and "Eve" not in names
 
 
 def test_auto_recognition_of_new_photos(config, tmp_path):

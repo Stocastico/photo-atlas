@@ -150,13 +150,46 @@ def extract_meta(path: Path) -> PhotoMeta:
     return meta
 
 
-def make_thumbnail(path: Path, dest: Path, size: int = 320) -> Path:
-    """Write an orientation-corrected JPEG thumbnail and return its path."""
+def _write_resized(path: Path, dest: Path, size: int, quality: int) -> Path:
+    """Write an orientation-corrected, downscaled JPEG (never upscales)."""
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     with Image.open(path) as img:
         img = ImageOps.exif_transpose(img)
         img = img.convert("RGB")
-        img.thumbnail((size, size))
-        img.save(dest, "JPEG", quality=82)
+        img.thumbnail((size, size))  # Pillow's thumbnail only ever shrinks.
+        img.save(dest, "JPEG", quality=quality)
+    return dest
+
+
+def make_thumbnail(path: Path, dest: Path, size: int = 320) -> Path:
+    """Write an orientation-corrected JPEG thumbnail and return its path."""
+
+    return _write_resized(path, dest, size, quality=82)
+
+
+def make_preview(path: Path, dest: Path, size: int = 1600) -> Path:
+    """Write a medium, screen-sized JPEG derivative for the lightbox.
+
+    Decoding a full 50 MP original costs ~200 MB of bitmap memory; flicking
+    through many via the lightbox arrows would spike memory badly. A bounded
+    preview keeps that flat while the true original stays a click away.
+    """
+
+    return _write_resized(path, dest, size, quality=88)
+
+
+def cached_resized(
+    cache_dir: Path, src: Path, sha1: str, size: int, *, quality: int = 82
+) -> Path:
+    """Return a content-addressed, on-demand JPEG derivative of ``src``.
+
+    The file is named ``{sha1}_{size}.jpg`` and generated on first request, so
+    repeat requests (and re-indexing) reuse it. Shared by the lightbox preview
+    and the retina (2x) thumbnail ``srcset`` variants.
+    """
+
+    dest = Path(cache_dir) / sha1[:2] / f"{sha1}_{size}.jpg"
+    if not dest.exists():
+        _write_resized(src, dest, size, quality)
     return dest
