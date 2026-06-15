@@ -7,6 +7,12 @@ import pytest
 
 from photo_atlas import db, metadata, models
 from photo_atlas.config import AtlasConfig, default_home
+from photo_atlas.geocode import Geocoder
+
+
+def test_geocoder_high_resolution_flag_reflects_backend():
+    # Forcing the external backend off must report low resolution (bundled table).
+    assert Geocoder(prefer_external=False).high_resolution is False
 
 
 # -- db embedding (de)serialisation ----------------------------------------

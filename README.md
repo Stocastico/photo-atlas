@@ -81,11 +81,29 @@ photo-atlas index ~/Pictures        # walk the tree, extract metadata + faces
 photo-atlas cluster                 # group the unnamed faces
 photo-atlas serve                   # browse, filter, and name people
 photo-atlas stats                   # quick catalog summary
+photo-atlas prune                   # drop entries whose files were deleted/moved
+photo-atlas export-labels           # write person names to portable XMP sidecars
 ```
 
 `index` is incremental — already-known photos are skipped (use `--recompute` to
 force). Choose the face backend with `--faces {auto,yunet,dlib,synthetic,none}`
-(default `auto` → YuNet/SFace).
+(default `auto` → YuNet/SFace). During indexing each file is decoded once and
+face detection runs on a downscaled copy, so large libraries index faster.
+Byte-identical duplicates (same photo in two folders) are detected by SHA-1 and
+skipped; video files are recognised and reported but not catalogued.
+
+> **HEIC needs the `heic` extra.** iPhone HEIC photos (often a fifth of a
+> library) only decode — for thumbnails *and* face detection — once
+> `pillow-heif` is installed (`uv sync --extra heic`).
+
+> **City labels need the `geo` extra.** Without `reverse_geocoder`
+> (`uv sync --extra geo`) GPS is matched against a tiny bundled table and
+> `index` warns that city/country labels will be coarse.
+
+`export-labels` writes a `<photo>.xmp` sidecar next to each photo that has named
+people (or use `--dest DIR`), recording the names as `dc:subject` + `People|Name`
+keywords so the naming work survives a catalog loss and is read by digiKam,
+Lightroom and Bridge. Originals are never modified.
 
 ## How it works
 

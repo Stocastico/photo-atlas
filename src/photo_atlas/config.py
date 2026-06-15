@@ -35,6 +35,11 @@ class AtlasConfig:
     #: full-resolution original is still served on demand for download.
     preview_size: int = 1600
 
+    #: Max geotagged points returned to the map in one response. Bounds the
+    #: payload on big libraries; the default comfortably covers a 15-year
+    #: personal collection (the old 20k cap could clip an iPhone library).
+    map_point_limit: int = 50000
+
     #: Face matches closer than this cosine distance are considered the same
     #: identity when auto-recognising newly indexed photos. Tuned for SFace,
     #: where same-person pairs sit near ~0.1-0.4 and different people near ~0.9.
@@ -70,7 +75,7 @@ class AtlasConfig:
     def previews_dir(self) -> Path:
         return self.home / "previews"
 
-    def ensure_dirs(self) -> "AtlasConfig":
+    def ensure_dirs(self) -> AtlasConfig:
         """Create the library directory tree if it does not exist yet."""
 
         self.home.mkdir(parents=True, exist_ok=True)

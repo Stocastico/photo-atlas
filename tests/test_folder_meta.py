@@ -119,8 +119,10 @@ def test_exif_date_wins_over_folder(tmp_path):
 def test_place_facet_and_filter(tmp_path):
     from photo_atlas import search
 
-    _plain_jpeg(tmp_path / "src" / "2013_05_Sardegna" / "a.jpg")
-    _plain_jpeg(tmp_path / "src" / "2014_08_Norway" / "b.jpg")
+    # Distinct colours so the two trip photos aren't byte-identical (which the
+    # indexer would now deduplicate by SHA-1).
+    _plain_jpeg(tmp_path / "src" / "2013_05_Sardegna" / "a.jpg", color=(20, 40, 60))
+    _plain_jpeg(tmp_path / "src" / "2014_08_Norway" / "b.jpg", color=(60, 40, 20))
     conn = _index(tmp_path)
 
     places = {f["value"] for f in search.facets(conn)["places"]}

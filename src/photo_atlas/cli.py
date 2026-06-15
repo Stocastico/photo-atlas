@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import db
 from .config import AtlasConfig
-from .indexer import cluster_library, index_path
+from .indexer import cluster_library, index_path, prune_library
 from .search import facets
 
 
@@ -52,8 +52,14 @@ def _cmd_index(args) -> int:
     print()
     print(
         f"Done: {stats.indexed} indexed, {stats.skipped} skipped, "
-        f"{stats.failed} failed, {stats.faces} faces ({stats.recognized} auto-recognized)."
+        f"{stats.duplicates} duplicate(s), {stats.failed} failed, "
+        f"{stats.faces} faces ({stats.recognized} auto-recognized)."
     )
+    if stats.videos:
+        print(
+            f"Skipped {stats.videos} video file(s) — Photo Atlas indexes still "
+            "images only (videos aren't catalogued)."
+        )
     if stats.errors:
         print(f"{stats.failed} file(s) failed; first errors:", file=sys.stderr)
         for line in stats.errors[:10]:
@@ -68,6 +74,30 @@ def _cmd_cluster(args) -> int:
     result = cluster_library(config)
     print(f"Clustered {result['faces']} unnamed faces into {result['clusters']} groups.")
     print("Open the web UI (`photo-atlas serve`) to name them.")
+    return 0
+
+
+def _cmd_prune(args) -> int:
+    config = _config(args)
+    result = prune_library(config)
+    print(
+        f"Pruned {result['removed']} photo(s) whose files are gone; "
+        f"{result['kept']} still present."
+    )
+    return 0
+
+
+def _cmd_export_labels(args) -> int:
+    from .export import write_xmp_sidecars
+
+    config = _config(args)
+    dest = Path(args.dest).expanduser() if args.dest else None
+    result = write_xmp_sidecars(config, dest=dest)
+    where = f" into {dest}" if dest else " next to each photo"
+    print(
+        f"Wrote {result['written']} XMP sidecar(s){where} "
+        f"for {result['photos']} photo(s) with named people."
+    )
     return 0
 
 
@@ -138,6 +168,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_cluster = sub.add_parser("cluster", help="Cluster unnamed faces")
     p_cluster.set_defaults(func=_cmd_cluster)
+
+    p_prune = sub.add_parser("prune", help="Remove catalog entries for deleted files")
+    p_prune.set_defaults(func=_cmd_prune)
+
+    p_export = sub.add_parser(
+        "export-labels", help="Write person names to portable XMP sidecars"
+    )
+    p_export.add_argument(
+        "--dest", help="Write sidecars into this directory instead of next to photos"
+    )
+    p_export.set_defaults(func=_cmd_export_labels)
 
     p_demo = sub.add_parser("demo", help="Generate and index a synthetic demo library")
     p_demo.add_argument("--count", type=int, default=24, help="Number of demo photos")

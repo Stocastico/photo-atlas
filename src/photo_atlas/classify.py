@@ -28,17 +28,23 @@ def _softmax(scores: dict[str, float]) -> dict[str, float]:
     arr = arr - arr.max()
     exp = np.exp(arr)
     norm = exp / exp.sum()
-    return {k: float(v) for k, v in zip(keys, norm)}
+    return {k: float(v) for k, v in zip(keys, norm, strict=True)}
 
 
 class SceneTagger:
     def tag(self, path: Path, face_count: int = 0) -> tuple[str, dict[str, float]]:
         with Image.open(path) as img:
-            small = img.convert("RGB").resize((64, 64))
+            return self.tag_image(img, face_count)
+
+    def tag_image(
+        self, img: Image.Image, face_count: int = 0
+    ) -> tuple[str, dict[str, float]]:
+        """Tag an already-open image (the indexer's decode-once path)."""
+
+        small = img.convert("RGB").resize((64, 64))
         arr = np.asarray(small, dtype=np.float32) / 255.0
         r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
 
-        brightness = float(arr.mean())
         mx = arr.max(axis=2)
         mn = arr.min(axis=2)
         saturation = float(np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-6), 0).mean())
@@ -65,5 +71,5 @@ class SceneTagger:
             raw["people"] += 1.0
 
         scores = _softmax(raw)
-        label = max(scores, key=scores.get)
+        label = max(scores, key=lambda k: scores[k])
         return label, scores

@@ -101,3 +101,45 @@ responsive/mobile work is intentionally deprioritised.
 - [ ] **Responsive / mobile layout.** `.layout` is a fixed `250px 1fr` grid with
   a sticky full-height sidebar; on small screens it needs a collapsible drawer.
   Skipped for now per usage (desktop browser only).
+
+## Correctness / scale / quality (2026-06-15 final review)
+
+A full-app review at ~27k images + ~600 videos drove a round of hardening.
+
+### Done
+- [x] **HEIC face detection.** `cv2.imread` can't decode HEIC (pillow-heif only
+  patches Pillow), so ~19% of an iPhone library got zero faces. `faces._read_bgr`
+  now falls back to Pillow. Needs the `heic` extra installed.
+- [x] **Decode-once + downscaled detection.** Each file is decoded a single time
+  and reused across metadata/thumbnail/scene/crops (was 4–5×); YuNet detects on a
+  ≤1280px copy and maps boxes back. Faster indexing at scale.
+- [x] **Geocoder resolution warning.** `index` warns when GPS is matched against
+  the bundled ~120-city table (install `--extra geo` for real city labels).
+- [x] **Videos surfaced.** Recognised, counted and reported (not catalogued);
+  the walk no longer re-ingests the library's own thumbs/crops/previews.
+- [x] **`prune`.** Removes catalog rows whose source files were deleted/moved,
+  plus the orphaned thumbnail/crops.
+- [x] **SHA-1 dedup.** Byte-identical copies (same photo in two folders) are
+  skipped instead of duplicated.
+- [x] **Map point cap.** Raised 20k → 50k and made configurable
+  (`config.map_point_limit`).
+- [x] **`export-labels`.** Person names exported to portable XMP sidecars
+  (`dc:subject` + `People|Name`), readable by digiKam/Lightroom/Bridge, so the
+  naming work survives a catalog loss.
+- [x] **ruff + mypy in CI.** Both clean; new `lint` job. JS harness test made
+  tolerant of Node's intermittent exit-time SIGSEGV.
+
+### Deferred (bigger design changes — not yet started)
+- [ ] **Parallel / multiprocess indexing.** Decode + YuNet inference is still
+  single-threaded; ~27k multi-megapixel files take hours. A `ProcessPoolExecutor`
+  over files with DB writes funnelled to the main process would be near-linear.
+  Biggest remaining real-world speedup; deferred for its risk/complexity.
+- [ ] **Better scene tagging.** `classify.py` is a colour/brightness heuristic
+  that mislabels real photos (sunsets→food, snow→document). Replace with a small
+  zero-shot model (MobileCLIP/CLIP) or narrow the labels to what's reliable.
+- [ ] **Recognition beyond a single centroid.** Each person is one averaged
+  embedding, fragile across a 15-year span (child→adult, beards, glasses). k-NN to
+  the nearest few enrolled faces would be more robust.
+- [ ] **Video thumbnails/metadata.** Videos are only counted today; extracting a
+  poster frame + capture date (ffmpeg) would make them browsable on the timeline
+  and map.
