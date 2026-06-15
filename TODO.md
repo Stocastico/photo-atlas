@@ -69,10 +69,13 @@ responsive/mobile work is intentionally deprioritised.
   size so the browser reserves layout and avoids reflow on load.
 
 ### Navigation & state
-- [ ] **URL / history state.** Reflect filters + view in the querystring so the
-  back button undoes a filter and views are shareable/bookmarkable.
-- [ ] **Infinite scroll near the lightbox end.** Stepping "next" past the last
-  loaded photo should trigger the next page load instead of stopping.
+- [x] **URL / history state.** Filters, view and sort are reflected in the
+  querystring (`pushState`); the back/forward buttons restore them via
+  `popstate`, and a link is shareable/bookmarkable. Covered by a Node-driven
+  fake-DOM harness (`tests/test_web_url_state.py`, skips without Node).
+- [x] **Infinite scroll near the lightbox end.** Stepping "next" past the last
+  loaded photo now pulls the next page (when more remain) and continues; the
+  on-screen next arrow stays enabled while more pages exist on the server.
 
 ### People / management
 - [x] **Rename in the People page.** Each person card has an inline **Rename**

@@ -121,6 +121,43 @@ function filterParams() {
   return params;
 }
 
+// ---- URL / history state --------------------------------------------------
+// Reflect filters + view + sort in the querystring so the back button undoes a
+// filter and a filtered view is shareable/bookmarkable.
+const SCALAR_FILTERS = new Set(["q", "date_from", "date_to"]);
+let restoringState = false;
+
+function buildQuery() {
+  const params = filterParams();
+  if (state.view !== "photos") params.set("view", state.view);
+  if (state.sort && state.sort !== "newest") params.set("sort", state.sort);
+  return params.toString();
+}
+
+function syncURL() {
+  if (restoringState) return;
+  const qs = buildQuery();
+  const target = qs ? "?" + qs : location.pathname;
+  const current = location.search || location.pathname;
+  if (target !== current) history.pushState(null, "", target);
+}
+
+function applyQuery() {
+  const params = new URLSearchParams(location.search);
+  const filters = {};
+  for (const [k, v] of params.entries()) {
+    if (k === "view" || k === "sort") continue;
+    if (k === "has_faces") filters.has_faces = true;
+    else if (SCALAR_FILTERS.has(k)) filters[k] = v;
+    else (filters[k] = filters[k] || []).push(v);
+  }
+  state.filters = filters;
+  state.view = params.get("view") || "photos";
+  state.sort = params.get("sort") || "newest";
+  const search = $("#search"); if (search) search.value = filters.q || "";
+  const sort = $("#sort"); if (sort) sort.value = state.sort;
+}
+
 // Flatten state.filters into [key, value] pairs (one per selected value).
 function activeFilterPairs() {
   const pairs = [];
@@ -359,9 +396,16 @@ function focusableInLightbox() {
     .filter((el) => !el.disabled && el.offsetParent !== null);
 }
 
-function lightboxStep(delta) {
+async function lightboxStep(delta) {
   const i = state.lightboxIndex + delta;
-  if (i < 0 || i >= state.photos.length) return;
+  if (i < 0) return;
+  if (i >= state.photos.length) {
+    // Stepping past the last loaded photo pulls the next page (if any) so the
+    // lightbox keeps going instead of dead-ending mid-library.
+    if (state.photos.length >= state.total) return;
+    await renderPhotos(false);
+    if (i >= state.photos.length) return;
+  }
   openLightbox(i);
 }
 
@@ -370,7 +414,9 @@ async function openLightbox(index) {
   if (!wasOpen) state.lastFocus = document.activeElement;
   state.lightboxIndex = index;
   $("#lb-prev").disabled = index <= 0;
-  $("#lb-next").disabled = index >= state.photos.length - 1;
+  // "Next" stays enabled at the last loaded photo when more pages remain on the
+  // server, so the arrow can trigger the next load (see lightboxStep).
+  $("#lb-next").disabled = index >= state.photos.length - 1 && state.photos.length >= state.total;
 
   const base = state.photos[index];
   $("#lightbox").classList.add("open");
@@ -598,6 +644,7 @@ function setView(view) {
 }
 
 function refresh() {
+  syncURL();
   renderActiveFilters();
   renderSidebar();
   if (state.view === "photos") renderPhotos(true);
@@ -611,7 +658,7 @@ $("#lb-close").onclick = closeLightbox;
 $("#lb-prev").onclick = () => lightboxStep(-1);
 $("#lb-next").onclick = () => lightboxStep(1);
 $("#lightbox").onclick = (e) => { if (e.target.id === "lightbox") closeLightbox(); };
-$("#sort").onchange = (e) => { state.sort = e.target.value; renderPhotos(true); };
+$("#sort").onchange = (e) => { state.sort = e.target.value; syncURL(); renderPhotos(true); };
 
 document.addEventListener("keydown", (e) => {
   if (!$("#lightbox").classList.contains("open")) return;
@@ -639,4 +686,14 @@ $("#search").oninput = (e) => {
   }, 250);
 };
 
-setView("photos");
+// Restore filters/view from the URL on back/forward navigation.
+window.addEventListener("popstate", () => {
+  restoringState = true;
+  applyQuery();
+  setView(state.view); // refresh()'s syncURL is skipped while restoring
+  restoringState = false;
+});
+
+// Initial load: hydrate from any querystring (shared/bookmarked link).
+applyQuery();
+setView(state.view);
