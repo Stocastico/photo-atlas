@@ -14,9 +14,10 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -55,6 +56,19 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
     # Create / migrate the schema once, here, so the per-request connections below
     # can skip the (idempotent but not free) DDL script on every single call.
     db.connect(config.db_path).close()
+
+    @app.middleware("http")
+    async def _same_origin_writes(request, call_next):
+        # The catalog has no auth (it's a personal, loopback-bound tool), so guard
+        # the state-changing endpoints against cross-site requests: a browser
+        # attaches an ``Origin`` to such calls, and a malicious page's Origin won't
+        # match our Host. Same-origin (our own UI) and non-browser clients (no
+        # Origin, e.g. curl/tests) are allowed; GETs are never blocked.
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            origin = request.headers.get("origin")
+            if origin and urlparse(origin).netloc != request.headers.get("host"):
+                return JSONResponse({"detail": "cross-origin request forbidden"}, 403)
+        return await call_next(request)
 
     def get_conn() -> Iterator[sqlite3.Connection]:
         conn = db.connect(config.db_path, ensure_schema=False)

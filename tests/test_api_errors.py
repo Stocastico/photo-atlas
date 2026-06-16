@@ -66,6 +66,40 @@ def test_wellformed_date_is_accepted(client):
     assert client.get("/api/photos?date_from=2020-01-01&date_to=2026-12-31").status_code == 200
 
 
+# -- cross-origin write guard ----------------------------------------------
+def _a_face_id(client):
+    photos = client.get("/api/photos").json()["photos"]
+    photo = next(p for p in photos if p["face_count"] > 0)
+    return client.get(f"/api/photos/{photo['id']}").json()["faces"][0]["id"]
+
+
+def test_cross_origin_write_is_forbidden(client):
+    fid = _a_face_id(client)
+    resp = client.post(
+        f"/api/faces/{fid}/unassign", headers={"Origin": "http://evil.example"}
+    )
+    assert resp.status_code == 403
+
+
+def test_same_origin_write_is_allowed(client):
+    fid = _a_face_id(client)
+    # TestClient's Host is "testserver"; a same-origin browser sends a matching Origin.
+    resp = client.post(
+        f"/api/faces/{fid}/unassign", headers={"Origin": "http://testserver"}
+    )
+    assert resp.status_code == 200
+
+
+def test_write_without_origin_is_allowed(client):
+    fid = _a_face_id(client)
+    assert client.post(f"/api/faces/{fid}/unassign").status_code == 200
+
+
+def test_cross_origin_read_is_allowed(client):
+    # Only state-changing methods are guarded; GETs are unaffected.
+    assert client.get("/api/photos", headers={"Origin": "http://evil.example"}).status_code == 200
+
+
 # -- map -------------------------------------------------------------------
 def test_map_endpoint_returns_geotagged_points(client):
     data = client.get("/api/map").json()
