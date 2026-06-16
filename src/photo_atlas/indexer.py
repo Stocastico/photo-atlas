@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import cast
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 from . import db
 from .classify import Tagger, get_tagger
@@ -183,9 +183,20 @@ def _prepare_photo(
     """
 
     path = Path(path)
-    with Image.open(path) as img:
-        img.load()
-        meta = extract_meta_from_image(img, path)
+    with Image.open(path) as raw:
+        raw.load()
+        # Read EXIF (capture time, camera, GPS) from the raw image, then bake in
+        # the EXIF orientation once so every derived artefact — face detection,
+        # crops, thumbnail and scene tag — works on the same *upright* pixels.
+        # Previously the thumbnail was transposed but detection + crops used the
+        # raw image, so face crops from portrait-orientation photos came out
+        # rotated. ``exif_transpose`` drops the orientation tag, so downstream
+        # transposes (e.g. in ``resize_image_to``) become no-ops.
+        meta = extract_meta_from_image(raw, path)
+        img = ImageOps.exif_transpose(raw) or raw
+        # Width/height describe the displayed (upright) image, so the grid's
+        # intrinsic-size hints match the transposed thumbnail.
+        meta.width, meta.height = img.size
 
         # Folder names (e.g. 2012/2012_05_Sardegna) often carry a year/month/place
         # the file's EXIF lacks. Use them only to fill gaps: a folder date replaces
@@ -197,7 +208,7 @@ def _prepare_photo(
             meta.taken_source = "folder"
 
         # Detect faces first so the scene tagger can use the count. The backend
-        # gets the already-decoded BGR array, so it never re-reads the file.
+        # gets the already-decoded (upright) BGR array, so it never re-reads the file.
         bgr = pil_to_bgr(img)
         observations = backend.detect(path, image=bgr) if backend is not None else []
 
@@ -645,6 +656,52 @@ def prune_library(config: AtlasConfig) -> dict[str, int]:
     finally:
         conn.close()
     return {"removed": removed, "kept": kept}
+
+
+def retag_scenes(
+    config: AtlasConfig,
+    *,
+    tagger: Tagger | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> int:
+    """Recompute every photo's scene tag in place, without a full re-index.
+
+    Scene tags are independent of faces/thumbnails, so switching tagger
+    (heuristic <-> zero-shot) or tuning its hyperparameters shouldn't require
+    re-decoding + re-detecting the whole library. This decodes each still-present
+    source file once, re-runs the configured tagger (reusing the stored
+    ``face_count`` so the people bonus still applies), and upserts only the
+    ``scene_type``/``scene_scores`` columns. Returns the number of photos retagged.
+    """
+
+    tagger = tagger or get_tagger(config)
+    conn = db.connect(config.db_path)
+    retagged = 0
+    try:
+        rows = conn.execute("SELECT id, path, face_count FROM photos").fetchall()
+        total = len(rows)
+        for i, row in enumerate(rows):
+            path = Path(row["path"])
+            if not path.exists():
+                continue
+            try:
+                with Image.open(path) as raw:
+                    raw.load()
+                    img = ImageOps.exif_transpose(raw) or raw
+                    label, scores = tagger.tag_image(img, face_count=row["face_count"] or 0)
+            except Exception:
+                continue
+            conn.execute(
+                "UPDATE photos SET scene_type=?, scene_scores=? WHERE id=?",
+                (label, json.dumps(scores), row["id"]),
+            )
+            retagged += 1
+            if progress is not None:
+                progress(i + 1, total)
+        conn.commit()
+    finally:
+        conn.close()
+    return retagged
 
 
 def cluster_library(config: AtlasConfig) -> dict[str, int]:

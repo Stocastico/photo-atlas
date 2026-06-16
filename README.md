@@ -82,6 +82,13 @@ It also tags a richer set of classes than the heuristic — `people`, `animals`,
 `landscape`, `plants`, `food`, `vehicle`, `building`, `document`, `screenshot`
 (plus `other`) — which simply show up as extra options in the scene filter.
 
+Switching taggers (or tuning them) doesn't need a full re-index — scene tags are
+independent of faces/thumbnails, so re-tag in place:
+
+```bash
+photo-atlas retag-scenes --scene zeroshot   # recompute just the scene column
+```
+
 Only SigLIP's *vision* tower runs at index time (a ~95 MB quantised ONNX,
 downloaded on first use via [ONNX Runtime](https://onnxruntime.ai/) — **no
 PyTorch**). The per-label *text* embeddings are pre-computed once and shipped as

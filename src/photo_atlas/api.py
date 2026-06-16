@@ -14,9 +14,10 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -24,6 +25,11 @@ from . import db, library, metadata, search
 from .config import AtlasConfig
 
 WEB_DIR = Path(__file__).parent / "web"
+
+# Inclusive ``date_taken`` range bounds are compared on the YYYY-MM-DD prefix, so
+# reject anything that isn't that shape (a malformed value would otherwise compare
+# lexically and silently mis-filter). Applied to date_from/date_to everywhere.
+_DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
 
 
 class AssignRequest(BaseModel):
@@ -51,6 +57,19 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
     # can skip the (idempotent but not free) DDL script on every single call.
     db.connect(config.db_path).close()
 
+    @app.middleware("http")
+    async def _same_origin_writes(request, call_next):
+        # The catalog has no auth (it's a personal, loopback-bound tool), so guard
+        # the state-changing endpoints against cross-site requests: a browser
+        # attaches an ``Origin`` to such calls, and a malicious page's Origin won't
+        # match our Host. Same-origin (our own UI) and non-browser clients (no
+        # Origin, e.g. curl/tests) are allowed; GETs are never blocked.
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            origin = request.headers.get("origin")
+            if origin and urlparse(origin).netloc != request.headers.get("host"):
+                return JSONResponse({"detail": "cross-origin request forbidden"}, 403)
+        return await call_next(request)
+
     def get_conn() -> Iterator[sqlite3.Connection]:
         conn = db.connect(config.db_path, ensure_schema=False)
         try:
@@ -69,8 +88,8 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         city: list[str] | None = Query(None),
         place: list[str] | None = Query(None),
         year: list[str] | None = Query(None),
-        date_from: str | None = None,
-        date_to: str | None = None,
+        date_from: str | None = Query(None, pattern=_DATE_PATTERN),
+        date_to: str | None = Query(None, pattern=_DATE_PATTERN),
         camera: list[str] | None = Query(None),
         people: list[str] | None = Query(None),
         known: list[str] | None = Query(None),
@@ -96,16 +115,16 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         city: list[str] | None = Query(None),
         place: list[str] | None = Query(None),
         year: list[str] | None = Query(None),
-        date_from: str | None = None,
-        date_to: str | None = None,
+        date_from: str | None = Query(None, pattern=_DATE_PATTERN),
+        date_to: str | None = Query(None, pattern=_DATE_PATTERN),
         camera: list[str] | None = Query(None),
         people: list[str] | None = Query(None),
         known: list[str] | None = Query(None),
         has_faces: bool | None = None,
         q: str | None = None,
         sort: str | None = None,
-        limit: int = Query(60, le=500),
-        offset: int = 0,
+        limit: int = Query(60, ge=1, le=500),
+        offset: int = Query(0, ge=0),
     ):
         filters = {
             "person_id": person_id, "person_mode": person_mode,
@@ -134,8 +153,8 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         city: list[str] | None = Query(None),
         place: list[str] | None = Query(None),
         year: list[str] | None = Query(None),
-        date_from: str | None = None,
-        date_to: str | None = None,
+        date_from: str | None = Query(None, pattern=_DATE_PATTERN),
+        date_to: str | None = Query(None, pattern=_DATE_PATTERN),
         camera: list[str] | None = Query(None),
         people: list[str] | None = Query(None),
         known: list[str] | None = Query(None),
@@ -228,7 +247,10 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
     ):
         if not payload.name.strip():
             raise HTTPException(400, "name must not be empty")
-        library.rename_person(conn, person_id, payload.name)
+        try:
+            library.rename_person(conn, person_id, payload.name)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
         return {"ok": True}
 
     @app.delete("/api/persons/{person_id}")

@@ -42,8 +42,9 @@ class FaceBackend(Protocol):
 def pil_to_bgr(img) -> np.ndarray | None:
     """Convert an open RGB(A) Pillow image to an OpenCV-style BGR ``uint8`` array.
 
-    Orientation is left raw (no EXIF transpose) so face bounding boxes line up
-    with the indexer's face-crop geometry, which crops the un-transposed image.
+    No EXIF transpose is applied here; the caller is responsible for passing an
+    already-upright image. The indexer applies ``exif_transpose`` once up front so
+    detection, face crops and the thumbnail all share one consistent orientation.
     """
 
     rgb = np.asarray(img.convert("RGB"))
