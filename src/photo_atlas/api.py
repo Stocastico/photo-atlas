@@ -340,6 +340,23 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         )
         return {"total": total, "count": len(rows), "offset": offset, "photos": rows}
 
+    @app.get("/api/exif/{photo_id}")
+    def api_exif(photo_id: int, conn: sqlite3.Connection = Depends(get_conn)):
+        # Lazy, read-on-demand capture settings (ƒ/ISO/shutter/lens) for the
+        # lightbox info panel. Not stored in the catalog, so this opens the source
+        # file; a missing file or EXIF-free image just yields an empty dict (the
+        # photo still exists — only an unknown id is a 404).
+        row = conn.execute("SELECT path FROM photos WHERE id=?", (photo_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "photo not found")
+        src = row["path"]
+        if not src or not Path(src).exists():
+            return {}
+        try:
+            return metadata.read_exif_settings(Path(src))
+        except Exception:
+            return {}
+
     @app.put("/api/photos/{photo_id}/favorite")
     def api_set_favorite(
         photo_id: int,

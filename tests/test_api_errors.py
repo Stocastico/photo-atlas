@@ -42,6 +42,34 @@ def test_face_404_for_unknown_id(client):
     assert client.get("/api/face/999999").status_code == 404
 
 
+def test_exif_404_for_unknown_id(client):
+    assert client.get("/api/exif/999999").status_code == 404
+
+
+def test_exif_returns_dict_for_known_photo(client):
+    pid = _first_photo_id(client)
+    r = client.get(f"/api/exif/{pid}")
+    assert r.status_code == 200
+    assert isinstance(r.json(), dict)
+
+
+def test_exif_empty_when_source_file_missing(indexed):
+    """A present photo row whose file has moved yields {} (not a 404)."""
+    from fastapi.testclient import TestClient
+
+    from photo_atlas.api import create_app
+
+    conn = db.connect(indexed.db_path)
+    pid = conn.execute("SELECT id FROM photos LIMIT 1").fetchone()[0]
+    conn.execute("UPDATE photos SET path=? WHERE id=?", ("/no/such/file.jpg", pid))
+    conn.commit()
+    conn.close()
+    client = TestClient(create_app(indexed))
+    r = client.get(f"/api/exif/{pid}")
+    assert r.status_code == 200
+    assert r.json() == {}
+
+
 # -- media happy paths -----------------------------------------------------
 def test_image_and_preview_and_thumb_served(client):
     pid = _first_photo_id(client)
