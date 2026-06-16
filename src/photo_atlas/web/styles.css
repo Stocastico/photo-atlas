@@ -84,6 +84,10 @@ aside h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; co
 }
 .memory-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .memory-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.trip-head { display: flex; align-items: baseline; gap: 12px; margin: 0 0 8px; flex-wrap: wrap; }
+.trip-head h3 { margin: 0; }
+.trip-meta { color: var(--muted); font-size: 13px; }
+.trip-head button { margin-left: auto; }
 .date-range { display: flex; align-items: center; gap: 6px; }
 .date-input {
   flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border);
