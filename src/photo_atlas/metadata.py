@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -186,7 +186,7 @@ def extract_meta_from_image(img: Image.Image, path: Path) -> PhotoMeta:
     meta.lat, meta.lon = _extract_gps(img)
 
     if meta.taken_at is None:
-        ts = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        ts = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
         meta.taken_at = ts.isoformat(timespec="seconds")
         meta.taken_source = "mtime"
 

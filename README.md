@@ -62,7 +62,7 @@ uv run photo-atlas --help   # run the CLI inside the managed environment
 uv run pytest               # run the test suite
 ```
 
-`uv` resolves a compatible Python (3.10+) automatically and records exact
+`uv` resolves a compatible Python (3.11+) automatically and records exact
 versions in `uv.lock`. Plain `pip install -e .` still works for the runtime
 package if you prefer to manage your own environment.
 
@@ -235,7 +235,7 @@ uv run pytest tests/test_deep_faces.py   # deep YuNet/SFace test on real faces*
 ```
 
 The offline suite is deterministic, runs on every push/PR via GitHub Actions
-(Python 3.10–3.12) and enforces **≥80 % coverage** (`--cov-fail-under=80`); it
+(Python 3.11–3.12) and enforces **≥80 % coverage** (`--cov-fail-under=80`); it
 currently sits near 98 %. A coverage summary prints after each run.
 
 \* downloads the models + a few public sample faces; **skips** (never fails)

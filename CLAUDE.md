@@ -26,7 +26,7 @@ uv run photo-atlas --help     # the CLI
 ```
 
 CI mirrors this: a `lint` job (`ruff check src tests` + `mypy`) and a `test`
-matrix (Python 3.10/3.11/3.12) running `uv run pytest -q`. Always run all three
+matrix (Python 3.11/3.12) running `uv run pytest -q`. Always run all three
 locally before committing.
 
 In the remote (web) environment a SessionStart hook (`.claude/hooks/session-start.sh`)

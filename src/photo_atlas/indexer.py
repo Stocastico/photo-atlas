@@ -22,7 +22,7 @@ import sqlite3
 import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from typing import cast
@@ -384,7 +384,7 @@ def _commit_prepared(
         "scene_scores": json.dumps(prepared.scene_scores),
         "face_count": len(prepared.faces),
         "thumb_path": prepared.thumb_path,
-        "indexed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "indexed_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
     photo_id = db.upsert_photo(conn, record)
     if prepared.embedding_blob is not None:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable
+from datetime import UTC
 from pathlib import Path
 
 import numpy as np
@@ -281,10 +282,10 @@ def create_saved_search(conn: sqlite3.Connection, name: str, query: str) -> int:
     stored query in place — no duplicate row, no ``IntegrityError``.
     """
 
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     name = name.strip()
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     conn.execute(
         "INSERT INTO saved_searches (name, query, created_at) VALUES (?, ?, ?) "
         "ON CONFLICT(name) DO UPDATE SET query=excluded.query",
@@ -340,11 +341,11 @@ def get_or_create_person(conn: sqlite3.Connection, name: str) -> int:
     row = conn.execute("SELECT id FROM persons WHERE name=?", (name,)).fetchone()
     if row:
         return int(row["id"])
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     cur = conn.execute(
         "INSERT INTO persons (name, created_at) VALUES (?, ?)",
-        (name, datetime.now(timezone.utc).isoformat(timespec="seconds")),
+        (name, datetime.now(UTC).isoformat(timespec="seconds")),
     )
     assert cur.lastrowid is not None  # row was just inserted
     return int(cur.lastrowid)
