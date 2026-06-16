@@ -281,6 +281,19 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "total": sum(g["count"] for g in groups), "groups": groups,
         }
 
+    @app.get("/api/trips")
+    def api_trips(conn: sqlite3.Connection = Depends(get_conn)):
+        # Auto-detected trips: contiguous runs of photos split on capture-time gaps
+        # (and big GPS jumps), labelled by place. Derived on the fly from taken_at /
+        # GPS, so there's no schema change and it tracks re-indexing for free.
+        trips = search.detect_trips(
+            conn,
+            gap_days=config.trip_gap_days,
+            gap_km=config.trip_gap_km,
+            min_photos=config.trip_min_photos,
+        )
+        return {"count": len(trips), "trips": trips}
+
     @app.get("/api/map")
     def api_map(
         conn: sqlite3.Connection = Depends(get_conn),
