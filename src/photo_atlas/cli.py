@@ -77,6 +77,13 @@ def _cmd_index(args) -> int:
             print(f"  - {line}", file=sys.stderr)
     if stats.faces:
         print("Tip: run `photo-atlas cluster` then name people in the web UI.")
+    if getattr(args, "prune", False):
+        result = prune_library(config)
+        print(
+            f"Pruned {result['removed']} photo(s) whose files are gone "
+            f"({result['kept']} still present); swept {result['orphans']} "
+            "orphaned derivative file(s)."
+        )
     return 0
 
 
@@ -92,8 +99,9 @@ def _cmd_prune(args) -> int:
     config = _config(args)
     result = prune_library(config)
     print(
-        f"Pruned {result['removed']} photo(s) whose files are gone; "
-        f"{result['kept']} still present."
+        f"Pruned {result['removed']} photo(s) whose files are gone "
+        f"({result['kept']} still present); swept {result['orphans']} "
+        "orphaned derivative file(s)."
     )
     return 0
 
@@ -233,6 +241,11 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Face detection backend (yunet = deep YuNet+SFace)")
     p_index.add_argument("--no-geocode", action="store_true", help="Skip reverse geocoding")
     p_index.add_argument("--recompute", action="store_true", help="Re-index already known photos")
+    p_index.add_argument(
+        "--prune", action="store_true",
+        help="After indexing, reconcile the catalog: drop rows for deleted files and "
+             "sweep orphaned thumbnail/preview/crop files (no separate prune step)",
+    )
     p_index.add_argument(
         "--embed", action="store_true",
         help="Also store a SigLIP image embedding per photo for natural-language "

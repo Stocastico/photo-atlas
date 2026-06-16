@@ -764,13 +764,66 @@ def index_path(
     return stats
 
 
+def sweep_orphan_derivatives(config: AtlasConfig) -> int:
+    """Delete derivative files no catalog row references; return how many were removed.
+
+    Thumbnails and preview/retina variants are content-addressed by the source
+    photo's SHA-1 (``{sha1}.jpg`` / ``{sha1}_{size}.jpg``), and face crops live
+    under ``faces_dir/<photo_id>/``. A crash mid-index, or a source photo whose
+    bytes (and thus SHA-1) changed, can strand such files with no owning row. This
+    reclaims them: any thumb/preview whose SHA-1 isn't in the catalog, any leftover
+    ``.part`` temp from an interrupted write, and any face-crop dir for a photo id
+    that no longer exists. Referenced files are always kept.
+    """
+
+    import shutil
+
+    conn = db.connect(config.db_path, ensure_schema=False)
+    try:
+        live_sha1 = {
+            r[0] for r in conn.execute("SELECT sha1 FROM photos WHERE sha1 IS NOT NULL")
+        }
+        live_ids = {str(r[0]) for r in conn.execute("SELECT id FROM photos")}
+    finally:
+        conn.close()
+
+    removed = 0
+    # Content-addressed thumbnails + preview/retina variants.
+    for cache_dir in (config.thumbs_dir, config.previews_dir):
+        if not cache_dir.exists():
+            continue
+        for f in cache_dir.rglob("*"):
+            if not f.is_file():
+                continue
+            # A leftover atomic-write temp is an orphan regardless of name.
+            if f.name.endswith(".part"):
+                f.unlink(missing_ok=True)
+                removed += 1
+                continue
+            # Filenames are ``{sha1}.jpg`` or ``{sha1}_{size}.jpg``; pull the sha1.
+            sha1 = f.name.split(".", 1)[0].split("_", 1)[0]
+            if sha1 not in live_sha1:
+                f.unlink(missing_ok=True)
+                removed += 1
+    # Face-crop directories keyed by photo id.
+    if config.faces_dir.exists():
+        for sub in config.faces_dir.iterdir():
+            if sub.is_dir() and sub.name not in live_ids:
+                shutil.rmtree(sub, ignore_errors=True)
+                removed += 1
+    return removed
+
+
 def prune_library(config: AtlasConfig) -> dict[str, int]:
-    """Drop catalog rows whose source file no longer exists on disk.
+    """Reconcile the catalog with the filesystem (rows *and* derivative files).
 
     Indexing only ever adds or updates rows, so moved/deleted photos linger as
-    dead entries that 404 in the UI. ``prune`` reconciles the catalog with the
-    filesystem: for each missing file it removes the photo row (its faces cascade
-    away) and deletes the now-orphaned thumbnail and face crops.
+    dead entries that 404 in the UI. ``prune`` removes the photo row for each
+    missing source file (its faces cascade away) plus that row's thumbnail and
+    face crops, then sweeps any remaining orphaned derivative files
+    (:func:`sweep_orphan_derivatives`) — e.g. preview/retina variants of the
+    removed photos, or files stranded by an interrupted index. Returns
+    ``{removed, kept, orphans}``.
     """
 
     import shutil
@@ -793,7 +846,10 @@ def prune_library(config: AtlasConfig) -> dict[str, int]:
         conn.commit()
     finally:
         conn.close()
-    return {"removed": removed, "kept": kept}
+    # Now that dead rows are gone, reclaim any derivative files they (or a crash)
+    # left without an owning row.
+    orphans = sweep_orphan_derivatives(config)
+    return {"removed": removed, "kept": kept, "orphans": orphans}
 
 
 def retag_scenes(

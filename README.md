@@ -155,12 +155,15 @@ photo-atlas serve                   # browse, filter, and name people
 photo-atlas embed                   # backfill SigLIP embeddings for semantic search
 photo-atlas retag-scenes            # recompute scene tags in place (no re-index)
 photo-atlas stats                   # quick catalog summary
-photo-atlas prune                   # drop entries whose files were deleted/moved
+photo-atlas prune                   # reconcile: drop dead rows + sweep orphaned derivatives
 photo-atlas export-labels           # write person names to portable XMP sidecars
 ```
 
-`index` is incremental — already-known photos are skipped (use `--recompute` to
-force). Choose the face backend with `--faces {auto,yunet,dlib,synthetic,none}`
+`index` is incremental and crash-safe — already-known photos are skipped (use
+`--recompute` to force), so an interrupted run resumes cleanly on the next invocation.
+Add `--prune` to reconcile in one step: drop rows for deleted/moved files and sweep
+orphaned thumbnail/preview/crop files (otherwise `photo-atlas prune` does the same on
+demand). Choose the face backend with `--faces {auto,yunet,dlib,synthetic,none}`
 (default `auto` → YuNet/SFace). Indexing fans out over worker processes
 (`--workers N`, default = CPU count; `--workers 1` for serial): each file is
 decoded once and face detection runs on a downscaled copy, while the single main

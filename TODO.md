@@ -246,9 +246,17 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   retag-scenes` command (`indexer.retag_scenes`) decodes each still-present photo
   once and upserts only `scene_type`/`scene_scores` (reusing the stored
   `face_count`), so switching heuristic↔zero-shot or tuning it needs no re-detect.
-- [ ] **Resumable / crash-safe indexing.** An interrupted run leaves a mixed state
-  and orphans; `prune` is a separate manual step. Checkpoint progress and
-  auto-prune orphaned rows + derivative files.
+- [x] **Resumable / crash-safe indexing.** **Done:** indexing is already
+  resume-on-rerun (per-file commits + skip-already-indexed by path), so the new
+  pieces are orphan reclamation and one-step reconciliation.
+  `indexer.sweep_orphan_derivatives` deletes derivative files no row references —
+  content-addressed thumbnails / preview+retina variants whose SHA-1 is no longer in
+  the catalog, leftover `.part` temps from interrupted atomic writes, and face-crop
+  dirs for vanished photo ids — and `prune_library` now runs it after dropping dead
+  rows (returns `{removed, kept, orphans}`). `index --prune` folds the whole
+  reconciliation into the index run so it's no longer a separate manual step. Unit +
+  CLI tested (`tests/test_prune_orphans.py`: referenced-kept/orphan-removed,
+  idempotence, prune integration, `--prune` flag).
 - [x] **Hot-path denormalisation & composite indexes.**
   - [x] **Composite indexes for the browse/filter access patterns.** Added
     `(scene_type, taken_at)` and `(folder_place, taken_at)` on `photos` so a facet
