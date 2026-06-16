@@ -12,16 +12,22 @@ from . import db
 
 
 def list_persons(conn: sqlite3.Connection) -> list[dict]:
-    # The cover face falls back to the person's first crop when none is pinned.
-    # A correlated subquery resolves that in the single aggregate query instead
-    # of firing one extra SELECT per cover-less person (an N+1 on big libraries).
+    # The cover face falls back to the person's first crop when none is pinned —
+    # or when the pinned face no longer exists / lost its crop (its photo was
+    # deleted or re-indexed), which would otherwise serve a 404 avatar. The first
+    # COALESCE arm validates the pin (still present, still this person's, has a
+    # crop); the second is the fallback. Both are correlated subqueries so the
+    # whole thing stays one aggregate query (no N+1 on big libraries).
     rows = conn.execute(
         "SELECT pr.id, pr.name, "
-        "       COALESCE(pr.cover_face_id, ("
-        "           SELECT f2.id FROM faces f2 "
-        "           WHERE f2.person_id = pr.id AND f2.crop_path IS NOT NULL "
-        "           ORDER BY f2.id LIMIT 1"
-        "       )) AS cover_face_id, "
+        "       COALESCE("
+        "         (SELECT f0.id FROM faces f0 "
+        "          WHERE f0.id = pr.cover_face_id AND f0.person_id = pr.id "
+        "            AND f0.crop_path IS NOT NULL), "
+        "         (SELECT f2.id FROM faces f2 "
+        "          WHERE f2.person_id = pr.id AND f2.crop_path IS NOT NULL "
+        "          ORDER BY f2.id LIMIT 1)"
+        "       ) AS cover_face_id, "
         "       COUNT(f.id) AS face_count, "
         "       COUNT(DISTINCT f.photo_id) AS photo_count "
         "FROM persons pr LEFT JOIN faces f ON f.person_id = pr.id "
@@ -31,8 +37,14 @@ def list_persons(conn: sqlite3.Connection) -> list[dict]:
 
 
 def rename_person(conn: sqlite3.Connection, person_id: int, name: str) -> None:
-    conn.execute("UPDATE persons SET name=? WHERE id=?", (name.strip(), person_id))
-    conn.commit()
+    # ``persons.name`` is UNIQUE; renaming onto an existing name must surface a
+    # clean error (the API maps it to 409) instead of a raw IntegrityError 500.
+    try:
+        conn.execute("UPDATE persons SET name=? WHERE id=?", (name.strip(), person_id))
+        conn.commit()
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        raise ValueError(f"a person named {name.strip()!r} already exists") from exc
 
 
 def delete_person(conn: sqlite3.Connection, person_id: int) -> None:

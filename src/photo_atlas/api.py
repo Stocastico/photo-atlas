@@ -228,7 +228,10 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
     ):
         if not payload.name.strip():
             raise HTTPException(400, "name must not be empty")
-        library.rename_person(conn, person_id, payload.name)
+        try:
+            library.rename_person(conn, person_id, payload.name)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
         return {"ok": True}
 
     @app.delete("/api/persons/{person_id}")
