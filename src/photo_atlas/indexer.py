@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import cast
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 from . import db
 from .classify import Tagger, get_tagger
@@ -183,9 +183,20 @@ def _prepare_photo(
     """
 
     path = Path(path)
-    with Image.open(path) as img:
-        img.load()
-        meta = extract_meta_from_image(img, path)
+    with Image.open(path) as raw:
+        raw.load()
+        # Read EXIF (capture time, camera, GPS) from the raw image, then bake in
+        # the EXIF orientation once so every derived artefact — face detection,
+        # crops, thumbnail and scene tag — works on the same *upright* pixels.
+        # Previously the thumbnail was transposed but detection + crops used the
+        # raw image, so face crops from portrait-orientation photos came out
+        # rotated. ``exif_transpose`` drops the orientation tag, so downstream
+        # transposes (e.g. in ``resize_image_to``) become no-ops.
+        meta = extract_meta_from_image(raw, path)
+        img = ImageOps.exif_transpose(raw) or raw
+        # Width/height describe the displayed (upright) image, so the grid's
+        # intrinsic-size hints match the transposed thumbnail.
+        meta.width, meta.height = img.size
 
         # Folder names (e.g. 2012/2012_05_Sardegna) often carry a year/month/place
         # the file's EXIF lacks. Use them only to fill gaps: a folder date replaces
@@ -197,7 +208,7 @@ def _prepare_photo(
             meta.taken_source = "folder"
 
         # Detect faces first so the scene tagger can use the count. The backend
-        # gets the already-decoded BGR array, so it never re-reads the file.
+        # gets the already-decoded (upright) BGR array, so it never re-reads the file.
         bgr = pil_to_bgr(img)
         observations = backend.detect(path, image=bgr) if backend is not None else []
 
