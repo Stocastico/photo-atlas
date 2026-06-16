@@ -108,12 +108,21 @@ def test_where_people_ignores_unknown_bucket():
     assert where == "" and params == []
 
 
-def test_where_known_people_buckets_use_named_face_subquery():
+def test_where_known_people_buckets_use_named_face_count_column():
     where, params = _where({"known": ["0", "2+"]})
-    assert "person_id IS NOT NULL" in where
-    assert " = 0" in where and " >= 2" in where
+    # Denormalised column read (trigger-maintained), not a per-row subquery.
+    assert "named_face_count" in where
+    assert "SELECT COUNT(*)" not in where
+    assert "p.named_face_count = 0" in where and "p.named_face_count >= 2" in where
     assert " OR " in where
     assert params == []  # bucket predicates are literal
+
+
+def test_where_favorite_filter():
+    where, params = _where({"favorite": True})
+    assert "p.favorite = 1" in where and params == []
+    # Falsy favorite adds no clause.
+    assert _where({"favorite": False})[0] == ""
 
 
 def test_order_by_falls_back_to_newest():
