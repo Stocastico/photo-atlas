@@ -126,10 +126,11 @@ these items are the genuinely new pieces.
   chips expose `aria-pressed`, pills have `aria-label`s, and a visible
   `:focus-visible` outline was added.
 
-### Explicitly deferred (browser-only target)
-- [ ] **Responsive / mobile layout.** `.layout` is a fixed `250px 1fr` grid with
-  a sticky full-height sidebar; on small screens it needs a collapsible drawer.
-  Skipped for now per usage (desktop browser only).
+### Won't do (browser-only target)
+- [ ] ~~**Responsive / mobile layout.**~~ **Won't do** (2026-06-16). `.layout` is a
+  fixed `250px 1fr` grid with a sticky full-height sidebar; on small screens it would
+  need a collapsible drawer. The target is a desktop browser only, so this is out of
+  scope.
 
 ## Correctness / scale / quality (2026-06-15 final review)
 
@@ -320,5 +321,24 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   into the k-NN vote (penalise), and surface low-confidence auto-tags for review.
 - [ ] **Lightbox power tools.** Scroll/drag zoom + pan, an EXIF panel (ƒ/ISO/shutter/
   lens), a slideshow auto-advance, and a `?` keyboard-shortcut legend.
-- [ ] **RAW ingest.** A photographer's 15-year library has `.CR2/.NEF/.ARW`; add an
-  optional `rawpy` extra to pull the embedded preview + EXIF (currently dropped).
+- [ ] ~~**RAW ingest.**~~ **Won't do** (2026-06-16). A photographer's 15-year library
+  has `.CR2/.NEF/.ARW`; pulling the embedded preview + EXIF via an optional `rawpy`
+  extra was considered but is out of scope for now — the library targets
+  already-developed JPEG/HEIC/PNG, and RAW workflows live in dedicated tools.
+
+## New (2026-06-16)
+
+- [ ] **Drop the heuristic scene tagger — SigLIP only.** The zero-shot
+  `ZeroShotSceneTagger` is the better tagger; the heuristic only survives as the
+  zero-dep default/fallback. Make SigLIP the one scene path. Caveat to resolve first:
+  the default test suite must stay offline (no model download), so the heuristic
+  currently doubles as the no-model fallback — decide whether "SigLIP only" means
+  removing the heuristic entirely (and stubbing/skip-gating the scene tests) or
+  demoting it to an internal offline-only fallback that's no longer user-selectable.
+- [ ] **Investigate newer / better models everywhere a deep-learning net is used.**
+  Survey the face stack (YuNet detect, SFace embed) and the SigLIP vision/text towers
+  for stronger, current replacements. Constraints: **keep ONNX Runtime** and **do not
+  introduce a PyTorch dependency**. Candidates to evaluate: SigLIP 2 / MobileCLIP2
+  exports for scene+semantic, newer ONNX face detectors/recognisers. Deliver a
+  written comparison (accuracy/size/speed/licensing) before any swap; the architecture
+  is already model-agnostic via `PHOTO_ATLAS_*` env overrides + `models._resolve`.
