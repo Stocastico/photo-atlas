@@ -66,6 +66,11 @@ class FavoriteRequest(BaseModel):
     favorite: bool
 
 
+class BulkRequest(BaseModel):
+    ids: list[int]
+    action: str  # favorite | unfavorite | hide | unhide
+
+
 class AlbumRequest(BaseModel):
     name: str
     query: str = ""
@@ -159,6 +164,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         known: list[str] | None = Query(None),
         has_faces: bool | None = None,
         favorite: bool | None = None,
+        hidden: bool = False,
         q: str | None = None,
     ):
         filters = {
@@ -166,7 +172,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
             "date_to": date_to, "camera": camera, "people": people, "known": known,
-            "has_faces": has_faces, "favorite": favorite, "q": q,
+            "has_faces": has_faces, "favorite": favorite, "hidden": hidden, "q": q,
         }
         return search.facets(conn, filters)
 
@@ -187,6 +193,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         known: list[str] | None = Query(None),
         has_faces: bool | None = None,
         favorite: bool | None = None,
+        hidden: bool = False,
         q: str | None = None,
         text: str | None = None,
         sort: str | None = None,
@@ -198,7 +205,8 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
             "date_to": date_to, "camera": camera, "people": people, "known": known,
-            "has_faces": has_faces, "favorite": favorite, "q": q, "text": text, "sort": sort,
+            "has_faces": has_faces, "favorite": favorite, "hidden": hidden,
+            "q": q, "text": text, "sort": sort,
         }
         # A natural-language ``text`` query switches to semantic ranking (by image
         # embedding), ANDed with the structured filters. It supersedes ``sort`` —
@@ -311,6 +319,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         known: list[str] | None = Query(None),
         has_faces: bool | None = None,
         favorite: bool | None = None,
+        hidden: bool = False,
         q: str | None = None,
     ):
         filters = {
@@ -318,7 +327,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
             "date_to": date_to, "camera": camera, "people": people, "known": known,
-            "has_faces": has_faces, "favorite": favorite, "q": q,
+            "has_faces": has_faces, "favorite": favorite, "hidden": hidden, "q": q,
         }
         return {"points": search.map_points(conn, filters, limit=config.map_point_limit)}
 
@@ -379,6 +388,22 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         if not db.set_favorite(conn, photo_id, payload.favorite):
             raise HTTPException(404, "photo not found")
         return {"ok": True, "favorite": payload.favorite}
+
+    @app.post("/api/photos/bulk")
+    def api_bulk(payload: BulkRequest, conn: sqlite3.Connection = Depends(get_conn)):
+        # Apply one flag to a whole selection (multi-select bulk actions). Behind
+        # the same-origin write guard like the other mutations.
+        actions = {
+            "favorite": (db.set_favorite_bulk, True),
+            "unfavorite": (db.set_favorite_bulk, False),
+            "hide": (db.set_hidden_bulk, True),
+            "unhide": (db.set_hidden_bulk, False),
+        }
+        if payload.action not in actions:
+            raise HTTPException(400, f"unknown bulk action: {payload.action}")
+        fn, value = actions[payload.action]
+        updated = fn(conn, payload.ids, value)
+        return {"ok": True, "updated": updated}
 
     # -- media ------------------------------------------------------------
     def _still_source(row) -> Path | None:

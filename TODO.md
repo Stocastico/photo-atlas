@@ -356,8 +356,21 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
     pushes the saved querystring and restores it through the existing URL-state
     machinery (`applyQuery`), so filters/view/sort all come back. db + API tested
     (`tests/test_albums.py`, incl. upsert, unknown-id no-op, table-create migration).
-- [ ] **Multi-select + bulk actions.** Shift/Ctrl-click in the grid → assign a
-  person, favorite, export, or hide a whole selection at once.
+- [x] **Multi-select + bulk actions.** **Done:** a **Select** mode in the photos
+  toolbar turns grid clicks into selection (Shift-click extends a range from the
+  anchor); selection is keyed by photo id so it survives the virtualised grid's window
+  recycling. A selection bar applies a bulk action to the whole set —
+  **Favorite / Unfavorite / Hide / Unhide** — via `POST /api/photos/bulk {ids, action}`
+  (behind the same-origin guard; `db.set_favorite_bulk`/`set_hidden_bulk`). Hiding uses a
+  new `hidden` 0/1 column (kept out of `PHOTO_COLUMNS` like `favorite`, so a re-index
+  never un-hides): user-hidden photos are excluded from browsing everywhere by default
+  (a tri-state `hidden` filter in `_where`, API default `False`), and a filter-aware
+  **🙈 Hidden** quick-filter chip flips the grid to "only hidden" so they can be
+  reviewed/unhidden. db (bulk + tri-state where + facet), search and the API
+  (hide→gone→unhide, bulk favorite, only-hidden view, 400 on a bad action) are tested
+  (`tests/test_multiselect.py`).
+  Possible follow-ups (dropped from this slice): bulk **assign a person** (ambiguous at
+  the photo level — faces are the unit) and bulk **export** (file copy).
 - [x] **"More like this."** **Done:** a ✨ **More like this** button in the lightbox
   pages the new `GET /api/photos/{id}/similar` endpoint, which cosine-ranks the
   library by the photo's own stored SigLIP image embedding (`search.similar_photos`

@@ -46,6 +46,7 @@
           <span id="result-count">—</span>
           <span id="search-plan" class="search-plan" aria-live="polite"></span>
           <div class="spacer" style="flex:1"></div>
+          <button id="select-toggle" class="ghost" type="button" aria-pressed="false">Select</button>
           <label>Sort
             <select id="sort">
               <option value="newest">Newest first</option>
@@ -55,6 +56,16 @@
               <option value="indexed">Recently indexed</option>
             </select>
           </label>
+        </div>
+        <div id="selection-bar" class="selection-bar" hidden role="toolbar" aria-label="Bulk actions">
+          <span id="selection-count">0 selected</span>
+          <div class="spacer" style="flex:1"></div>
+          <button class="ghost" type="button" data-bulk="favorite">★ Favorite</button>
+          <button class="ghost" type="button" data-bulk="unfavorite">☆ Unfavorite</button>
+          <button class="ghost" type="button" data-bulk="hide">🙈 Hide</button>
+          <button class="ghost" type="button" data-bulk="unhide">Unhide</button>
+          <button class="ghost" type="button" id="select-all">Select all</button>
+          <button class="ghost" type="button" id="select-clear">Clear</button>
         </div>
         <div id="active-filters"></div>
         <div id="grid" class="grid"></div>

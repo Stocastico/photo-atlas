@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS photos (
     named_face_count INTEGER NOT NULL DEFAULT 0,  -- faces assigned to a named person (trigger-kept)
     favorite     INTEGER NOT NULL DEFAULT 0,      -- user star (0/1); preserved across re-index
     is_video     INTEGER NOT NULL DEFAULT 0,      -- 1 for video rows (poster-frame thumbnail)
+    hidden       INTEGER NOT NULL DEFAULT 0,      -- user-hidden (0/1); excluded from browsing
     thumb_path   TEXT,
     embedding    BLOB,          -- SigLIP image embedding (float32) for semantic search
     embed_dim    INTEGER,       -- length of ``embedding`` (NULL when not embedded)
@@ -171,6 +172,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # additive so older catalogs gain it as 0 (all-photos) until a re-index.
         if "is_video" not in cols:
             conn.execute("ALTER TABLE photos ADD COLUMN is_video INTEGER NOT NULL DEFAULT 0")
+        # User-hidden rows (added 2026-06): excluded from browsing by default;
+        # additive so older catalogs gain it un-hidden. Kept out of PHOTO_COLUMNS
+        # (like favorite) so a re-index never un-hides a photo.
+        if "hidden" not in cols:
+            conn.execute("ALTER TABLE photos ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
         # Denormalised named-face count (added 2026-06): add the column, then
         # backfill it once from the faces table before the maintenance triggers
         # (created by the schema script below) take over for future writes.
@@ -290,6 +296,37 @@ def set_favorite(conn: sqlite3.Connection, photo_id: int, favorite: bool) -> boo
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+def _set_flag_bulk(
+    conn: sqlite3.Connection, column: str, ids: list[int], value: bool
+) -> int:
+    """Set a 0/1 photo flag (``favorite``/``hidden``) for many photos at once.
+
+    Both flags live outside :data:`PHOTO_COLUMNS` so a re-index never clears them;
+    they're written only through these helpers (and the per-photo ``set_favorite``).
+    """
+
+    if column not in ("favorite", "hidden"):  # guard the f-string interpolation
+        raise ValueError(f"not a bulk-settable flag: {column}")
+    clean = [int(i) for i in ids]
+    if not clean:
+        return 0
+    placeholders = ", ".join(["?"] * len(clean))
+    cur = conn.execute(
+        f"UPDATE photos SET {column}=? WHERE id IN ({placeholders})",
+        [1 if value else 0, *clean],
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def set_favorite_bulk(conn: sqlite3.Connection, ids: list[int], favorite: bool) -> int:
+    return _set_flag_bulk(conn, "favorite", ids, favorite)
+
+
+def set_hidden_bulk(conn: sqlite3.Connection, ids: list[int], hidden: bool) -> int:
+    return _set_flag_bulk(conn, "hidden", ids, hidden)
 
 
 # -- face active-learning negatives ----------------------------------------

@@ -82,9 +82,12 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 - **Photo embeddings live in `photos.embedding`/`embed_dim` but are deliberately
   NOT in `PHOTO_COLUMNS`** — they'd bloat the grid/list payload. They're written
   separately (`db.set_photo_embedding`) and loaded by `SemanticIndex`.
-- **`favorite` and `is_video` are also kept out of `PHOTO_COLUMNS`** so a re-index
-  (an `ON CONFLICT DO UPDATE` over only those columns) never resets them; both are
-  appended to `_LIST_COLUMNS` by hand and written via their own UPDATEs. Videos are
+- **`favorite`, `is_video` and `hidden` are also kept out of `PHOTO_COLUMNS`** so a
+  re-index (an `ON CONFLICT DO UPDATE` over only those columns) never resets them; all
+  are appended to `_LIST_COLUMNS` by hand and written via their own UPDATEs (bulk via
+  `db.set_*_bulk`, the `POST /api/photos/bulk` multi-select action). `hidden` is a
+  tri-state `_where` filter — absent (no clause, keeps `_where({})` empty), `False`
+  (exclude, the API browsing default), `True` (only hidden, the 🙈 review chip). Videos are
   ingested by `index_video` (poster frame stored content-addressed under
   `posters_dir`; `path` stays the playable file so `/api/image` streams it), gated on
   `video.ffmpeg_available()` — no ffmpeg means videos are counted but not indexed.

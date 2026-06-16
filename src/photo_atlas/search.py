@@ -15,6 +15,8 @@ any of them (OR within the facet, AND across facets).
 ``camera``     exact ``camera_model`` (the value emitted by the camera facet).
 ``has_faces``  ``True`` -> at least one face.
 ``favorite``   ``True`` -> only starred photos.
+``hidden``     ``True`` -> only hidden photos; ``False`` -> exclude hidden (the
+               browsing default, set by the API); absent -> no clause.
 ``q``          free-text substring matched across filename, city, country,
                place label, folder/trip and camera make/model.
 ``sort``       result ordering: ``newest`` (default), ``oldest``, ``filename``,
@@ -46,6 +48,7 @@ _LIST_COLUMNS = ", ".join(
         *(f"p.{c}" for c in db.PHOTO_COLUMNS if c != "scene_scores"),
         "p.favorite",
         "p.is_video",
+        "p.hidden",
     ]
 )
 
@@ -160,6 +163,12 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any]]:
         clauses.append("p.face_count > 0")
     if filters.get("favorite"):
         clauses.append("p.favorite = 1")
+    # ``hidden`` is tri-state: absent → no clause (the contract that ``_where({})``
+    # is empty); ``True`` → only hidden (the review chip); ``False`` → exclude
+    # hidden (the browsing default, set by the API). User-hidden photos are thus
+    # invisible everywhere the API passes ``hidden=False`` unless explicitly asked.
+    if "hidden" in filters:
+        clauses.append("p.hidden = 1" if filters["hidden"] else "p.hidden = 0")
     # Number-of-people buckets (OR within the facet); unknown tokens are ignored.
     people = [
         _PEOPLE_PREDICATE[b]
@@ -660,6 +669,14 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
         sql = f"SELECT COUNT(*) FROM photos p{where}{glue}p.favorite = 1"
         return int(conn.execute(sql, params).fetchone()[0])
 
+    def hidden_count() -> int:
+        # Hidden photos under the other active filters (powers the 🙈 chip). Forces
+        # ``hidden=True`` so the default exclusion doesn't zero it out.
+        sub = {k: v for k, v in filters.items() if k != "hidden"}
+        sub["hidden"] = True
+        where, params = _where(sub)
+        return int(conn.execute(f"SELECT COUNT(*) FROM photos p{where}", params).fetchone()[0])
+
     def people_facet() -> list[dict]:
         # Number-of-people buckets (portrait = 1, group = 2+), in canonical order,
         # filter-aware against the other dimensions but not the people bucket itself.
@@ -714,6 +731,7 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
         "known": known_facet(),
         "with_faces": with_faces_count(),
         "favorites": favorites_count(),
+        "hidden": hidden_count(),
         "date_min": drow[0],
         "date_max": drow[1],
     }
