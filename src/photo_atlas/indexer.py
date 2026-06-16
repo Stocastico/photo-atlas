@@ -45,6 +45,7 @@ from .faces import (
 from .folder_meta import extract_folder_meta
 from .geocode import Geocoder
 from .metadata import (
+    dhash,
     extract_meta_from_image,
     is_supported,
     is_video,
@@ -167,6 +168,9 @@ class _PreparedPhoto:
     #: doesn't shadow it as a type within this class body.
     embedding_blob: _Bytes | None = None
     embed_dim: int | None = None
+    #: Perceptual hash (dHash, hex) for near-duplicate / burst grouping. Always
+    #: computed (it's cheap), so even non-embedded libraries get duplicate detection.
+    phash: str | None = None
 
 
 def _encode_face_crop(img: Image.Image, bbox: tuple[int, int, int, int]) -> bytes | None:
@@ -303,6 +307,9 @@ def _prepare_photo(
         thumb_path = thumb_path_for(config, sha1)
         make_thumbnail_from_image(img, thumb_path, size=config.thumb_size)
 
+        # Perceptual hash off the same upright pixels (cheap), for burst/dupe grouping.
+        phash = dhash(img)
+
         # Compute the SigLIP image embedding once (if requested) and reuse it for
         # the zero-shot scene tag, so the vision tower runs a single time per photo.
         embedding = image_encoder.embed_image(img) if image_encoder is not None else None
@@ -354,6 +361,7 @@ def _prepare_photo(
         faces=faces,
         embedding_blob=db.embedding_to_blob(embedding),
         embed_dim=None if embedding is None else int(embedding.shape[0]),
+        phash=phash,
     )
 
 
@@ -399,6 +407,9 @@ def _commit_prepared(
             "UPDATE photos SET embedding=?, embed_dim=? WHERE id=?",
             (prepared.embedding_blob, prepared.embed_dim, photo_id),
         )
+    # Always refresh the perceptual hash (kept out of PHOTO_COLUMNS, like the
+    # embedding), so a re-index keeps it current and burst grouping stays accurate.
+    db.set_phash(conn, photo_id, prepared.phash)
 
     face_rows = []
     for i, face in enumerate(prepared.faces):
@@ -1076,6 +1087,92 @@ def embed_library(
     finally:
         conn.close()
     return embedded
+
+
+def backfill_phashes(
+    config: AtlasConfig,
+    *,
+    recompute: bool = False,
+    progress: Callable[[int, int], None] | None = None,
+) -> int:
+    """Backfill perceptual hashes for near-duplicate / burst grouping, no re-index.
+
+    New indexes compute the dHash for free, but a library indexed before the column
+    existed has none. This decodes each still-present photo once and stores only its
+    ``phash`` — no face re-detection, no embedding. By default only photos missing a
+    hash are processed (``recompute`` re-hashes all). Videos (no still pixels) are
+    skipped. Returns the number of photos hashed.
+    """
+
+    conn = db.connect(config.db_path)
+    hashed = 0
+    try:
+        where = "WHERE is_video = 0" if recompute else "WHERE phash IS NULL AND is_video = 0"
+        rows = conn.execute(f"SELECT id, path FROM photos {where}").fetchall()
+        total = len(rows)
+        for i, row in enumerate(rows):
+            path = Path(row["path"])
+            if not path.exists():
+                continue
+            try:
+                with Image.open(path) as raw:
+                    raw.load()
+                    img = ImageOps.exif_transpose(raw) or raw
+                    value = dhash(img)
+            except Exception as exc:
+                print(f"warning: could not hash {path}: {exc}", file=sys.stderr)
+                continue
+            db.set_phash(conn, int(row["id"]), value)
+            hashed += 1
+            if progress is not None:
+                progress(i + 1, total)
+        conn.commit()
+    finally:
+        conn.close()
+    return hashed
+
+
+def delete_photos(config: AtlasConfig, ids: list[int]) -> dict[str, int]:
+    """Hard-delete photos: their catalog rows *and* source files + derivatives.
+
+    Irreversible. For each id this removes the source file on disk, the photo's
+    thumbnail and face-crop directory, then the catalog row (faces cascade); a
+    final sweep reclaims any remaining content-addressed derivatives (preview /
+    retina variants, video posters) the deleted rows owned. Returns
+    ``{rows, files, orphans}`` — rows removed from the catalog, source files
+    unlinked from disk, and orphaned derivative files swept.
+    """
+
+    import shutil
+
+    clean = [int(i) for i in ids]
+    conn = db.connect(config.db_path)
+    files_removed = 0
+    try:
+        if clean:
+            placeholders = ", ".join(["?"] * len(clean))
+            rows = conn.execute(
+                f"SELECT id, path, thumb_path FROM photos WHERE id IN ({placeholders})",
+                clean,
+            ).fetchall()
+            for row in rows:
+                src = Path(row["path"]) if row["path"] else None
+                if src is not None and src.exists():
+                    try:
+                        src.unlink()
+                        files_removed += 1
+                    except OSError as exc:  # surface, don't crash the whole batch
+                        print(f"warning: could not delete {src}: {exc}", file=sys.stderr)
+                if row["thumb_path"]:
+                    Path(row["thumb_path"]).unlink(missing_ok=True)
+                crop_dir = config.faces_dir / str(row["id"])
+                if crop_dir.exists():
+                    shutil.rmtree(crop_dir, ignore_errors=True)
+        removed = db.delete_photos(conn, clean)
+    finally:
+        conn.close()
+    orphans = sweep_orphan_derivatives(config)
+    return {"rows": removed, "files": files_removed, "orphans": orphans}
 
 
 def cluster_library(config: AtlasConfig) -> dict[str, int]:

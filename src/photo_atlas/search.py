@@ -575,6 +575,120 @@ def detect_trips(
     return trips
 
 
+def phash_distance(a: str | None, b: str | None) -> int:
+    """Hamming distance between two dHash hex strings.
+
+    A missing hash on either side is treated as maximally distant (64 bits for the
+    default 64-bit dHash), so an un-hashed photo never groups with anything.
+    """
+
+    if not a or not b:
+        return 64
+    return int(bin(int(a, 16) ^ int(b, 16)).count("1"))
+
+
+def _cover_score(row: dict) -> tuple[int, int, int]:
+    """Sort key for picking the "best of N" cover shot of a burst.
+
+    Prefer a favorite, then the highest resolution (most pixels), then the
+    earliest frame (lowest id) as a stable tiebreak. Used as a descending sort, so
+    the winner sorts first.
+    """
+
+    pixels = (row.get("width") or 0) * (row.get("height") or 0)
+    return (1 if row.get("favorite") else 0, int(pixels), -int(row["id"]))
+
+
+def find_burst_groups(
+    conn: sqlite3.Connection,
+    *,
+    max_distance: int = 10,
+    max_gap_seconds: float = 10.0,
+    min_group: int = 2,
+) -> list[dict]:
+    """Group near-identical shots taken close together in time (bursts / dupes).
+
+    Two signals define a group: perceptual similarity (dHash Hamming distance
+    ``<= max_distance``) *and* temporal proximity (captured within
+    ``max_gap_seconds`` of a neighbour). A union-find over the time-sorted stream
+    — comparing each photo only against the still-recent ones in a sliding window —
+    forms connected components, so a burst survives the odd blurry/off frame and
+    the scan stays ``O(N · window)`` rather than ``O(N²)``. Components smaller than
+    ``min_group`` are dropped.
+
+    Hidden and undated photos are excluded (videos carry no phash, so they fall out
+    naturally). Each returned group is ``{count, cover_id, photos}`` where ``photos``
+    carries the full grid columns sorted best-first (the "best of N" cover leads,
+    so the UI can offer to keep it and hide/delete the rest). Returned newest-first.
+    """
+
+    from collections import deque
+
+    rows = conn.execute(
+        f"SELECT {_LIST_COLUMNS}, p.phash AS phash FROM photos p "
+        "WHERE p.phash IS NOT NULL AND p.taken_at IS NOT NULL AND p.hidden = 0 "
+        "ORDER BY p.taken_at ASC, p.id ASC"
+    ).fetchall()
+
+    photos: dict[int, dict] = {}
+    phashes: dict[int, str] = {}
+    parent: dict[int, int] = {}
+
+    def find(x: int) -> int:
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:  # path compression
+            parent[x], x = root, parent[x]
+        return root
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    window: deque[tuple[int, _dt.datetime]] = deque()
+    for raw in rows:
+        row = dict(raw)
+        phash = row.pop("phash")
+        pid = int(row["id"])
+        dt = _parse_taken_at(row.get("taken_at"))
+        photos[pid] = row
+        parent[pid] = pid
+        if dt is None:  # malformed timestamp: keep as a singleton, never groups
+            continue
+        while window and (dt - window[0][1]).total_seconds() > max_gap_seconds:
+            window.popleft()
+        for prev_id, _prev_dt in window:
+            if phash_distance(phash, phashes[prev_id]) <= max_distance:
+                union(pid, prev_id)
+        phashes[pid] = phash
+        window.append((pid, dt))
+
+    components: dict[int, list[int]] = {}
+    for pid in parent:
+        components.setdefault(find(pid), []).append(pid)
+
+    groups: list[dict] = []
+    for member_ids in components.values():
+        if len(member_ids) < min_group:
+            continue
+        members = sorted(
+            (photos[i] for i in member_ids), key=_cover_score, reverse=True
+        )
+        groups.append(
+            {
+                "count": len(members),
+                "cover_id": members[0]["id"],
+                "photos": members,
+            }
+        )
+    # Newest-first by the group's latest capture time (its first chronological
+    # member is the lowest id; use the max taken_at across members).
+    groups.sort(key=lambda g: max(p["taken_at"] for p in g["photos"]), reverse=True)
+    return groups
+
+
 def map_points(
     conn: sqlite3.Connection, filters: dict[str, Any], limit: int = 20000
 ) -> list[dict]:
