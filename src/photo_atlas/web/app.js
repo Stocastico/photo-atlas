@@ -744,9 +744,88 @@ window.addEventListener("scroll", onViewportChange, { passive: true });
 window.addEventListener("resize", onViewportChange);
 
 // ---- lightbox / detail ----------------------------------------------------
+// Power tools: scroll/drag zoom + pan, a slideshow, an EXIF info panel and a
+// "?" shortcut legend.
+
+const LB_MAX_ZOOM = 6;
+// Pure zoom model (centre-anchored): given the image's current {scale, tx, ty}
+// and a multiplicative `factor`, return the next transform. Scale is clamped to
+// [1, max]; at 1× the image snaps back to centred, and the pan is rescaled with
+// the zoom so the focused point stays put. Unit-tested via a Node harness.
+function nextZoom(view, factor, max = LB_MAX_ZOOM) {
+  const scale = Math.min(max, Math.max(1, view.scale * factor));
+  if (scale === 1) return { scale: 1, tx: 0, ty: 0 };
+  const ratio = scale / view.scale;
+  return { scale, tx: view.tx * ratio, ty: view.ty * ratio };
+}
+
+let lbZoom = { scale: 1, tx: 0, ty: 0 };
+function applyLbZoom() {
+  const img = $("#lb-img");
+  if (!img) return;
+  img.style.transform = `translate(${lbZoom.tx}px, ${lbZoom.ty}px) scale(${lbZoom.scale})`;
+  img.style.cursor = lbZoom.scale > 1 ? "grab" : "zoom-in";
+  const stage = $(".lb-img");
+  if (stage) stage.classList.toggle("zoomed", lbZoom.scale > 1);
+}
+function resetLbZoom() { lbZoom = { scale: 1, tx: 0, ty: 0 }; applyLbZoom(); }
+function zoomBy(factor) { lbZoom = nextZoom(lbZoom, factor); applyLbZoom(); }
+
+// Slideshow: auto-advance through the loaded result set (pulling further pages
+// via lightboxStep), stopping at the end of the library or when the lightbox
+// closes. Only meaningful for the grid path (an index-addressed list).
+let slideTimer = null;
+function stopSlideshow() {
+  if (slideTimer) { clearInterval(slideTimer); slideTimer = null; }
+  const b = $("#lb-play");
+  if (b) { b.textContent = "▶"; b.setAttribute("aria-pressed", "false"); b.title = "Start slideshow (Space)"; }
+}
+function toggleSlideshow() {
+  if (slideTimer) { stopSlideshow(); return; }
+  if (state.lightboxIndex == null) return; // single-photo (map) view: nothing to advance
+  slideTimer = setInterval(async () => {
+    const before = state.lightboxIndex;
+    await lightboxStep(1);
+    if (state.lightboxIndex === before) stopSlideshow(); // reached the end
+  }, 3500);
+  const b = $("#lb-play");
+  if (b) { b.textContent = "⏸"; b.setAttribute("aria-pressed", "true"); b.title = "Pause slideshow (Space)"; }
+}
+
+// Keyboard-shortcut legend, built lazily and toggled with "?".
+function helpPanel() {
+  let el = $("#lb-help-panel");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "lb-help-panel";
+    el.className = "lb-help";
+    el.hidden = true;
+    el.innerHTML = `<div class="lb-help-card" role="dialog" aria-label="Keyboard shortcuts">
+      <h3>Keyboard shortcuts</h3>
+      <dl>
+        <dt>← / →</dt><dd>Previous / next photo</dd>
+        <dt>Space</dt><dd>Play / pause slideshow</dd>
+        <dt>+ / − / 0</dt><dd>Zoom in / out / reset</dd>
+        <dt>Double-click</dt><dd>Toggle zoom</dd>
+        <dt>Drag</dt><dd>Pan when zoomed in</dd>
+        <dt>?</dt><dd>Toggle this help</dd>
+        <dt>Esc</dt><dd>Close</dd>
+      </dl></div>`;
+    el.onclick = () => { el.hidden = true; };
+    $("#lightbox").appendChild(el);
+  }
+  return el;
+}
+function helpOpen() { const el = $("#lb-help-panel"); return !!el && !el.hidden; }
+function toggleHelp() { const el = helpPanel(); el.hidden = !el.hidden; }
+function closeHelp() { const el = $("#lb-help-panel"); if (el) el.hidden = true; }
+
 function closeLightbox() {
   $("#lightbox").classList.remove("open");
   state.lightboxIndex = null;
+  stopSlideshow();
+  closeHelp();
+  resetLbZoom();
   const vid = $("#lb-video"); // stop playback (and audio) when closing
   if (vid && vid.pause) vid.pause();
   // Restore focus to whatever opened the lightbox (the photo card).
@@ -787,6 +866,7 @@ function renderLightboxSide(p, id, reopen) {
   } else {
     if (!$("#lb-img")) stage.innerHTML = `<img id="lb-img" src="" alt="" />`;
     $("#lb-img").src = `/api/preview/${id}`;
+    resetLbZoom(); // a fresh image starts un-zoomed
   }
   const side = $("#lb-side");
   const kv = (k, v) => (v ? `<div class="kv"><span>${k}</span><span>${esc(v)}</span></div>` : "");
@@ -804,6 +884,35 @@ function renderLightboxSide(p, id, reopen) {
 
   // A favourite toggle for the open photo; shares paint/sync logic with the grid.
   $("#lb-actions").prepend(makeStar(p, { inline: true }));
+
+  // EXIF info panel: capture settings are read on demand (not in the grid
+  // payload), so fetch them the first time the panel is opened.
+  const info = document.createElement("button");
+  info.className = "ghost";
+  info.type = "button";
+  info.textContent = "ℹ︎ Info";
+  info.title = "Camera settings (EXIF)";
+  info.setAttribute("aria-pressed", "false");
+  const exifBox = document.createElement("div");
+  exifBox.className = "lb-exif";
+  exifBox.hidden = true;
+  let exifLoaded = false;
+  info.onclick = async () => {
+    exifBox.hidden = !exifBox.hidden;
+    info.setAttribute("aria-pressed", exifBox.hidden ? "false" : "true");
+    if (exifLoaded || exifBox.hidden) return;
+    exifLoaded = true;
+    const s = await api(`/api/exif/${id}`).catch(() => ({}));
+    const rows = [
+      ["Aperture", s.aperture], ["Shutter", s.shutter], ["ISO", s.iso],
+      ["Focal length", s.focal_length], ["Lens", s.lens],
+    ].filter(([, v]) => v);
+    exifBox.innerHTML = rows.length
+      ? rows.map(([k, v]) => `<div class="kv"><span>${k}</span><span>${esc(v)}</span></div>`).join("")
+      : `<span class="tagline">No camera settings in EXIF.</span>`;
+  };
+  $("#lb-actions").appendChild(info);
+  $("#lb-actions").after(exifBox);
 
   // "More like this" reuses the stored SigLIP embeddings, so only offer it when
   // the library is embedded (same signal the Smart-search toggle uses).
@@ -916,6 +1025,72 @@ async function renderMemories() {
     const strip = document.createElement("div");
     strip.className = "memory-strip";
     for (const p of g.photos) {
+      const card = document.createElement("div");
+      card.className = "memory-card";
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+      card.setAttribute("aria-label", `Open ${p.filename}`);
+      card.innerHTML = `<img loading="lazy" decoding="async" src="/api/thumb/${p.id}" alt="${esc(p.filename)}" />`;
+      card.onclick = () => openPhotoById(p.id);
+      card.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPhotoById(p.id); }
+      };
+      strip.appendChild(card);
+    }
+    sec.appendChild(strip);
+    wrap.appendChild(sec);
+  }
+}
+
+// ---- trips (auto-detected from date gaps + GPS) ---------------------------
+function fmtTripRange(start, end) {
+  const opts = { year: "numeric", month: "short", day: "numeric" };
+  const s = new Date(start + "T00:00:00").toLocaleDateString(undefined, opts);
+  if (start === end) return s;
+  const e = new Date(end + "T00:00:00").toLocaleDateString(undefined, opts);
+  return `${s} – ${e}`;
+}
+
+async function renderTrips() {
+  const wrap = $("#trips");
+  if (!wrap) return;
+  let data;
+  try {
+    data = await api("/api/trips");
+  } catch (e) { return; }
+
+  wrap.innerHTML = "";
+  const trips = (data && data.trips) || [];
+  $("#trips-empty").style.display = trips.length ? "none" : "block";
+
+  for (const t of trips) {
+    const sec = document.createElement("section");
+    sec.className = "memory-year";
+    const head = document.createElement("div");
+    head.className = "trip-head";
+    const h = document.createElement("h3");
+    h.textContent = t.place || "Unknown place";
+    const meta = document.createElement("span");
+    meta.className = "trip-meta";
+    meta.textContent = `${fmtTripRange(t.start, t.end)} · ${t.count} photo${t.count === 1 ? "" : "s"}`;
+    head.appendChild(h);
+    head.appendChild(meta);
+    // "Browse all" loads the whole trip into the grid via its date range.
+    const browse = document.createElement("button");
+    browse.className = "ghost";
+    browse.type = "button";
+    browse.textContent = "Browse all →";
+    browse.onclick = () => {
+      state.similarTo = null;
+      state.filters = { date_from: t.start, date_to: t.end };
+      setView("photos");
+    };
+    head.appendChild(browse);
+    sec.appendChild(head);
+
+    const strip = document.createElement("div");
+    strip.className = "memory-strip";
+    for (const p of t.photos) {
       const card = document.createElement("div");
       card.className = "memory-card";
       card.tabIndex = 0;
@@ -1152,7 +1327,7 @@ async function renderClusters() {
 }
 
 // ---- view switching -------------------------------------------------------
-const VIEWS = ["photos", "memories", "map", "people", "clusters"];
+const VIEWS = ["photos", "memories", "trips", "map", "people", "clusters"];
 
 function showViewPanel(view) {
   for (const v of VIEWS) {
@@ -1179,6 +1354,7 @@ function refresh() {
   renderSidebar();
   if (state.view === "photos") renderPhotos(true);
   else if (state.view === "memories") renderMemories();
+  else if (state.view === "trips") renderTrips();
   else if (state.view === "map") renderMap();
   else if (state.view === "people") renderPeople();
   else renderClusters();
@@ -1206,14 +1382,53 @@ $("#lb-close").onclick = closeLightbox;
 $("#lb-prev").onclick = () => lightboxStep(-1);
 $("#lb-next").onclick = () => lightboxStep(1);
 $("#lightbox").onclick = (e) => { if (e.target.id === "lightbox") closeLightbox(); };
+if ($("#lb-play")) $("#lb-play").onclick = toggleSlideshow;
+if ($("#lb-help")) $("#lb-help").onclick = toggleHelp;
+
+// Scroll/drag zoom + pan on the image stage. Wired once; the handlers no-op
+// unless the lightbox is open. Drag panning only kicks in past 1× zoom.
+(function setupLbZoom() {
+  const stage = $(".lb-img");
+  if (!stage || !stage.addEventListener) return;
+  stage.addEventListener("wheel", (e) => {
+    if (!$("#lightbox").classList.contains("open")) return;
+    e.preventDefault();
+    zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15);
+  }, { passive: false });
+  stage.addEventListener("dblclick", () => zoomBy(lbZoom.scale > 1 ? 0.001 : 2.5));
+  let dragging = false, lastX = 0, lastY = 0;
+  stage.addEventListener("pointerdown", (e) => {
+    if (lbZoom.scale <= 1) return;
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+    stage.setPointerCapture?.(e.pointerId);
+    const img = $("#lb-img"); if (img) img.style.cursor = "grabbing";
+  });
+  stage.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    lbZoom.tx += e.clientX - lastX; lbZoom.ty += e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+    applyLbZoom();
+  });
+  const endDrag = () => {
+    dragging = false;
+    const img = $("#lb-img"); if (img) img.style.cursor = lbZoom.scale > 1 ? "grab" : "zoom-in";
+  };
+  stage.addEventListener("pointerup", endDrag);
+  stage.addEventListener("pointercancel", endDrag);
+})();
 $("#sort").onchange = (e) => { state.sort = e.target.value; syncURL(); renderPhotos(true); };
 
 document.addEventListener("keydown", (e) => {
   if (!$("#lightbox").classList.contains("open")) return;
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
-  if (e.key === "Escape") closeLightbox();
+  if (e.key === "Escape") { if (helpOpen()) closeHelp(); else closeLightbox(); }
   else if (e.key === "ArrowLeft" && !typing) lightboxStep(-1);
   else if (e.key === "ArrowRight" && !typing) lightboxStep(1);
+  else if ((e.key === "?" || (e.key === "/" && e.shiftKey)) && !typing) { e.preventDefault(); toggleHelp(); }
+  else if (e.key === " " && !typing) { e.preventDefault(); toggleSlideshow(); }
+  else if ((e.key === "+" || e.key === "=") && !typing) { e.preventDefault(); zoomBy(1.25); }
+  else if (e.key === "-" && !typing) { e.preventDefault(); zoomBy(1 / 1.25); }
+  else if (e.key === "0" && !typing) { e.preventDefault(); resetLbZoom(); }
   else if (e.key === "Tab") {
     // Focus trap: keep Tab cycling within the dialog.
     const f = focusableInLightbox();

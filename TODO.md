@@ -325,8 +325,19 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   the server's current date. The UI renders one horizontal film-strip per past year
   ("3 years ago"), each thumb opening in the lightbox. db + API tested
   (`tests/test_memories.py`, incl. the 422 on a bad date).
-  - [ ] **Trip auto-detection.** Still open: auto-group trips from date gaps +
-    place/GPS proximity (folders already hint at it).
+  - [x] **Trip auto-detection.** **Done:** a new **Trips** tab auto-groups the library
+    into trips. `search.detect_trips` walks every dated photo in order and splits a new
+    trip on a capture-time break longer than `config.trip_gap_days` (default 2) *or* a
+    GPS jump farther than `config.trip_gap_km` (default 200 km) between consecutive
+    geotagged shots — so a same-week hop to a far city reads as its own leg — and drops
+    clusters smaller than `config.trip_min_photos` (default 4). Each trip carries its
+    date span, photo `count`, a `place` label (most common place label → folder → city/
+    country), a GPS centroid + geotagged cover, and a capped photo sample. Derived on
+    the fly from `taken_at`/GPS (no schema change, tracks re-indexing for free) and
+    surfaced over `GET /api/trips`; the UI shows one film-strip per trip (newest first)
+    with a "Browse all →" that loads the whole trip into the grid via its date range.
+    db + API tested (`tests/test_trips.py`: time-gap split, far-GPS split, nearby
+    no-split, min-photos drop, undated-ignored, label fallback, the endpoint).
 - [x] **Favorites.** Star shots: a `favorite` 0/1 column (kept out of
   `PHOTO_COLUMNS` so a re-index never clears it; written via `db.set_favorite` and
   `PUT /api/photos/{id}/favorite`, guarded by the same-origin write middleware), a
@@ -362,8 +373,18 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
 - [ ] **Face active-learning (negative feedback).** Reassigning/unassigning an
   auto-tag is thrown away today. Record "not this person" negatives and feed them
   into the k-NN vote (penalise), and surface low-confidence auto-tags for review.
-- [ ] **Lightbox power tools.** Scroll/drag zoom + pan, an EXIF panel (ƒ/ISO/shutter/
-  lens), a slideshow auto-advance, and a `?` keyboard-shortcut legend.
+- [x] **Lightbox power tools.** **Done:** the lightbox gained scroll-wheel / `+`/`-`/`0`
+  **zoom** with drag-to-**pan** past 1× (double-click toggles; the centre-anchored
+  transform `nextZoom` is pure + Node-harness tested), a **slideshow** auto-advance
+  (▶/⏸ button or Space, pulling further pages via `lightboxStep` and stopping at the
+  end of the library), an **EXIF info panel** (ℹ︎) showing ƒ/ISO/shutter/focal-length/
+  lens read **on demand** from a new `GET /api/exif/{id}` (`metadata.exif_settings`,
+  formatted server-side — no schema change, no re-index; a moved file or EXIF-free
+  image just yields `{}`), and a `?` **keyboard-shortcut legend** overlay. Zoom resets
+  per photo and on close; Esc closes the legend before the lightbox. Backend
+  (formatting + endpoint 404/missing-file/empty) unit + API tested
+  (`tests/test_exif.py`, `tests/test_api_errors.py`); zoom math via
+  `tests/js/lightbox_harness.mjs`.
 - [ ] ~~**RAW ingest.**~~ **Won't do** (2026-06-16). A photographer's 15-year library
   has `.CR2/.NEF/.ARW`; pulling the embedded preview + EXIF via an optional `rawpy`
   extra was considered but is out of scope for now — the library targets

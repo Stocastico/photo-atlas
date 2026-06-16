@@ -23,7 +23,10 @@ any of them (OR within the facet, AND across facets).
 
 from __future__ import annotations
 
+import datetime as _dt
+import math as _math
 import sqlite3
+from collections import Counter
 from typing import Any
 
 import numpy as np
@@ -438,6 +441,129 @@ def on_this_day(
         if len(grp["photos"]) < per_year:
             grp["photos"].append(row)
     return [groups[y] for y in order]
+
+
+def _parse_taken_at(value: str | None) -> _dt.datetime | None:
+    if not value:
+        return None
+    try:
+        return _dt.datetime.fromisoformat(value)
+    except ValueError:  # pragma: no cover - defensive against odd stored values
+        return None
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance between two WGS84 points, in kilometres."""
+
+    radius = 6371.0
+    p1, p2 = _math.radians(lat1), _math.radians(lat2)
+    dphi = _math.radians(lat2 - lat1)
+    dlam = _math.radians(lon2 - lon1)
+    a = _math.sin(dphi / 2) ** 2 + _math.cos(p1) * _math.cos(p2) * _math.sin(dlam / 2) ** 2
+    return 2 * radius * _math.asin(_math.sqrt(a))
+
+
+def _dominant_place(rows: list[dict]) -> str | None:
+    """The most common place label across a trip's photos (best available source)."""
+
+    for key in ("place_label", "folder_place"):
+        counts = Counter(r[key] for r in rows if r.get(key))
+        if counts:
+            return counts.most_common(1)[0][0]
+    counts = Counter(
+        ", ".join(filter(None, (r.get("place_city"), r.get("place_country"))))
+        for r in rows
+        if r.get("place_city") or r.get("place_country")
+    )
+    return counts.most_common(1)[0][0] if counts else None
+
+
+def _build_trip(rows: list[dict], per_trip: int) -> dict:
+    geos = [
+        (r["lat"], r["lon"])
+        for r in rows
+        if r.get("lat") is not None and r.get("lon") is not None
+    ]
+    lat = lon = None
+    cover_id = rows[0]["id"]
+    if geos:
+        lat = sum(a for a, _ in geos) / len(geos)
+        lon = sum(b for _, b in geos) / len(geos)
+        for r in rows:  # prefer a geotagged cover so the trip pins on the map
+            if r.get("lat") is not None and r.get("lon") is not None:
+                cover_id = r["id"]
+                break
+    return {
+        "start": rows[0]["taken_at"][:10],
+        "end": rows[-1]["taken_at"][:10],
+        "count": len(rows),
+        "place": _dominant_place(rows),
+        "lat": lat,
+        "lon": lon,
+        "cover_id": cover_id,
+        "photos": rows[:per_trip],
+    }
+
+
+def detect_trips(
+    conn: sqlite3.Connection,
+    *,
+    gap_days: float = 2.0,
+    gap_km: float = 200.0,
+    min_photos: int = 4,
+    per_trip: int = 12,
+) -> list[dict]:
+    """Group the library into trips from capture-time gaps + GPS proximity.
+
+    Walks every dated photo in chronological order and starts a new trip whenever
+    there's a break longer than ``gap_days`` *or* (within that window) a geographic
+    jump farther than ``gap_km`` between consecutive geotagged shots. Clusters
+    smaller than ``min_photos`` are dropped. Each trip carries its date span, photo
+    ``count``, a ``place`` label (most common place/folder), a centroid + cover for
+    the map, and a capped ``photos`` sample. Returned newest-first.
+    """
+
+    rows = conn.execute(
+        f"SELECT {_LIST_COLUMNS} FROM photos p "
+        "WHERE p.taken_at IS NOT NULL ORDER BY p.taken_at ASC, p.id ASC"
+    ).fetchall()
+
+    trips: list[dict] = []
+    current: list[dict] = []
+    prev_dt: _dt.datetime | None = None
+    prev_ll: tuple[float, float] | None = None
+
+    def flush() -> None:
+        if len(current) >= min_photos:
+            trips.append(_build_trip(current, per_trip))
+        current.clear()
+
+    for r in rows:
+        row = dict(r)
+        dt = _parse_taken_at(row.get("taken_at"))
+        ll = (
+            (row["lat"], row["lon"])
+            if row.get("lat") is not None and row.get("lon") is not None
+            else None
+        )
+        if current and dt is not None and prev_dt is not None:
+            gap = (dt - prev_dt).total_seconds() / 86400.0
+            jumped = (
+                ll is not None
+                and prev_ll is not None
+                and _haversine_km(*prev_ll, *ll) > gap_km
+            )
+            if gap > gap_days or (gap > 0 and jumped):
+                flush()
+        current.append(row)
+        if dt is not None:
+            prev_dt = dt
+        if ll is not None:
+            prev_ll = ll
+    flush()
+
+    trips.sort(key=lambda t: (t["end"], t["start"]), reverse=True)
+    return trips
 
 
 def map_points(

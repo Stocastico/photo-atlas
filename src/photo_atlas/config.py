@@ -71,6 +71,19 @@ class AtlasConfig:
     #: Minimum number of faces required to form a cluster.
     cluster_min_samples: int = 2
 
+    #: Trip auto-detection: a break longer than this many days between
+    #: consecutive shots ends one trip and starts the next.
+    trip_gap_days: float = 2.0
+
+    #: Trip auto-detection: a geographic jump farther than this (km) between two
+    #: consecutive geotagged shots also splits a trip, even within the day gap —
+    #: so a same-week hop to a far city reads as a separate leg.
+    trip_gap_km: float = 200.0
+
+    #: Trip auto-detection: clusters with fewer photos than this are dropped (a
+    #: stray handful of shots isn't a trip).
+    trip_min_photos: int = 4
+
     @property
     def models_dir(self) -> Path:
         return self.home / "models"

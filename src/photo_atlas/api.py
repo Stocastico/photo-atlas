@@ -281,6 +281,19 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "total": sum(g["count"] for g in groups), "groups": groups,
         }
 
+    @app.get("/api/trips")
+    def api_trips(conn: sqlite3.Connection = Depends(get_conn)):
+        # Auto-detected trips: contiguous runs of photos split on capture-time gaps
+        # (and big GPS jumps), labelled by place. Derived on the fly from taken_at /
+        # GPS, so there's no schema change and it tracks re-indexing for free.
+        trips = search.detect_trips(
+            conn,
+            gap_days=config.trip_gap_days,
+            gap_km=config.trip_gap_km,
+            min_photos=config.trip_min_photos,
+        )
+        return {"count": len(trips), "trips": trips}
+
     @app.get("/api/map")
     def api_map(
         conn: sqlite3.Connection = Depends(get_conn),
@@ -339,6 +352,23 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             conn, photo_id, index, top_k=config.semantic_top_k, limit=limit, offset=offset
         )
         return {"total": total, "count": len(rows), "offset": offset, "photos": rows}
+
+    @app.get("/api/exif/{photo_id}")
+    def api_exif(photo_id: int, conn: sqlite3.Connection = Depends(get_conn)):
+        # Lazy, read-on-demand capture settings (ƒ/ISO/shutter/lens) for the
+        # lightbox info panel. Not stored in the catalog, so this opens the source
+        # file; a missing file or EXIF-free image just yields an empty dict (the
+        # photo still exists — only an unknown id is a 404).
+        row = conn.execute("SELECT path FROM photos WHERE id=?", (photo_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "photo not found")
+        src = row["path"]
+        if not src or not Path(src).exists():
+            return {}
+        try:
+            return metadata.read_exif_settings(Path(src))
+        except Exception:
+            return {}
 
     @app.put("/api/photos/{photo_id}/favorite")
     def api_set_favorite(

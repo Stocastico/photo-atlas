@@ -19,6 +19,8 @@
         aria-controls="view-photos" data-view="photos">Photos</button>
       <button class="tab" id="tab-memories" role="tab" aria-selected="false" tabindex="-1"
         aria-controls="view-memories" data-view="memories">Memories</button>
+      <button class="tab" id="tab-trips" role="tab" aria-selected="false" tabindex="-1"
+        aria-controls="view-trips" data-view="trips">Trips</button>
       <button class="tab" id="tab-map" role="tab" aria-selected="false" tabindex="-1"
         aria-controls="view-map" data-view="map">Map</button>
       <button class="tab" id="tab-people" role="tab" aria-selected="false" tabindex="-1"
@@ -74,6 +76,12 @@ photo-atlas serve              # browse, filter, and name people</code></pre>
         <div id="memories-empty" class="empty" style="display:none">No photos from this day in earlier years — check back another day.</div>
       </div>
 
+      <div id="view-trips" role="tabpanel" aria-labelledby="tab-trips" style="display:none">
+        <div class="toolbar"><h2 style="margin:0">Trips</h2></div>
+        <div id="trips"></div>
+        <div id="trips-empty" class="empty" style="display:none">No trips detected yet — index a dated, geotagged library to see them here.</div>
+      </div>
+
       <div id="view-map" role="tabpanel" aria-labelledby="tab-map" style="display:none">
         <div id="map"></div>
         <div id="map-empty" class="empty" style="display:none">No geotagged photos match these filters.</div>
@@ -95,6 +103,10 @@ photo-atlas serve              # browse, filter, and name people</code></pre>
 
   <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Photo detail">
     <button class="close" id="lb-close" aria-label="Close">&times;</button>
+    <div class="lb-tools">
+      <button class="lb-tool" id="lb-play" aria-label="Play slideshow" aria-pressed="false" title="Start slideshow (Space)">&#9654;</button>
+      <button class="lb-tool" id="lb-help" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">?</button>
+    </div>
     <button class="lb-nav prev" id="lb-prev" aria-label="Previous photo">&#8249;</button>
     <button class="lb-nav next" id="lb-next" aria-label="Next photo">&#8250;</button>
     <div class="lb-inner">

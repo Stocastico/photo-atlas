@@ -200,6 +200,80 @@ def extract_meta(path: Path) -> PhotoMeta:
         return extract_meta_from_image(img, path)
 
 
+def _trim(value: float, places: int = 1) -> str:
+    """Format a float with up to ``places`` decimals, dropping trailing zeros."""
+
+    return f"{value:.{places}f}".rstrip("0").rstrip(".")
+
+
+def _format_aperture(value) -> str | None:
+    f = _ratio(value)
+    if f is None or f <= 0:
+        return None
+    return f"ƒ/{_trim(f)}"  # ƒ/2.8, ƒ/8
+
+
+def _format_shutter(value) -> str | None:
+    t = _ratio(value)
+    if t is None or t <= 0:
+        return None
+    if t >= 1:
+        return f"{_trim(t)}s"  # 2s, 1.3s
+    return f"1/{round(1 / t)}s"  # 1/250s
+
+
+def _format_focal(value) -> str | None:
+    f = _ratio(value)
+    if f is None or f <= 0:
+        return None
+    return f"{_trim(f)}mm"
+
+
+def _format_iso(value) -> str | None:
+    if isinstance(value, (tuple, list)):
+        value = value[0] if value else None
+    try:
+        iso = int(value)
+    except (TypeError, ValueError):
+        return None
+    if iso <= 0:
+        return None
+    return f"ISO {iso}"
+
+
+def exif_settings(img: Image.Image) -> dict[str, str]:
+    """Pull human-readable capture settings (ƒ/ISO/shutter/lens) from EXIF.
+
+    Returns only the fields actually present, each already formatted for display
+    (e.g. ``{"aperture": "ƒ/2.8", "shutter": "1/250s", "iso": "ISO 200"}``).
+    These aren't stored in the catalog — they're read on demand for the lightbox
+    info panel — so adding them needs no schema change or re-index.
+    """
+
+    exif = _exif_dict(img)
+    out: dict[str, str] = {}
+    if (ap := _format_aperture(exif.get("FNumber"))) is not None:
+        out["aperture"] = ap
+    if (sh := _format_shutter(exif.get("ExposureTime"))) is not None:
+        out["shutter"] = sh
+    iso_raw = exif.get("ISOSpeedRatings", exif.get("PhotographicSensitivity"))
+    if (iso := _format_iso(iso_raw)) is not None:
+        out["iso"] = iso
+    if (fl := _format_focal(exif.get("FocalLength"))) is not None:
+        out["focal_length"] = fl
+    lens = exif.get("LensModel") or exif.get("LensMake")
+    if lens and (lens := str(lens).strip("\x00 ").strip()):
+        out["lens"] = lens
+    return out
+
+
+def read_exif_settings(path: Path) -> dict[str, str]:
+    """Open ``path`` and return its formatted EXIF capture settings."""
+
+    with Image.open(path) as img:
+        return exif_settings(img)
+
+
 def resize_image_to(img: Image.Image, dest: Path, size: int, quality: int) -> Path:
     """Write an orientation-corrected, downscaled JPEG from an open image.
 
