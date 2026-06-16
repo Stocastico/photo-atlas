@@ -30,7 +30,7 @@ from typing import cast
 import numpy as np
 from PIL import Image, ImageOps
 
-from . import db
+from . import db, video
 from .classify import Tagger, ZeroShotSceneTagger, get_tagger
 from .config import AtlasConfig
 from .embed import SigLipImageEncoder
@@ -109,6 +109,12 @@ def thumb_path_for(config: AtlasConfig, sha1: str) -> Path:
     """
 
     return config.thumbs_dir / sha1[:2] / f"{sha1}.jpg"
+
+
+def poster_path_for(config: AtlasConfig, sha1: str) -> Path:
+    """Content-addressed full-resolution video poster-frame path."""
+
+    return config.posters_dir / sha1[:2] / f"{sha1}.jpg"
 
 
 @dataclass
@@ -451,6 +457,89 @@ def index_file(
     return _commit_prepared(conn, config, prepared, place, stats)
 
 
+def index_video(
+    conn: sqlite3.Connection,
+    config: AtlasConfig,
+    path: Path,
+    *,
+    sha1: str,
+    geocoder: Geocoder | None = None,
+    stats: IndexStats | None = None,
+    extract_poster: Callable[[Path, Path], Path] | None = None,
+    probe_metadata: Callable[[Path], video.VideoMeta] | None = None,
+) -> int:
+    """Index one video as a poster-frame row and return its photo id.
+
+    Extracts a full-resolution poster frame (content-addressed by ``sha1``), reads
+    the capture date / GPS from the container, and stores a ``photos`` row with
+    ``is_video=1`` whose ``path`` is the video itself (so it streams for playback)
+    and whose thumbnail is built from the poster. No face/scene pass is run on
+    videos. ``extract_poster``/``probe_metadata`` are injectable so the suite can
+    exercise this offline without ffmpeg.
+    """
+
+    # Resolved at call time (not as defaults) so the suite can monkeypatch the
+    # ``video`` module to exercise the whole indexing walk without ffmpeg.
+    extract_poster = extract_poster or video.extract_poster
+    probe_metadata = probe_metadata or video.probe_metadata
+
+    path = Path(path)
+    poster = poster_path_for(config, sha1)
+    if not poster.exists():
+        extract_poster(path, poster)
+    meta = probe_metadata(path)
+
+    with Image.open(poster) as pimg:
+        poster_w, poster_h = pimg.size
+        thumb_path = thumb_path_for(config, sha1)
+        make_thumbnail_from_image(pimg, thumb_path, size=config.thumb_size)
+
+    # Capture time: container metadata → folder hint → filesystem mtime.
+    folder = extract_folder_meta(path)
+    taken_at, taken_source = meta.taken_at, "video"
+    if taken_at is None and folder.year is not None:
+        taken_at = datetime(folder.year, folder.month or 1, 1).isoformat(timespec="seconds")
+        taken_source = "folder"
+    if taken_at is None:
+        taken_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat(
+            timespec="seconds"
+        )
+        taken_source = "mtime"
+
+    place = geocoder.lookup(meta.lat, meta.lon) if geocoder is not None else None
+    record = {
+        "path": str(path.resolve()),
+        "filename": path.name,
+        "sha1": sha1,
+        "width": meta.width or poster_w,
+        "height": meta.height or poster_h,
+        "bytes": path.stat().st_size,
+        "taken_at": taken_at,
+        "taken_source": taken_source,
+        "camera_make": None,
+        "camera_model": None,
+        "lat": meta.lat,
+        "lon": meta.lon,
+        "place_city": place.city if place else None,
+        "place_country": place.country if place else None,
+        "place_label": place.label if place else None,
+        "folder_place": folder.place,
+        "scene_type": None,
+        "scene_scores": json.dumps({}),
+        "face_count": 0,
+        "thumb_path": str(thumb_path),
+        "indexed_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    photo_id = db.upsert_photo(conn, record)
+    # ``is_video`` lives outside PHOTO_COLUMNS (like ``favorite``) so a photo
+    # re-index never touches it; set it explicitly for the video row here.
+    conn.execute("UPDATE photos SET is_video=1 WHERE id=?", (photo_id,))
+    db.replace_faces(conn, photo_id, [])  # a re-index of a video clears any stale faces
+    if stats is not None:
+        stats.indexed += 1
+    return photo_id
+
+
 def iter_files(root: Path):
     """Yield every file under ``root`` in a deterministic order.
 
@@ -655,8 +744,6 @@ def index_path(
         else None
     )
     if backend_name not in ("none",) and backend is None:
-        import sys
-
         print(
             f"warning: face backend '{backend_name}' unavailable "
             "(missing models or OpenCV DNN support); indexing without faces.",
@@ -664,8 +751,6 @@ def index_path(
         )
     geocoder = Geocoder() if geocode else None
     if geocoder is not None and not geocoder.high_resolution:
-        import sys
-
         print(
             "warning: reverse geocoding is using the bundled ~120-city table, so "
             "city/country labels will be coarse and often wrong. Install the "
@@ -688,8 +773,40 @@ def index_path(
         # tree. Scoped to those dirs so e.g. the demo's photos under home still index.
         derived = tuple(
             d.resolve()
-            for d in (config.thumbs_dir, config.faces_dir, config.previews_dir, config.models_dir)
+            for d in (
+                config.thumbs_dir, config.faces_dir, config.previews_dir,
+                config.posters_dir, config.models_dir,
+            )
         )
+
+        # Videos are collected during the walk and ingested after the photo pass
+        # (poster-frame extraction is main-process/serial, not part of the worker
+        # fan-out). Skip them entirely when ffmpeg isn't available.
+        ffmpeg_ok = video.ffmpeg_available()
+        videos_to_index: list[tuple[str, str]] = []
+
+        def _dedup_ok(path: Path, resolved: Path) -> str | None:
+            """Path-skip + SHA-1 dedup bookkeeping shared by photos and videos.
+
+            Returns the file's SHA-1 when it should be ingested, or ``None`` when it
+            was skipped/duplicated/failed (counters are bumped as a side effect).
+            """
+
+            if not recompute and str(resolved) in existing:
+                stats.skipped += 1
+                return None
+            try:
+                sha1 = sha1_of(path)
+            except Exception as exc:
+                stats.failed += 1
+                if len(stats.errors) < _MAX_ERRORS:
+                    stats.errors.append(f"{path}: {type(exc).__name__}: {exc}")
+                return None
+            if not recompute and sha1 in seen_sha1:
+                stats.duplicates += 1
+                return None
+            seen_sha1.add(sha1)
+            return sha1
 
         def iter_tasks() -> Iterator[tuple[str, str]]:
             """Walk the tree, filtering + deduping, and yield ``(path, sha1)``.
@@ -697,6 +814,7 @@ def index_path(
             All bookkeeping the parallel path can't do safely from a worker —
             scan/skip/duplicate/video counting and SHA-1 dedup against the
             catalog — happens here in the main process before a file is handed off.
+            Videos are siphoned off into ``videos_to_index`` rather than yielded.
             """
 
             for path in iter_files(root):
@@ -705,26 +823,18 @@ def index_path(
                     continue
                 if is_video(path):
                     stats.videos += 1
+                    if not ffmpeg_ok:
+                        continue  # no ffmpeg: keep counting videos, don't ingest
+                    sha1 = _dedup_ok(path, resolved)
+                    if sha1 is not None:
+                        videos_to_index.append((str(path), sha1))
                     continue
                 if not is_supported(path):
                     continue
                 stats.scanned += 1
-                if not recompute and str(resolved) in existing:
-                    stats.skipped += 1
+                sha1 = _dedup_ok(path, resolved)
+                if sha1 is None:
                     continue
-                try:
-                    sha1 = sha1_of(path)
-                except Exception as exc:
-                    stats.failed += 1
-                    if len(stats.errors) < _MAX_ERRORS:
-                        stats.errors.append(f"{path}: {type(exc).__name__}: {exc}")
-                    continue
-                # A byte-identical copy already in the catalog (same photo in two
-                # folders, a re-export, etc.) is skipped rather than duplicated.
-                if not recompute and sha1 in seen_sha1:
-                    stats.duplicates += 1
-                    continue
-                seen_sha1.add(sha1)
                 yield str(path), sha1
 
         if workers is not None and workers > 1:
@@ -759,6 +869,27 @@ def index_path(
                 if progress is not None:
                     progress(path, stats)
             conn.commit()
+
+        # Video pass: poster-frame ingest happens here in the main process (after
+        # the photo fan-out), so it's the same code whether or not workers were used.
+        for path_str, sha1 in videos_to_index:
+            path = Path(path_str)
+            try:
+                index_video(conn, config, path, sha1=sha1, geocoder=geocoder, stats=stats)
+                conn.commit()
+            except Exception as exc:
+                stats.failed += 1
+                if len(stats.errors) < _MAX_ERRORS:
+                    stats.errors.append(f"{path}: {type(exc).__name__}: {exc}")
+            if progress is not None:
+                progress(path, stats)
+        if stats.videos and not ffmpeg_ok:
+            print(
+                f"note: found {stats.videos} video(s) but ffmpeg/ffprobe aren't on "
+                "PATH, so they were counted but not indexed. Install ffmpeg to get "
+                "poster-frame thumbnails + capture dates for videos.",
+                file=sys.stderr,
+            )
     finally:
         conn.close()
     return stats
@@ -788,8 +919,8 @@ def sweep_orphan_derivatives(config: AtlasConfig) -> int:
         conn.close()
 
     removed = 0
-    # Content-addressed thumbnails + preview/retina variants.
-    for cache_dir in (config.thumbs_dir, config.previews_dir):
+    # Content-addressed thumbnails, preview/retina variants and video posters.
+    for cache_dir in (config.thumbs_dir, config.previews_dir, config.posters_dir):
         if not cache_dir.exists():
             continue
         for f in cache_dir.rglob("*"):

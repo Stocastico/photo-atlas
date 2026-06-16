@@ -577,6 +577,7 @@ function photoCard(p, index) {
       sizes="220px"
       alt="${esc(p.filename)}" />
     ${p.face_count ? `<span class="badge">👤 ${p.face_count}</span>` : ""}
+    ${p.is_video ? `<span class="badge video-badge" aria-label="Video">▶</span>` : ""}
     <div class="meta">${place}<span>${(p.taken_at || "").slice(0, 4)}</span></div>`;
   card.setAttribute("role", "button");
   card.setAttribute("tabindex", "0");
@@ -825,6 +826,8 @@ function closeLightbox() {
   stopSlideshow();
   closeHelp();
   resetLbZoom();
+  const vid = $("#lb-video"); // stop playback (and audio) when closing
+  if (vid && vid.pause) vid.pause();
   // Restore focus to whatever opened the lightbox (the photo card).
   if (state.lastFocus && state.lastFocus.focus) state.lastFocus.focus();
   state.lastFocus = null;
@@ -853,8 +856,18 @@ async function lightboxStep(delta) {
 // ``reopen`` thunk is how a face edit refreshes the panel in place — it differs
 // for grid (index-based) vs map (id-based) entry points.
 function renderLightboxSide(p, id, reopen) {
-  $("#lb-img").src = `/api/preview/${id}`;
-  resetLbZoom(); // a fresh image starts un-zoomed
+  // Videos play inline (poster from the preview frame, stream from the original);
+  // photos use the reusable <img>. Swap the stage element so navigating between a
+  // video and a photo restores the right one.
+  const stage = $(".lb-img");
+  if (p.is_video) {
+    stage.innerHTML = `<video id="lb-video" controls preload="metadata" playsinline
+      poster="/api/preview/${id}" src="/api/image/${id}"></video>`;
+  } else {
+    if (!$("#lb-img")) stage.innerHTML = `<img id="lb-img" src="" alt="" />`;
+    $("#lb-img").src = `/api/preview/${id}`;
+    resetLbZoom(); // a fresh image starts un-zoomed
+  }
   const side = $("#lb-side");
   const kv = (k, v) => (v ? `<div class="kv"><span>${k}</span><span>${esc(v)}</span></div>` : "");
   side.innerHTML = `

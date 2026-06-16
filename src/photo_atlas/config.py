@@ -108,6 +108,12 @@ class AtlasConfig:
     def previews_dir(self) -> Path:
         return self.home / "previews"
 
+    @property
+    def posters_dir(self) -> Path:
+        """Full-resolution video poster frames, content-addressed by SHA-1."""
+
+        return self.home / "posters"
+
     def ensure_dirs(self) -> AtlasConfig:
         """Create the library directory tree if it does not exist yet."""
 
@@ -115,4 +121,5 @@ class AtlasConfig:
         self.thumbs_dir.mkdir(parents=True, exist_ok=True)
         self.faces_dir.mkdir(parents=True, exist_ok=True)
         self.previews_dir.mkdir(parents=True, exist_ok=True)
+        self.posters_dir.mkdir(parents=True, exist_ok=True)
         return self

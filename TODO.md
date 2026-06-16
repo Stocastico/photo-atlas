@@ -198,9 +198,20 @@ A full-app review at ~27k images + ~600 videos drove a round of hardening.
   empty space between them. Enrolled faces are loaded once per run (`_load_enrollment`)
   and shipped to the parallel workers as a picklable `Enrollment` (matrix + ids).
   Unit-tested incl. a "centroid would miss, k-NN finds" case.
-- [ ] **Video thumbnails/metadata.** Videos are only counted today; extracting a
-  poster frame + capture date (ffmpeg) would make them browsable on the timeline
-  and map.
+- [x] **Video thumbnails/metadata.** **Done:** videos are now ingested as
+  browsable rows. A new optional `video.py` (ffmpeg/ffprobe) pulls a full-resolution
+  **poster frame** + **capture date**/**GPS** from the container; `indexer.index_video`
+  stores a `photos` row with `is_video=1` whose `path` is the playable file and whose
+  thumbnail/preview come from the poster (content-addressed under `posters_dir`). The
+  indexing walk siphons videos off the worker fan-out and ingests them in the main
+  process after the photo pass; without ffmpeg they're counted but not indexed (the old
+  behaviour). `is_video` is kept out of `PHOTO_COLUMNS` (like `favorite`) so a re-index
+  never clears it. Media endpoints serve the poster's thumb/preview derivatives while
+  `/api/image` streams the raw video, so the grid shows a ▶ badge + poster and the
+  lightbox plays the clip inline (`<video>`). The pure `ffprobe`-JSON parsing
+  (`_parse_probe`/`_parse_iso6709`/`_parse_creation_time`) and the indexing path (via an
+  injected stub poster + probe) are tested offline in `tests/test_video.py`, with a live
+  ffmpeg round-trip gated on the binary being installed.
 
 ## Deep review (2026-06-16): bugs, scale & bold ideas
 

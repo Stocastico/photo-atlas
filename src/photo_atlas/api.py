@@ -381,8 +381,25 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         return {"ok": True, "favorite": payload.favorite}
 
     # -- media ------------------------------------------------------------
+    def _still_source(row) -> Path | None:
+        """The still-image file to derive thumb/preview variants from.
+
+        For a video that's the content-addressed **poster frame** (its ``path`` is
+        the un-decodable video itself); for a photo it's the original. Returns
+        ``None`` when that file is missing.
+        """
+
+        if row["is_video"]:
+            sha1 = row["sha1"]
+            poster = config.posters_dir / sha1[:2] / f"{sha1}.jpg" if sha1 else None
+            return poster if (poster and poster.exists()) else None
+        src = Path(row["path"]) if row["path"] else None
+        return src if (src and src.exists()) else None
+
     @app.get("/api/image/{photo_id}")
     def api_image(photo_id: int, conn: sqlite3.Connection = Depends(get_conn)):
+        # Serves the raw original — for a video that's the playable file itself, so
+        # the lightbox can stream it through a <video> element.
         row = conn.execute("SELECT path FROM photos WHERE id=?", (photo_id,)).fetchone()
         if row is None or not Path(row["path"]).exists():
             raise HTTPException(404, "image not found")
@@ -390,10 +407,18 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
 
     @app.get("/api/preview/{photo_id}")
     def api_preview(photo_id: int, conn: sqlite3.Connection = Depends(get_conn)):
-        row = conn.execute("SELECT path, sha1 FROM photos WHERE id=?", (photo_id,)).fetchone()
-        if row is None or not row["path"] or not Path(row["path"]).exists():
+        row = conn.execute(
+            "SELECT path, sha1, is_video, thumb_path FROM photos WHERE id=?", (photo_id,)
+        ).fetchone()
+        if row is None:
             raise HTTPException(404, "image not found")
-        src = Path(row["path"])
+        src = _still_source(row)
+        if src is None:
+            # A video without a poster yet (e.g. a pre-ffmpeg row) falls back to its
+            # stored thumbnail so the lightbox still shows something.
+            if row["thumb_path"] and Path(row["thumb_path"]).exists():
+                return FileResponse(row["thumb_path"])
+            raise HTTPException(404, "image not found")
         sha1 = row["sha1"] or metadata.sha1_of(src)
         try:
             dest = metadata.cached_resized(
@@ -401,7 +426,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             )
         except Exception:
             # Any decode/encode failure (corrupt or exotic format) falls back to
-            # streaming the original so the lightbox still works.
+            # streaming the still source so the lightbox still works.
             return FileResponse(src)
         return FileResponse(dest)
 
@@ -412,24 +437,26 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         conn: sqlite3.Connection = Depends(get_conn),
     ):
         row = conn.execute(
-            "SELECT thumb_path, path, sha1 FROM photos WHERE id=?", (photo_id,)
+            "SELECT thumb_path, path, sha1, is_video FROM photos WHERE id=?", (photo_id,)
         ).fetchone()
         if row is None:
             raise HTTPException(404, "photo not found")
         # A non-default size (e.g. the retina 2x ``srcset`` variant) is generated
-        # and cached on demand from the original.
-        if size and size != config.thumb_size and row["path"] and Path(row["path"]).exists():
-            src = Path(row["path"])
-            sha1 = row["sha1"] or metadata.sha1_of(src)
-            try:
-                return FileResponse(metadata.cached_resized(config.thumbs_dir, src, sha1, size))
-            except Exception:
-                pass  # fall back to the pre-generated default thumb
+        # and cached on demand from the still source (the poster, for a video).
+        if size and size != config.thumb_size:
+            src = _still_source(row)
+            if src is not None:
+                sha1 = row["sha1"] or metadata.sha1_of(src)
+                try:
+                    return FileResponse(metadata.cached_resized(config.thumbs_dir, src, sha1, size))
+                except Exception:
+                    pass  # fall back to the pre-generated default thumb
         thumb = row["thumb_path"]
         if thumb and Path(thumb).exists():
             return FileResponse(thumb)
-        if row["path"] and Path(row["path"]).exists():
-            return FileResponse(row["path"])
+        src = _still_source(row)
+        if src is not None:
+            return FileResponse(src)
         raise HTTPException(404, "thumbnail not found")
 
     @app.get("/api/face/{face_id}")

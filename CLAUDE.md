@@ -61,6 +61,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 | `db.py` | SQLite schema, additive migrations (`_migrate`), embedding (de)serialisation. `PHOTO_COLUMNS` is the single source of truth for writable photo columns |
 | `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Also `embed_library`, `retag_scenes`, `prune_library`, `cluster_library` |
 | `metadata.py` | EXIF/dimensions/thumbnails, `cached_resized` derivatives (atomic temp+replace), HEIF opener |
+| `video.py` | optional ffmpeg/ffprobe poster-frame + capture-date/GPS extraction for videos (`index_video`); pure `_parse_probe` is the offline-testable seam |
 | `faces.py` | YuNet detect + SFace embed backends, DBSCAN clustering, k-NN recognition (`Enrollment`) |
 | `classify.py` | scene tagging: SigLIP-only `ZeroShotSceneTagger` (shares the vision encoder with embeddings) |
 | `embed.py` | `SigLipImageEncoder` / `SigLipTextEncoder` for semantic search |
@@ -81,6 +82,12 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 - **Photo embeddings live in `photos.embedding`/`embed_dim` but are deliberately
   NOT in `PHOTO_COLUMNS`** — they'd bloat the grid/list payload. They're written
   separately (`db.set_photo_embedding`) and loaded by `SemanticIndex`.
+- **`favorite` and `is_video` are also kept out of `PHOTO_COLUMNS`** so a re-index
+  (an `ON CONFLICT DO UPDATE` over only those columns) never resets them; both are
+  appended to `_LIST_COLUMNS` by hand and written via their own UPDATEs. Videos are
+  ingested by `index_video` (poster frame stored content-addressed under
+  `posters_dir`; `path` stays the playable file so `/api/image` streams it), gated on
+  `video.ffmpeg_available()` — no ffmpeg means videos are counted but not indexed.
 - **Facet filters accept a scalar or a list** (OR within a facet, AND across facets).
   Semantic search is a *ranking* layered on top, via the `text` query param.
 - **Frontend has no test runner**; pure JS helpers (grid windowing, URL state) are

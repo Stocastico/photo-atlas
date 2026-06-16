@@ -41,7 +41,12 @@ from . import db
 # (so a re-index can't reset a user's star), but the grid needs it per card to
 # render the star state.
 _LIST_COLUMNS = ", ".join(
-    ["p.id", *(f"p.{c}" for c in db.PHOTO_COLUMNS if c != "scene_scores"), "p.favorite"]
+    [
+        "p.id",
+        *(f"p.{c}" for c in db.PHOTO_COLUMNS if c != "scene_scores"),
+        "p.favorite",
+        "p.is_video",
+    ]
 )
 
 
