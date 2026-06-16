@@ -8,6 +8,22 @@ from photo_atlas import demo, indexer
 from photo_atlas.config import AtlasConfig
 
 
+@pytest.fixture(autouse=True)
+def _offline_scene_tagger(monkeypatch):
+    """Keep the suite offline: never build/download the real SigLIP scene tagger.
+
+    Scene tagging is SigLIP-only now, so any code path that indexes would otherwise
+    download the vision model. Patch the symbol the indexer resolves for every
+    in-process path (serial index, CLI index, retag). The parallel (spawn) path
+    can't be monkeypatched across processes, so those tests pass an explicit
+    picklable ``StubTagger`` to ``index_path`` instead.
+    """
+
+    from scene_stub import StubTagger
+
+    monkeypatch.setattr(indexer, "get_tagger", lambda config, **kw: StubTagger())
+
+
 @pytest.fixture
 def config(tmp_path):
     return AtlasConfig(home=tmp_path / "lib").ensure_dirs()

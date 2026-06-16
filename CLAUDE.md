@@ -17,8 +17,7 @@ Uses [uv](https://docs.astral.sh/uv/). The `dev` dependency group (pytest, httpx
 ruff, mypy) is installed by default.
 
 ```bash
-uv sync                       # core app + dev tooling into .venv
-uv sync --extra scene         # SigLIP zero-shot scene tagging + semantic search
+uv sync                       # core app + dev tooling into .venv (incl. SigLIP/ONNX)
 uv sync --extra geo|heic|dlib # other optional features
 uv run pytest -q              # full test suite (coverage gate: --cov-fail-under=80)
 uv run ruff check src tests   # lint (must pass)
@@ -35,12 +34,17 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 
 ## Golden rules
 
-- **Tests must stay offline and green without any extra.** No network, no model
-  downloads in the default suite. For SigLIP/ONNX code, either test the pure logic
-  with hand-built vectors / **stub encoders**, or gate a live round-trip behind an
-  env var (e.g. `PHOTO_ATLAS_SCENE_MODEL`) with `pytest.mark.skipif`. The optional
-  ML libs (`onnxruntime`, `tokenizers`) are imported lazily inside functions/`__init__`,
-  never at module top level, so importing a module never requires an extra.
+- **Tests must stay offline and green.** No network, no model downloads in the
+  default suite. For SigLIP/ONNX code, either test the pure logic with hand-built
+  vectors / **stub encoders**, or gate a live round-trip behind an env var (e.g.
+  `PHOTO_ATLAS_SCENE_MODEL`) with `pytest.mark.skipif`. Scene tagging is now
+  SigLIP-only, so any path that *indexes* must inject the picklable
+  `tests/scene_stub.StubTagger` (an autouse conftest fixture patches
+  `indexer.get_tagger` for in-process paths; the parallel/spawn path takes
+  `index_path(..., tagger=StubTagger())` since a monkeypatch can't cross processes).
+  `onnxruntime`/`tokenizers` are core deps but imported lazily inside
+  functions/`__init__`, never at module top level, so importing a module never
+  triggers a model download.
 - **Coverage gate is 80%** (enforced via pyproject `addopts`). New code needs tests.
 - **ruff + mypy clean.** ruff selects `E,F,I,B,UP`, line-length 100; `B008` is
   ignored (FastAPI's `Depends()`/`Query()` default idiom). mypy checks `src/` only.
@@ -58,7 +62,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 | `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Also `embed_library`, `retag_scenes`, `prune_library`, `cluster_library` |
 | `metadata.py` | EXIF/dimensions/thumbnails, `cached_resized` derivatives (atomic temp+replace), HEIF opener |
 | `faces.py` | YuNet detect + SFace embed backends, DBSCAN clustering, k-NN recognition (`Enrollment`) |
-| `classify.py` | scene tagging: heuristic default + `ZeroShotSceneTagger` (shares the SigLIP vision encoder) |
+| `classify.py` | scene tagging: SigLIP-only `ZeroShotSceneTagger` (shares the vision encoder with embeddings) |
 | `embed.py` | `SigLipImageEncoder` / `SigLipTextEncoder` for semantic search |
 | `search.py` | filter dict → SQL (`_where`), facets, plus `SemanticIndex` + `semantic_search` (cosine ranking ANDed with filters) |
 | `planner.py` | model-free decomposition of NL queries → person/people filters + residual visual text |

@@ -352,13 +352,18 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
 
 ## New (2026-06-16)
 
-- [ ] **Drop the heuristic scene tagger — SigLIP only.** The zero-shot
-  `ZeroShotSceneTagger` is the better tagger; the heuristic only survives as the
-  zero-dep default/fallback. Make SigLIP the one scene path. Caveat to resolve first:
-  the default test suite must stay offline (no model download), so the heuristic
-  currently doubles as the no-model fallback — decide whether "SigLIP only" means
-  removing the heuristic entirely (and stubbing/skip-gating the scene tests) or
-  demoting it to an internal offline-only fallback that's no longer user-selectable.
+- [x] **Drop the heuristic scene tagger — SigLIP only.** **Done** (chosen option:
+  remove the heuristic + make SigLIP a core dependency). `SceneTagger`,
+  `config.scene_backend` and the `--scene` CLI flags are gone; `classify.get_tagger`
+  always returns the `ZeroShotSceneTagger`, and `onnxruntime`/`tokenizers` moved from
+  the `scene` extra into core `dependencies` (the extra is removed). The SigLIP
+  vision model downloads on demand for every index (prefetched once before the
+  worker fan-out). Offline tests are preserved via dependency injection: a picklable
+  `tests/scene_stub.StubTagger`, wired by an autouse conftest fixture that patches
+  `indexer.get_tagger` for in-process paths and passed explicitly via
+  `index_path(..., tagger=...)` for the parallel/spawn path (a monkeypatch can't
+  cross processes). Docs (README/CLAUDE.md) updated; full suite + ruff + mypy green
+  at 94% coverage.
 - [ ] **Investigate newer / better models everywhere a deep-learning net is used.**
   Survey the face stack (YuNet detect, SFace embed) and the SigLIP vision/text towers
   for stronger, current replacements. Constraints: **keep ONNX Runtime** and **do not

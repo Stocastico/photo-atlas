@@ -226,30 +226,21 @@ def _build_encoders(
 ) -> tuple[SigLipImageEncoder | None, Tagger]:
     """Return ``(image_encoder, tagger)`` for one index/embed run.
 
-    ``image_encoder`` is non-``None`` only when semantic embeddings were requested.
-    When the scene tagger is the SigLIP zero-shot one, its vision encoder is reused
-    for embeddings — one ONNX session, one inference per photo, both jobs done. With
-    the heuristic tagger a standalone encoder is loaded (and, if that fails, semantic
-    embeddings are skipped with a warning rather than aborting the whole index).
+    The SigLIP zero-shot tagger already holds the vision encoder, so when semantic
+    embeddings are requested it's reused for them — one ONNX session, one inference
+    per photo, both jobs done. ``image_encoder`` is ``None`` when ``embed`` is off.
     """
 
     tagger = get_tagger(config)
     image_encoder: SigLipImageEncoder | None = None
     if embed:
-        if isinstance(tagger, ZeroShotSceneTagger):
-            image_encoder = tagger.encoder
-        else:
-            try:
-                image_encoder = SigLipImageEncoder.from_config(config)
-            except Exception as exc:  # noqa: BLE001 - missing extra/model -> skip embeddings
-                import sys  # noqa: PLC0415
-
-                print(
-                    "warning: semantic-search embeddings unavailable "
-                    f"({type(exc).__name__}: {exc}); install the 'scene' extra "
-                    "(`uv sync --extra scene`). Indexing without embeddings.",
-                    file=sys.stderr,
-                )
+        # The tagger is always the zero-shot one in production; a test may inject a
+        # stub tagger without an encoder, in which case load a standalone one.
+        image_encoder = (
+            tagger.encoder
+            if isinstance(tagger, ZeroShotSceneTagger)
+            else SigLipImageEncoder.from_config(config)
+        )
     return image_encoder, tagger
 
 
@@ -500,10 +491,18 @@ def _worker_init(
     config: AtlasConfig,
     enrollment: Enrollment | None,
     embed: bool,
+    tagger: Tagger | None = None,
 ) -> None:
-    """Initialise a pool worker with its own backend / tagger (called once)."""
+    """Initialise a pool worker with its own backend / tagger (called once).
 
-    image_encoder, tagger = _build_encoders(config, embed=embed)
+    ``tagger`` may be an injected (picklable) tagger — used by tests to keep the
+    suite offline; production passes ``None`` and the worker builds the SigLIP one.
+    """
+
+    if tagger is None:
+        image_encoder, tagger = _build_encoders(config, embed=embed)
+    else:
+        image_encoder = None
     _WORKER_STATE["backend"] = (
         get_backend(backend_name, model_dir=model_dir) if backend_name != "none" else None
     )
@@ -541,6 +540,7 @@ def _index_parallel(
     workers: int,
     embed: bool,
     progress: Callable[[Path, IndexStats], None] | None,
+    tagger: Tagger | None = None,
 ) -> None:
     """Fan the per-file decode/detect/thumbnail work out over a process pool.
 
@@ -563,8 +563,10 @@ def _index_parallel(
         except Exception:  # pragma: no cover - worker surfaces a clearer error
             pass
     # Likewise pre-fetch the SigLIP vision model so N workers don't race to
-    # download it (needed for the zero-shot scene tagger and/or embeddings).
-    if embed or config.scene_backend in ("zeroshot", "auto"):
+    # download it — it's needed for every index run now (the only scene tagger is
+    # zero-shot) and additionally for embeddings. Skipped when a tagger is injected
+    # (tests), since the worker then never builds the real one.
+    if tagger is None:
         try:
             from .models import ensure_scene_model
 
@@ -580,7 +582,7 @@ def _index_parallel(
     with ProcessPoolExecutor(
         max_workers=workers, mp_context=ctx,
         initializer=_worker_init,
-        initargs=(backend_name, config.models_dir, config, enrollment, embed),
+        initargs=(backend_name, config.models_dir, config, enrollment, embed, tagger),
     ) as pool:
         inflight: dict = {}
 
@@ -630,6 +632,7 @@ def index_path(
     workers: int | None = None,
     embed: bool = False,
     progress: Callable[[Path, IndexStats], None] | None = None,
+    tagger: Tagger | None = None,
 ) -> IndexStats:
     """Index every supported image under ``root`` into the library.
 
@@ -637,6 +640,11 @@ def index_path(
     larger value decodes and detects across that many worker processes (DB writes
     still funnel through the single main connection). ``embed`` additionally stores
     a SigLIP image embedding per photo for natural-language semantic search.
+
+    ``tagger`` injects a scene tagger instead of building the SigLIP one; it's the
+    dependency-injection seam the offline test suite uses (a picklable stub tagger),
+    and it's passed through to the worker processes unchanged. Production leaves it
+    ``None`` and every path builds the zero-shot tagger.
     """
 
     config.ensure_dirs()
@@ -726,9 +734,13 @@ def index_path(
                 conn, config, iter_tasks(),
                 backend_name=backend_name, enrollment=enrollment, geocoder=geocoder,
                 stats=stats, workers=workers, embed=embed, progress=progress,
+                tagger=tagger,
             )
         else:
-            image_encoder, tagger = _build_encoders(config, embed=embed)
+            if tagger is None:
+                image_encoder, tagger = _build_encoders(config, embed=embed)
+            else:
+                image_encoder = None
             for path_str, sha1 in iter_tasks():
                 path = Path(path_str)
                 try:

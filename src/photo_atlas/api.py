@@ -234,8 +234,9 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
                 if encoder is None:
                     raise HTTPException(
                         501,
-                        "Semantic search needs the 'scene' extra "
-                        "(`uv sync --extra scene`) for the SigLIP text encoder.",
+                        "Semantic search could not load the SigLIP text encoder — "
+                        "check the model can be downloaded (or set "
+                        "PHOTO_ATLAS_TEXT_MODEL to a local file).",
                     )
                 rows, total = search.semantic_search(
                     conn, merged, encoder.embed_text(plan.text), index,

@@ -934,12 +934,15 @@ dependencies = [
     { name = "joblib" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "onnxruntime", version = "1.24.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "onnxruntime", version = "1.27.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "opencv-python-headless", version = "4.11.0.86", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
     { name = "opencv-python-headless", version = "4.13.0.92", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
     { name = "pillow" },
     { name = "pydantic" },
     { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scikit-learn", version = "1.9.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "tokenizers" },
     { name = "uvicorn" },
 ]
 
@@ -952,11 +955,6 @@ geo = [
 ]
 heic = [
     { name = "pillow-heif" },
-]
-scene = [
-    { name = "onnxruntime", version = "1.24.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "onnxruntime", version = "1.27.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "tokenizers" },
 ]
 
 [package.dev-dependencies]
@@ -974,17 +972,17 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.111" },
     { name = "joblib", specifier = ">=1.4" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "onnxruntime", marker = "extra == 'scene'", specifier = ">=1.17" },
+    { name = "onnxruntime", specifier = ">=1.17" },
     { name = "opencv-python-headless", specifier = ">=4.10" },
     { name = "pillow", specifier = ">=10.3" },
     { name = "pillow-heif", marker = "extra == 'heic'", specifier = ">=0.16" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "reverse-geocoder", marker = "extra == 'geo'", specifier = ">=1.5" },
     { name = "scikit-learn", specifier = ">=1.5" },
-    { name = "tokenizers", marker = "extra == 'scene'", specifier = ">=0.19" },
+    { name = "tokenizers", specifier = ">=0.19" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["dlib", "geo", "heic", "scene"]
+provides-extras = ["dlib", "geo", "heic"]
 
 [package.metadata.requires-dev]
 dev = [

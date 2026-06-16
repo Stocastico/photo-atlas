@@ -13,9 +13,9 @@ import io
 
 import numpy as np
 from PIL import Image
+from scene_stub import StubTagger
 
 from photo_atlas import indexer
-from photo_atlas.classify import SceneTagger
 from photo_atlas.config import AtlasConfig
 from photo_atlas.faces import FaceObservation
 
@@ -58,7 +58,7 @@ def test_pipeline_uses_upright_image_for_faces_and_dimensions(tmp_path):
     backend = _RecordingBackend(bbox=(2, 10, 30, 70))
 
     prepared = indexer._prepare_photo(
-        config, src, backend=backend, tagger=SceneTagger(),
+        config, src, backend=backend, tagger=StubTagger(),
         enrollment=None, sha1="0" * 40,
     )
 
@@ -80,7 +80,7 @@ def test_image_without_orientation_is_unchanged(tmp_path):
     config = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
     backend = _RecordingBackend(bbox=(0, 0, 20, 20))
     prepared = indexer._prepare_photo(
-        config, src, backend=backend, tagger=SceneTagger(),
+        config, src, backend=backend, tagger=StubTagger(),
         enrollment=None, sha1="1" * 40,
     )
     assert (prepared.width, prepared.height) == (80, 60)

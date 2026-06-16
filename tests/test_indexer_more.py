@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from scene_stub import StubTagger
+
 from photo_atlas import db, indexer
 from photo_atlas.config import AtlasConfig
 
@@ -162,7 +164,6 @@ def test_index_file_decodes_image_once(tmp_path, monkeypatch):
     import PIL.Image as PILImage
 
     from photo_atlas import demo, faces
-    from photo_atlas.classify import SceneTagger
 
     [photo] = demo.generate(tmp_path / "p", count=1, seed=3)
     cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
@@ -179,7 +180,7 @@ def test_index_file_decodes_image_once(tmp_path, monkeypatch):
     try:
         indexer.index_file(
             conn, cfg, photo,
-            backend=faces.SyntheticFaceBackend(), geocoder=None, tagger=SceneTagger(),
+            backend=faces.SyntheticFaceBackend(), geocoder=None, tagger=StubTagger(),
         )
     finally:
         conn.close()
@@ -220,7 +221,8 @@ def test_parallel_indexing_matches_serial(tmp_path):
 
     s_stats = indexer.index_path(serial, photos, backend_name="synthetic", geocode=False)
     p_stats = indexer.index_path(
-        parallel, photos, backend_name="synthetic", geocode=False, workers=2
+        parallel, photos, backend_name="synthetic", geocode=False, workers=2,
+        tagger=StubTagger(),
     )
 
     assert p_stats.indexed == s_stats.indexed
@@ -274,7 +276,7 @@ def test_parallel_indexing_progress_and_dedup(tmp_path):
 
     stats = indexer.index_path(
         cfg, photos, backend_name="synthetic", geocode=False, workers=2,
-        progress=progress,
+        progress=progress, tagger=StubTagger(),
     )
 
     assert stats.indexed == 4  # 4 originals; the copy is deduped, broken fails

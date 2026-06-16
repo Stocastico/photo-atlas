@@ -1,27 +1,21 @@
 """Scene tagging.
 
 A photo library benefits from a coarse "what is this a picture of" tag. Photo
-Atlas offers two taggers behind one ``tag(path, face_count) -> (label, scores)``
-contract, selected by :func:`get_tagger`:
+Atlas tags scenes with a single :class:`ZeroShotSceneTagger`: it runs a small
+**SigLIP** vision encoder (ONNX, via ``onnxruntime``) and compares the image
+embedding against pre-computed *text* embeddings for each label. SigLIP is a
+modern CLIP successor that beats CLIP at zero-shot for its size; we run only its
+vision encoder at index time and ship the label (text) embeddings as a tiny
+bundled matrix (see ``scripts/build_scene_embeddings.py``), so there is no
+PyTorch, no text encoder and no tokenizer in the runtime — just the ONNX vision
+model (downloaded on demand like the face models) plus NumPy.
 
-* :class:`SceneTagger` -- the dependency-free default. Derives a tag from cheap
-  colour / brightness statistics plus the detected face count. Robust to run
-  anywhere, but it genuinely mislabels real photos (sunsets read as ``food``,
-  snow as ``document``).
-* :class:`ZeroShotSceneTagger` -- an opt-in, far more accurate tagger that runs
-  a small **SigLIP** vision encoder (ONNX, via ``onnxruntime``) and compares the
-  image embedding against pre-computed *text* embeddings for each label. SigLIP
-  is a modern CLIP successor that beats CLIP at zero-shot for its size; we run
-  only its vision encoder at index time and ship the label (text) embeddings as
-  a tiny bundled matrix (see ``scripts/build_scene_embeddings.py``), so there is
-  no PyTorch, no text encoder and no tokenizer in the runtime -- just the ONNX
-  vision model (downloaded on demand like the face models) plus NumPy.
+The tagger satisfies a ``tag(path, face_count) -> (label, scores)`` contract that
+the indexer depends on; tests drive it with hand-built vectors / stub encoders so
+the default suite needs no model download.
 
 Categories: ``people``, ``animals``, ``landscape``, ``plants``, ``food``,
-``vehicle``, ``building``, ``document``, ``screenshot``, ``other``. (The
-heuristic tagger only ever emits the original coarse five — ``people``,
-``landscape``, ``food``, ``document``, ``other`` — while the zero-shot tagger
-uses the full set.)
+``vehicle``, ``building``, ``document``, ``screenshot``, ``other``.
 """
 
 from __future__ import annotations
@@ -55,17 +49,8 @@ SCENE_LABELS = [
 OTHER_LABEL = "other"
 
 
-def _softmax(scores: dict[str, float]) -> dict[str, float]:
-    keys = list(scores)
-    arr = np.array([scores[k] for k in keys], dtype=np.float64)
-    arr = arr - arr.max()
-    exp = np.exp(arr)
-    norm = exp / exp.sum()
-    return {k: float(v) for k, v in zip(keys, norm, strict=True)}
-
-
 class Tagger(Protocol):
-    """The contract both taggers satisfy (and that the indexer depends on)."""
+    """The contract the tagger satisfies (and that the indexer depends on)."""
 
     def tag(self, path: Path, face_count: int = 0) -> tuple[str, dict[str, float]]:
         ...
@@ -75,51 +60,6 @@ class Tagger(Protocol):
     ) -> tuple[str, dict[str, float]]:
         ...
 
-
-class SceneTagger:
-    """Heuristic colour/brightness tagger -- the dependency-free default."""
-
-    def tag(self, path: Path, face_count: int = 0) -> tuple[str, dict[str, float]]:
-        with Image.open(path) as img:
-            return self.tag_image(img, face_count)
-
-    def tag_image(
-        self, img: Image.Image, face_count: int = 0
-    ) -> tuple[str, dict[str, float]]:
-        """Tag an already-open image (the indexer's decode-once path)."""
-
-        small = img.convert("RGB").resize((64, 64))
-        arr = np.asarray(small, dtype=np.float32) / 255.0
-        r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
-
-        mx = arr.max(axis=2)
-        mn = arr.min(axis=2)
-        saturation = float(np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-6), 0).mean())
-
-        top = arr[:21]  # upper third ~ sky
-        sky = float(((top[..., 2] > top[..., 0]) & (top.mean(axis=2) > 0.45)).mean())
-        green = float(((g > r) & (g > b)).mean())
-        warm = float(((r > 0.45) & (r > b) & (g > b) & (saturation > 0.2)).mean())
-        near_white = float((arr.mean(axis=2) > 0.8).mean())
-        low_sat = 1.0 - saturation
-
-        raw = {
-            "people": 0.2 + 2.5 * min(face_count, 3),
-            "landscape": 0.6 + 2.0 * sky + 1.5 * green,
-            "food": 0.4 + 3.0 * warm,
-            "document": 0.2 + 2.5 * near_white * low_sat,
-            "other": 0.9,
-        }
-        # A bright, evenly lit, low-saturation frame is most likely a scan/doc.
-        if near_white > 0.5 and saturation < 0.15:
-            raw["document"] += 1.5
-        # Faces dominate: a portrait is "people" even outdoors.
-        if face_count >= 1:
-            raw["people"] += 1.0
-
-        scores = _softmax(raw)
-        label = max(scores, key=lambda k: scores[k])
-        return label, scores
 
 
 # -- zero-shot (SigLIP) tagger --------------------------------------------
@@ -257,28 +197,15 @@ def scene_labels_path() -> Path:
     return Path(__file__).resolve().parent / "data" / "scene_labels.npz"
 
 
-def get_tagger(config: AtlasConfig) -> Tagger:
-    """Return the configured scene tagger.
+def get_tagger(
+    config: AtlasConfig, *, encoder: SigLipImageEncoder | None = None
+) -> Tagger:
+    """Return the SigLIP zero-shot scene tagger (the only tagger).
 
-    ``config.scene_backend`` selects: ``heuristic`` (default), ``zeroshot``
-    (SigLIP; warns and falls back to the heuristic if ``onnxruntime`` or the
-    model/labels are unavailable) or ``auto`` (use the zero-shot tagger when it
-    loads cleanly, else fall back silently).
+    Its vision model downloads on demand (cached under ``~/.photo_atlas/models``,
+    overridable via ``PHOTO_ATLAS_SCENE_MODEL``). ``encoder`` injects an
+    already-loaded vision encoder so scene tagging and semantic-search embedding
+    can share a single ONNX session — one vision inference per photo for both.
     """
 
-    backend = getattr(config, "scene_backend", "heuristic")
-    if backend in ("zeroshot", "auto"):
-        try:
-            return ZeroShotSceneTagger.from_config(config)
-        except Exception as exc:  # noqa: BLE001 - any failure means fall back
-            if backend == "zeroshot":
-                import sys  # noqa: PLC0415
-
-                print(
-                    "warning: zero-shot scene tagging unavailable "
-                    f"({type(exc).__name__}: {exc}); install the 'scene' extra "
-                    "(`uv sync --extra scene`) and ensure the model downloads. "
-                    "Falling back to the heuristic tagger.",
-                    file=sys.stderr,
-                )
-    return SceneTagger()
+    return ZeroShotSceneTagger.from_config(config, encoder=encoder)

@@ -21,16 +21,16 @@ recognised automatically once a person has been named.
 - **Name people once** — unrecognised faces are grouped into clusters; name a
   cluster and every matching photo becomes filterable. Future imports are
   auto-recognised against the people you've named.
-- **Filter by anything** — person, scene type (heuristic: `people` / `landscape`
-  / `food` / `document` / `other`; or zero-shot's richer set incl. `animals` /
-  `plants` / `vehicle` / `building` / `screenshot`), country, city, place
-  (trip/folder), year, camera, or filename — combined.
+- **Filter by anything** — person, scene type (`people` / `animals` /
+  `landscape` / `plants` / `food` / `vehicle` / `building` / `document` /
+  `screenshot` / `other`), country, city, place (trip/folder), year, camera, or
+  filename — combined.
 - **Natural-language semantic search** — describe a photo in words ("kids on the
   beach at sunset", "my red car") and rank the library by visual similarity — no
   tags, no folders. Each photo's [SigLIP](https://huggingface.co/Xenova/siglip-base-patch16-224)
   image embedding is stored at index time and a free-text query is embedded into
   the same space at search time; the ✨ **Smart** toggle in the search bar switches
-  it on, and it ANDs with every other filter. Opt-in (needs the `scene` extra).
+  it on, and it ANDs with every other filter.
 - **Offline reverse geocoding** — GPS EXIF → city + country using a bundled
   dataset (no network). Install `reverse_geocoder` for ~150k-city resolution.
 - **Rich metadata** — capture date (EXIF, with file-mtime fallback), camera,
@@ -58,7 +58,6 @@ uv sync                     # core app + test tooling into .venv (dev group)
 uv sync --extra geo         # + high-resolution offline reverse geocoding
 uv sync --extra heic        # + HEIC/HEIF decoding (default iPhone format)
 uv sync --extra dlib        # + face_recognition (dlib) backend (needs CMake/C++)
-uv sync --extra scene       # + SigLIP zero-shot scene tagging *and* semantic search
 uv run photo-atlas --help   # run the CLI inside the managed environment
 uv run pytest               # run the test suite
 ```
@@ -73,26 +72,23 @@ The YuNet + SFace ONNX weights (~38 MB) are downloaded on first use to
 
 ### Scene tagging
 
-By default scenes are tagged by a fast, dependency-free colour/brightness
-heuristic — handy everywhere, but it genuinely mislabels real photos (sunsets
-read as `food`, snow as `document`). For real accuracy, opt into the **zero-shot**
-tagger, which runs a small **SigLIP** vision encoder (a modern CLIP successor
-that beats CLIP at zero-shot for its size):
+Scenes are tagged **zero-shot** by a small **SigLIP** vision encoder (a modern
+CLIP successor that beats CLIP at zero-shot for its size) — no training, no
+PyTorch. It runs on every index automatically:
 
 ```bash
-uv sync --extra scene
-photo-atlas index ~/Pictures --scene zeroshot   # or --scene auto
+photo-atlas index ~/Pictures
 ```
 
-It also tags a richer set of classes than the heuristic — `people`, `animals`,
-`landscape`, `plants`, `food`, `vehicle`, `building`, `document`, `screenshot`
-(plus `other`) — which simply show up as extra options in the scene filter.
+It tags the classes `people`, `animals`, `landscape`, `plants`, `food`,
+`vehicle`, `building`, `document`, `screenshot` (plus the catch-all `other`),
+which show up as options in the scene filter.
 
-Switching taggers (or tuning them) doesn't need a full re-index — scene tags are
-independent of faces/thumbnails, so re-tag in place:
+Tuning the tagger doesn't need a full re-index — scene tags are independent of
+faces/thumbnails, so re-tag in place:
 
 ```bash
-photo-atlas retag-scenes --scene zeroshot   # recompute just the scene column
+photo-atlas retag-scenes   # recompute just the scene column
 ```
 
 Only SigLIP's *vision* tower runs at index time (a ~95 MB quantised ONNX,
@@ -110,7 +106,6 @@ The same SigLIP space powers **natural-language search**: store each photo's
 image embedding, then embed a free-text query and rank by cosine similarity.
 
 ```bash
-uv sync --extra scene
 photo-atlas index ~/Pictures --embed     # store embeddings as you index
 # already indexed? backfill without re-detecting faces (decodes once):
 photo-atlas embed
@@ -136,10 +131,9 @@ Stefano is the one eating.
 
 Unlike scene tagging (whose label text is pre-baked), an arbitrary query can't be
 precomputed, so semantic search additionally downloads SigLIP's *text* tower and
-tokenizer on first use (still **no PyTorch**; needs the `scene` extra, which now
-also pulls in `tokenizers`). Image and text embeddings come from the same model,
-so they're directly comparable. Storing one ~768-d float32 vector per photo adds
-~3 KB/photo to the catalog.
+tokenizer on first use (still **no PyTorch**). Image and text embeddings come from
+the same model, so they're directly comparable. Storing one ~768-d float32 vector
+per photo adds ~3 KB/photo to the catalog.
 
 ## Try it in 30 seconds
 
@@ -194,7 +188,7 @@ indexer ─┬─ metadata.py    EXIF date / camera / GPS  + thumbnails
          ├─ folder_meta.py year / month / place mined from folder names
          ├─ geocode.py     GPS → city, country (offline nearest-city)
          ├─ faces.py      YuNet detect → SFace embed → DBSCAN cluster
-         ├─ classify.py   scene tag (colour heuristic, or SigLIP zero-shot)
+         ├─ classify.py   scene tag (SigLIP zero-shot)
          ├─ embed.py      SigLIP image/text embeddings for semantic search
          └─ db.py         SQLite catalog (photos / persons / faces)
 

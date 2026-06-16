@@ -67,7 +67,7 @@ def test_retag_scenes_cli_runs(tmp_path, capsys):
     home = tmp_path / "lib"
     cli.main(["--home", str(home), "index", str(photos), "--faces", "none"])
     capsys.readouterr()
-    rc = cli.main(["--home", str(home), "retag-scenes", "--scene", "heuristic"])
+    rc = cli.main(["--home", str(home), "retag-scenes"])
     assert rc == 0
     assert "retagged" in capsys.readouterr().out
 

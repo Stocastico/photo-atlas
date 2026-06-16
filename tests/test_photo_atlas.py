@@ -14,7 +14,6 @@ import numpy as np
 import pytest
 
 from photo_atlas import db, demo, faces, indexer, library, search
-from photo_atlas.classify import SCENE_LABELS, SceneTagger
 from photo_atlas.config import AtlasConfig
 from photo_atlas.geocode import Geocoder
 from photo_atlas.metadata import extract_meta
@@ -90,21 +89,6 @@ def test_external_geocoder_reports_country_not_region():
     assert place.admin == "New York"
     # The bug: country was set to admin1 ("New York"). It must be the country.
     assert place.country == "United States"
-
-
-# -- scene tagging ---------------------------------------------------------
-def test_scene_tagger_labels_are_valid(demo_photos):
-    tagger = SceneTagger()
-    for photo in demo_photos[:5]:
-        label, scores = tagger.tag(photo, face_count=0)
-        assert label in SCENE_LABELS
-        assert abs(sum(scores.values()) - 1.0) < 1e-5
-
-
-def test_faces_make_scene_people(tmp_path):
-    [photo] = demo.generate(tmp_path / "p", count=1, seed=1)
-    label, _ = SceneTagger().tag(photo, face_count=2)
-    assert label == "people"
 
 
 # -- synthetic face backend + clustering -----------------------------------
