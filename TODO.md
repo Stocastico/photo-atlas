@@ -209,40 +209,38 @@ non-issues (int-id file endpoints aren't path-traversable; `known_facet` has no
 KeyError; `delete_person` detaching faces is intentional) were dropped.
 
 ### Bugs / correctness (verified)
-- [ ] **EXIF-orientation face crops are sideways.** Thumbnails/previews are
-  upright (`metadata.resize_image_to` applies `ImageOps.exif_transpose`), but face
-  detection and crops use the **raw, un-transposed** image on purpose
-  (`faces.pil_to_bgr`, `indexer._encode_face_crop`). So for portrait photos that
-  carry an EXIF orientation flag — most phone photos — the face crops in the People
-  page and lightbox render rotated 90°/180°. Fix: transpose once at decode and run
-  metadata/detect/thumb/crop off that single upright image (keeps geometry
-  self-consistent). High impact, M effort; needs a re-index of affected crops.
-- [ ] **Renaming a person to an existing name 500s.** `persons.name` is `UNIQUE`
-  but `library.rename_person` doesn't catch `sqlite3.IntegrityError`, so the API
-  returns 500 instead of a clean 409/400. Same gap on any create-by-name path.
-- [ ] **Stale person cover → broken avatar.** `persons.cover_face_id` has no FK; if
-  the pinned face's photo is deleted (faces cascade), the id dangles and
-  `list_persons`' `COALESCE(cover_face_id, …)` only falls back when it's *NULL*, so
-  it serves a now-404 crop. Fix: FK `ON DELETE SET NULL`, or validate in the query.
+- [x] **EXIF-orientation face crops are sideways.** **Done:** the indexer now bakes
+  in the EXIF orientation once at decode (`ImageOps.exif_transpose` in
+  `_prepare_photo`) and runs metadata/detect/thumb/crop off that single upright
+  image, so portrait-photo face crops are no longer rotated. Covered by
+  `tests/test_orientation.py`. (A re-index refreshes pre-existing crops.)
+- [x] **Renaming a person to an existing name 500s.** **Done:** `library.rename_person`
+  catches `sqlite3.IntegrityError` and raises `ValueError`, which the API maps to a
+  clean 409.
+- [x] **Stale person cover → broken avatar.** **Done:** `list_persons` now validates
+  the pinned cover in-query (the first `COALESCE` arm only uses `cover_face_id` when
+  that face still exists, still belongs to the person and still has a crop) and falls
+  back to the person's first valid crop otherwise — so a dangling pin no longer
+  serves a 404 avatar.
 - [ ] **Silent face-crop save failure is unrecoverable.** `indexer` swallows a
   crop write error and stores `crop_path=NULL`; the face still exists (embedding +
   bbox) but `/api/face/{id}` 404s forever with no retry path. Track + offer re-save.
-- [ ] **Thin input validation.** `offset` has no `ge=0`; `date_from`/`date_to` are
-  unvalidated free text fed into the SQL date compare. Add bounds + an ISO-date
-  pattern so bad params 422 instead of silently mis-filtering.
-- [ ] **`cached_resized` TOCTTOU.** Concurrent first-requests for the same preview
-  can both pass `if not dest.exists()` and double-write. Write to a temp file and
-  atomically `replace()` (the pattern `models._resolve` already uses).
-- [ ] **Local API is unauthenticated + CORS-open.** Fine while bound to loopback,
-  but a malicious web page can still POST to `127.0.0.1:8000` and rename/merge/
-  delete. Add an Origin/Host check (or a one-time token) — cheap defense-in-depth,
-  and a prerequisite before ever allowing a non-loopback `--host`.
+- [x] **Thin input validation.** **Done:** `offset` is `Query(0, ge=0)` (and `limit`
+  is bounded `ge=1, le=500`); `date_from`/`date_to` are constrained to an ISO
+  `^\d{4}-\d{2}-\d{2}$` pattern, so bad params 422 instead of silently mis-filtering.
+- [x] **`cached_resized` TOCTTOU.** **Done:** the derivative is written to a
+  per-pid `.part` temp file and atomically `os.replace()`d into place, so concurrent
+  first-requests can't double-write a half-encoded file.
+- [x] **Local API is unauthenticated + CORS-open.** **Done:** a `_same_origin_writes`
+  middleware rejects state-changing requests (POST/PUT/PATCH/DELETE) whose `Origin`
+  doesn't match the `Host` with a 403, while still allowing same-origin UI calls and
+  non-browser clients (no Origin). GETs are never blocked.
 
 ### Scale & efficiency
-- [ ] **Re-tag scenes without a full re-index.** Switching heuristic↔zero-shot (or
-  tuning temperature) currently means re-decoding + re-detecting all 27k photos.
-  Scenes are independent of faces/thumbs — add an `index --scene-only` second pass
-  that decodes once and upserts just `scene_type`/`scene_scores`.
+- [x] **Re-tag scenes without a full re-index.** **Done:** the `photo-atlas
+  retag-scenes` command (`indexer.retag_scenes`) decodes each still-present photo
+  once and upserts only `scene_type`/`scene_scores` (reusing the stored
+  `face_count`), so switching heuristic↔zero-shot or tuning it needs no re-detect.
 - [ ] **Resumable / crash-safe indexing.** An interrupted run leaves a mixed state
   and orphans; `prune` is a separate manual step. Checkpoint progress and
   auto-prune orphaned rows + derivative files.
