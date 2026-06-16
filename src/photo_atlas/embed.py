@@ -51,10 +51,30 @@ def l2_normalize(vec: np.ndarray) -> np.ndarray:
     return vec / norm
 
 
-def preprocess_image(img: Image.Image) -> np.ndarray:
-    """Turn an open image into a SigLIP ``(1, 3, 224, 224)`` float32 blob."""
+def _input_size_from_shape(shape: object, default: int = _IMAGE_SIZE) -> int:
+    """Derive the square input resolution from an ONNX input shape (NCHW).
 
-    small = img.convert("RGB").resize((_IMAGE_SIZE, _IMAGE_SIZE), Image.Resampling.BICUBIC)
+    A static spatial dim (e.g. ``[1, 3, 256, 256]``) is used directly, so swapping
+    in a higher-resolution model (SigLIP 2 patch16-256/384) needs no code change —
+    just point ``PHOTO_ATLAS_SCENE_MODEL`` at the new ONNX. A dynamic ('width'),
+    missing or non-positive dim falls back to ``default`` (224).
+    """
+
+    try:
+        last = shape[-1]  # type: ignore[index]
+    except (TypeError, IndexError, KeyError):
+        return default
+    return int(last) if isinstance(last, int) and last > 0 else default
+
+
+def preprocess_image(img: Image.Image, size: int = _IMAGE_SIZE) -> np.ndarray:
+    """Turn an open image into a SigLIP ``(1, 3, size, size)`` float32 blob.
+
+    ``size`` defaults to 224 (the base SigLIP input) but is overridable so a
+    different-resolution model can reuse the same preprocessing.
+    """
+
+    small = img.convert("RGB").resize((size, size), Image.Resampling.BICUBIC)
     arr = np.asarray(small, dtype=np.float32) / 255.0
     arr = (arr - _NORM_MEAN) / _NORM_STD
     return np.ascontiguousarray(arr.transpose(2, 0, 1)[None])
@@ -69,7 +89,11 @@ class SigLipImageEncoder:
         self._session = ort.InferenceSession(
             str(model_path), providers=["CPUExecutionProvider"]
         )
-        self._input = self._session.get_inputs()[0].name
+        inp = self._session.get_inputs()[0]
+        self._input = inp.name
+        # Auto-detect the model's input resolution (224 for base SigLIP, 256/384 for
+        # SigLIP 2 variants), so a model swap stays a config change, not a code edit.
+        self._image_size = _input_size_from_shape(inp.shape)
 
     @classmethod
     def from_config(cls, config: AtlasConfig) -> SigLipImageEncoder:
@@ -80,7 +104,8 @@ class SigLipImageEncoder:
     def embed_image(self, img: Image.Image) -> np.ndarray:
         """Embed an already-open image (the indexer's decode-once path)."""
 
-        (pooled,) = self._session.run(["pooler_output"], {self._input: preprocess_image(img)})
+        blob = preprocess_image(img, self._image_size)
+        (pooled,) = self._session.run(["pooler_output"], {self._input: blob})
         return l2_normalize(pooled[0])
 
     def embed_path(self, path: Path | str) -> np.ndarray:

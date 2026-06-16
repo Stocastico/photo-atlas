@@ -44,3 +44,24 @@ def test_preprocess_image_converts_grayscale():
     # A non-RGB mode must be coerced to 3 channels (no crash, right shape).
     blob = embed.preprocess_image(Image.new("L", (16, 16), 128))
     assert blob.shape == (1, 3, 224, 224)
+
+
+def test_preprocess_image_honours_size_override():
+    # A SigLIP 2 swap (e.g. patch16-256) changes the input resolution; the size
+    # is threaded through so the same preprocessing serves a different model.
+    blob = embed.preprocess_image(Image.new("RGB", (64, 64)), size=256)
+    assert blob.shape == (1, 3, 256, 256)
+
+
+def test_input_size_from_shape_reads_static_spatial_dim():
+    # NCHW with a concrete spatial dim → use it (auto-detect the model's resolution).
+    assert embed._input_size_from_shape([1, 3, 256, 256]) == 256
+    assert embed._input_size_from_shape([1, 3, 384, 384]) == 384
+
+
+def test_input_size_from_shape_falls_back_on_dynamic_or_bad():
+    # Dynamic ('width') / missing / non-positive dims fall back to the default 224.
+    assert embed._input_size_from_shape(["batch", 3, "height", "width"]) == 224
+    assert embed._input_size_from_shape([1, 3, 0, 0]) == 224
+    assert embed._input_size_from_shape([]) == 224
+    assert embed._input_size_from_shape(None) == 224
