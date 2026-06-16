@@ -71,14 +71,21 @@ CREATE TABLE IF NOT EXISTS faces (
 
 CREATE INDEX IF NOT EXISTS idx_photos_taken   ON photos(taken_at);
 CREATE INDEX IF NOT EXISTS idx_photos_indexed ON photos(indexed_at);
-CREATE INDEX IF NOT EXISTS idx_photos_scene   ON photos(scene_type);
 CREATE INDEX IF NOT EXISTS idx_photos_country ON photos(place_country);
 CREATE INDEX IF NOT EXISTS idx_photos_city    ON photos(place_city);
 CREATE INDEX IF NOT EXISTS idx_photos_camera  ON photos(camera_model);
-CREATE INDEX IF NOT EXISTS idx_photos_folder  ON photos(folder_place);
 CREATE INDEX IF NOT EXISTS idx_faces_photo    ON faces(photo_id);
-CREATE INDEX IF NOT EXISTS idx_faces_person   ON faces(person_id);
 CREATE INDEX IF NOT EXISTS idx_faces_cluster  ON faces(cluster_id);
+-- Composite indexes for the real browse/filter access patterns: filter on a
+-- facet column and sort by capture time (the default ``taken_at DESC`` order),
+-- so SQLite can satisfy the WHERE + ORDER BY from one index without a sort.
+-- Their leading column supersedes the old single-column scene/folder indexes
+-- (dropped in ``_migrate``). The person filter is an EXISTS into ``faces``
+-- correlated on ``photo_id``; ``(person_id, photo_id)`` seeks both at once
+-- (taken_at lives on ``photos``, so it can't join this cross-table index).
+CREATE INDEX IF NOT EXISTS idx_photos_scene_taken  ON photos(scene_type, taken_at);
+CREATE INDEX IF NOT EXISTS idx_photos_folder_taken ON photos(folder_place, taken_at);
+CREATE INDEX IF NOT EXISTS idx_faces_person_photo  ON faces(person_id, photo_id);
 """
 
 
@@ -100,6 +107,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE photos ADD COLUMN embedding BLOB")
         if "embed_dim" not in cols:
             conn.execute("ALTER TABLE photos ADD COLUMN embed_dim INTEGER")
+    # Drop single-column indexes that the new composite indexes (added to the
+    # schema below) fully supersede on their leading column, so existing catalogs
+    # don't carry redundant indexes that only cost extra on every write.
+    for name in ("idx_photos_scene", "idx_photos_folder", "idx_faces_person"):
+        conn.execute(f"DROP INDEX IF EXISTS {name}")
 
 
 def connect(db_path: Path, *, ensure_schema: bool = True) -> sqlite3.Connection:

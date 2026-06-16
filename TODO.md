@@ -248,10 +248,18 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
 - [ ] **Resumable / crash-safe indexing.** An interrupted run leaves a mixed state
   and orphans; `prune` is a separate manual step. Checkpoint progress and
   auto-prune orphaned rows + derivative files.
-- [ ] **Hot-path denormalisation & composite indexes.** Backfill a
-  `named_face_count` column (already flagged) to kill the per-row subquery, and add
-  composite indexes for the real access patterns: `(scene_type, taken_at)`,
-  `(folder_place, taken_at)`, `(person_id, taken_at)`.
+- [ ] **Hot-path denormalisation & composite indexes.**
+  - [x] **Composite indexes for the browse/filter access patterns.** Added
+    `(scene_type, taken_at)` and `(folder_place, taken_at)` on `photos` so a facet
+    filter + the default `taken_at DESC` sort is served from one index (no separate
+    sort step), and `(person_id, photo_id)` on `faces` so the person `EXISTS` subquery
+    is a covering seek (`taken_at` lives on `photos`, so the cross-table
+    `(person_id, taken_at)` isn't expressible). Their leading columns supersede the
+    old single-column `idx_photos_scene`/`idx_photos_folder`/`idx_faces_person`, which
+    are dropped (in `_migrate`, so existing catalogs shed the now-redundant indexes).
+    Verified via `EXPLAIN QUERY PLAN`; index presence/migration unit-tested.
+  - [ ] **Backfill a `named_face_count` column** (already flagged) to kill the
+    per-row "known people" subquery, maintained on assign/unassign/merge/delete.
 
 ### Bold features
 - [x] ⭐ **Natural-language semantic search** — the headline opportunity now that a
