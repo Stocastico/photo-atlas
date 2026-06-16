@@ -33,6 +33,13 @@ header {
 header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
 header h1 .dot { color: var(--accent); }
 .spacer { flex: 1; }
+.search-wrap { display: flex; align-items: center; gap: 6px; }
+.search-mode {
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+  padding: 8px 10px; border-radius: 8px; font-size: 13px; cursor: pointer; white-space: nowrap;
+}
+.search-mode.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.search-plan { color: var(--muted); font-size: 13px; }
 #search {
   width: 280px; max-width: 40vw;
   background: var(--panel-2); border: 1px solid var(--border); color: var(--text);

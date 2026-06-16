@@ -25,6 +25,12 @@ recognised automatically once a person has been named.
   / `food` / `document` / `other`; or zero-shot's richer set incl. `animals` /
   `plants` / `vehicle` / `building` / `screenshot`), country, city, place
   (trip/folder), year, camera, or filename — combined.
+- **Natural-language semantic search** — describe a photo in words ("kids on the
+  beach at sunset", "my red car") and rank the library by visual similarity — no
+  tags, no folders. Each photo's [SigLIP](https://huggingface.co/Xenova/siglip-base-patch16-224)
+  image embedding is stored at index time and a free-text query is embedded into
+  the same space at search time; the ✨ **Smart** toggle in the search bar switches
+  it on, and it ANDs with every other filter. Opt-in (needs the `scene` extra).
 - **Offline reverse geocoding** — GPS EXIF → city + country using a bundled
   dataset (no network). Install `reverse_geocoder` for ~150k-city resolution.
 - **Rich metadata** — capture date (EXIF, with file-mtime fallback), camera,
@@ -52,7 +58,7 @@ uv sync                     # core app + test tooling into .venv (dev group)
 uv sync --extra geo         # + high-resolution offline reverse geocoding
 uv sync --extra heic        # + HEIC/HEIF decoding (default iPhone format)
 uv sync --extra dlib        # + face_recognition (dlib) backend (needs CMake/C++)
-uv sync --extra scene       # + zero-shot scene tagging (SigLIP ONNX, no PyTorch)
+uv sync --extra scene       # + SigLIP zero-shot scene tagging *and* semantic search
 uv run photo-atlas --help   # run the CLI inside the managed environment
 uv run pytest               # run the test suite
 ```
@@ -97,6 +103,43 @@ tokenizer at runtime — just a dot product. To swap in a different / newer
 encoder (e.g. SigLIP 2 or MobileCLIP2), rebuild that matrix with
 `scripts/build_scene_embeddings.py --model <hf-repo>` and point
 `PHOTO_ATLAS_SCENE_MODEL` at the matching vision ONNX.
+
+### Semantic search
+
+The same SigLIP space powers **natural-language search**: store each photo's
+image embedding, then embed a free-text query and rank by cosine similarity.
+
+```bash
+uv sync --extra scene
+photo-atlas index ~/Pictures --embed     # store embeddings as you index
+# already indexed? backfill without re-detecting faces (decodes once):
+photo-atlas embed
+```
+
+Then in `serve`, the search bar grows a ✨ **Smart** toggle: type "kids on the
+beach at sunset" or "my red car" and the grid re-ranks by visual relevance.
+Semantic queries combine with every other filter (person, place, date, scene…)
+— the structured filters narrow the set, the query orders what's left — and are
+capped at the most relevant `config.semantic_top_k` (default 200) matches.
+
+**Hybrid person + visual queries.** SigLIP has no idea *who* "Stefano" is —
+identity is the face pipeline's job — so a query like "Stefano eating food" is
+**decomposed** server-side (`planner.py`) rather than fed whole to the model:
+known person names are peeled into a person filter (multiple names → the People
+AND-mode), count phrases like "alone" / "with other people" map to the
+number-of-people buckets, and only the residual ("eating food") goes to SigLIP.
+The legs are AND-ed, and the UI shows how it split your words. So "Stefano alone"
+is answered with zero ML at query time (pure filters), while "Anna at the beach"
+filters to Anna and ranks by the beach. The visual score is whole-image, so it
+means a photo *containing* Stefano that *looks like* the residual — not that
+Stefano is the one eating.
+
+Unlike scene tagging (whose label text is pre-baked), an arbitrary query can't be
+precomputed, so semantic search additionally downloads SigLIP's *text* tower and
+tokenizer on first use (still **no PyTorch**; needs the `scene` extra, which now
+also pulls in `tokenizers`). Image and text embeddings come from the same model,
+so they're directly comparable. Storing one ~768-d float32 vector per photo adds
+~3 KB/photo to the catalog.
 
 ## Try it in 30 seconds
 
@@ -150,6 +193,7 @@ indexer ─┬─ metadata.py    EXIF date / camera / GPS  + thumbnails
          ├─ geocode.py     GPS → city, country (offline nearest-city)
          ├─ faces.py      YuNet detect → SFace embed → DBSCAN cluster
          ├─ classify.py   scene tag (colour heuristic, or SigLIP zero-shot)
+         ├─ embed.py      SigLIP image/text embeddings for semantic search
          └─ db.py         SQLite catalog (photos / persons / faces)
 
 api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces)
@@ -171,7 +215,9 @@ api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces)
 | Method & path | Purpose |
 | --- | --- |
 | `GET /api/facets` | counts for the filter sidebar |
+| `GET /api/capabilities` | feature flags for the UI (e.g. `{"semantic": true}`) |
 | `GET /api/photos?person_id=&scene=&country=&city=&place=&year=&camera=&q=` | filtered list |
+| `GET /api/photos?text=...` | natural-language semantic search (ranked; ANDs with the filters) |
 | `GET /api/map?...` | geotagged `{id, lat, lon, year}` points for the map (same filters) |
 | `GET /api/photos/{id}` | photo detail + faces |
 | `GET /api/image\|preview\|thumb/{id}`, `GET /api/face/{id}` | media (preview = bounded lightbox derivative; `thumb?size=` for retina) |

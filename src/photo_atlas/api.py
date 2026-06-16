@@ -21,10 +21,22 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, library, metadata, search
+from . import db, library, metadata, planner, search
 from .config import AtlasConfig
 
 WEB_DIR = Path(__file__).parent / "web"
+
+
+def _union(existing, derived: list) -> list:
+    """Merge ``derived`` values into ``existing`` (a scalar/list/None), de-duped."""
+
+    out: list = list(existing) if isinstance(existing, (list, tuple)) else (
+        [existing] if existing not in (None, "") else []
+    )
+    for value in derived:
+        if value not in out:
+            out.append(value)
+    return out
 
 # Inclusive ``date_taken`` range bounds are compared on the YYYY-MM-DD prefix, so
 # reject anything that isn't that shape (a malformed value would otherwise compare
@@ -77,6 +89,48 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         finally:
             conn.close()
 
+    # -- semantic search (lazy, cached) -----------------------------------
+    # The embedding matrix and the text encoder are both expensive to build, so
+    # cache them on the app. The matrix is rebuilt only when the set of embedded
+    # photos changes (a concurrent `index`/`embed` run); the text encoder is built
+    # once on first use (it downloads the SigLIP text model + tokenizer).
+    _semantic: dict = {"index": None, "sig": None, "encoder": None, "encoder_tried": False}
+
+    def _embed_signature(conn: sqlite3.Connection) -> tuple[int, int]:
+        row = conn.execute(
+            "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM photos WHERE embedding IS NOT NULL"
+        ).fetchone()
+        return int(row[0]), int(row[1])
+
+    def _semantic_index(conn: sqlite3.Connection):
+        sig = _embed_signature(conn)
+        if _semantic["sig"] != sig:
+            _semantic["index"] = search.SemanticIndex.load(conn)
+            _semantic["sig"] = sig
+        return _semantic["index"]
+
+    def _text_encoder():
+        if _semantic["encoder"] is None and not _semantic["encoder_tried"]:
+            _semantic["encoder_tried"] = True
+            try:
+                from .embed import SigLipTextEncoder
+
+                _semantic["encoder"] = SigLipTextEncoder.from_config(config)
+            except Exception:
+                _semantic["encoder"] = None  # extra/model unavailable
+        return _semantic["encoder"]
+
+    @app.get("/api/capabilities")
+    def api_capabilities(conn: sqlite3.Connection = Depends(get_conn)):
+        # Semantic search needs both embedded photos and the runtime libraries to
+        # embed a query. Checked cheaply (lib presence, not a model download) so the
+        # UI can show/hide the control without blocking on a download.
+        import importlib.util  # noqa: PLC0415
+
+        has_embeddings = _embed_signature(conn)[0] > 0
+        libs = all(importlib.util.find_spec(m) for m in ("onnxruntime", "tokenizers"))
+        return {"semantic": bool(has_embeddings and libs)}
+
     # -- discovery --------------------------------------------------------
     @app.get("/api/facets")
     def api_facets(
@@ -122,6 +176,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         known: list[str] | None = Query(None),
         has_faces: bool | None = None,
         q: str | None = None,
+        text: str | None = None,
         sort: str | None = None,
         limit: int = Query(60, ge=1, le=500),
         offset: int = Query(0, ge=0),
@@ -131,8 +186,61 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
             "date_to": date_to, "camera": camera, "people": people, "known": known,
-            "has_faces": has_faces, "q": q, "sort": sort,
+            "has_faces": has_faces, "q": q, "text": text, "sort": sort,
         }
+        # A natural-language ``text`` query switches to semantic ranking (by image
+        # embedding), ANDed with the structured filters. It supersedes ``sort`` —
+        # results come back in relevance order — and returns its own (top-k) total.
+        if text and text.strip():
+            # Hybrid decomposition: peel known person-names and count phrases out of
+            # the query into structured filters, leaving the residual for SigLIP.
+            persons = [dict(r) for r in conn.execute("SELECT id, name FROM persons")]
+            plan = planner.plan_query(text.strip(), persons)
+            merged = {k: v for k, v in filters.items() if k != "text"}
+            if plan.person_ids:
+                merged["person_id"] = _union(merged.get("person_id"), plan.person_ids)
+            if plan.person_mode and not merged.get("person_mode"):
+                merged["person_mode"] = plan.person_mode
+            if plan.people:
+                merged["people"] = _union(merged.get("people"), plan.people)
+            plan_payload = {
+                "persons": plan.person_names, "people": plan.people,
+                "person_mode": plan.person_mode, "text": plan.text,
+            }
+
+            rows: list[dict]
+            total: int | None
+            if plan.text:
+                index = _semantic_index(conn)
+                if index.size == 0:
+                    raise HTTPException(
+                        409,
+                        "No photo embeddings yet — run `photo-atlas embed` (or "
+                        "`index --embed`) to enable semantic search.",
+                    )
+                encoder = _text_encoder()
+                if encoder is None:
+                    raise HTTPException(
+                        501,
+                        "Semantic search needs the 'scene' extra "
+                        "(`uv sync --extra scene`) for the SigLIP text encoder.",
+                    )
+                rows, total = search.semantic_search(
+                    conn, merged, encoder.embed_text(plan.text), index,
+                    top_k=config.semantic_top_k, limit=limit, offset=offset,
+                )
+            else:
+                # The query reduced to pure structured filters ("Stefano alone"):
+                # no visual leg, so no embeddings/model needed — just filter + page.
+                rows, total_count = search.search_photos(
+                    conn, merged, limit=limit, offset=offset, count=(offset == 0)
+                )
+                total = total_count if total_count >= 0 else None
+            return {
+                "total": total, "count": len(rows), "offset": offset,
+                "photos": rows, "plan": plan_payload,
+            }
+
         # ``total`` is page-invariant, so only count on the first page; later
         # infinite-scroll pages send ``total: null`` and the client keeps its copy.
         rows, total = search.search_photos(

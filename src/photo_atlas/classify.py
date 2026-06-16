@@ -32,8 +32,11 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 from PIL import Image
 
+from .embed import preprocess_image as _preprocess  # noqa: F401 - back-compat re-export
+
 if TYPE_CHECKING:
     from .config import AtlasConfig
+    from .embed import SigLipImageEncoder
 
 SCENE_LABELS = [
     "people",
@@ -120,24 +123,11 @@ class SceneTagger:
 
 
 # -- zero-shot (SigLIP) tagger --------------------------------------------
-#: SigLIP image preprocessing: resize to 224², rescale to [0, 1] and normalise
-#: with mean/std 0.5 (matches the model's ``preprocessor_config.json``).
-_IMAGE_SIZE = 224
-_NORM_MEAN = 0.5
-_NORM_STD = 0.5
 #: A detected face is a strong "people" signal; nudge that label's similarity by
 #: this much (in cosine space) when faces are present, without steamrolling a
-#: clear food/landscape signal.
+#: clear food/landscape signal. Image preprocessing + the vision encoder itself
+#: live in :mod:`photo_atlas.embed` (shared with semantic search).
 _FACE_BONUS = 0.04
-
-
-def _preprocess(img: Image.Image) -> np.ndarray:
-    """Turn an open image into a SigLIP ``(1, 3, 224, 224)`` float32 blob."""
-
-    small = img.convert("RGB").resize((_IMAGE_SIZE, _IMAGE_SIZE), Image.Resampling.BICUBIC)
-    arr = np.asarray(small, dtype=np.float32) / 255.0
-    arr = (arr - _NORM_MEAN) / _NORM_STD
-    return np.ascontiguousarray(arr.transpose(2, 0, 1)[None])
 
 
 def classify_embedding(
@@ -184,22 +174,32 @@ def classify_embedding(
 
 
 class ZeroShotSceneTagger:
-    """SigLIP zero-shot tagger: vision-encoder ONNX + bundled label embeddings."""
+    """SigLIP zero-shot tagger: vision-encoder ONNX + bundled label embeddings.
+
+    The vision encoder is a :class:`photo_atlas.embed.SigLipImageEncoder` held as
+    the public ``encoder`` attribute. The indexer can therefore share one encoder
+    (one ONNX session, one inference per photo) between scene tagging and semantic
+    search instead of running the same vision tower twice.
+    """
 
     def __init__(
         self,
-        model_path: Path,
-        label_path: Path,
+        model_path: Path | None = None,
+        label_path: Path | None = None,
         *,
+        encoder: SigLipImageEncoder | None = None,
         temperature: float = 50.0,
         other_bias: float = -0.02,
     ):
-        import onnxruntime as ort  # noqa: PLC0415
+        from .embed import SigLipImageEncoder  # noqa: PLC0415
 
-        self._session = ort.InferenceSession(
-            str(model_path), providers=["CPUExecutionProvider"]
-        )
-        self._input = self._session.get_inputs()[0].name
+        if encoder is None:
+            if model_path is None:
+                raise ValueError("ZeroShotSceneTagger needs a model_path or an encoder")
+            encoder = SigLipImageEncoder(model_path)
+        self.encoder = encoder
+        if label_path is None:
+            label_path = scene_labels_path()
         data = np.load(label_path, allow_pickle=True)
         self._labels = [str(x) for x in data["labels"]]
         self._matrix = np.asarray(data["matrix"], dtype=np.float32)
@@ -207,15 +207,22 @@ class ZeroShotSceneTagger:
         self._other_bias = other_bias
 
     @classmethod
-    def from_config(cls, config: AtlasConfig) -> ZeroShotSceneTagger:
-        """Build from an :class:`AtlasConfig`, fetching the model if needed."""
+    def from_config(
+        cls, config: AtlasConfig, *, encoder: SigLipImageEncoder | None = None
+    ) -> ZeroShotSceneTagger:
+        """Build from an :class:`AtlasConfig`, fetching the model if needed.
 
-        from .models import ensure_scene_model  # noqa: PLC0415
+        ``encoder`` lets the caller inject an already-loaded vision encoder so the
+        scene tagger and semantic-search embedding share a single ONNX session.
+        """
 
-        model_path = ensure_scene_model(config.models_dir, download=True)
+        from .embed import SigLipImageEncoder  # noqa: PLC0415
+
+        if encoder is None:
+            encoder = SigLipImageEncoder.from_config(config)
         return cls(
-            model_path,
-            scene_labels_path(),
+            label_path=scene_labels_path(),
+            encoder=encoder,
             temperature=config.scene_temperature,
             other_bias=config.scene_other_bias,
         )
@@ -227,10 +234,15 @@ class ZeroShotSceneTagger:
     def tag_image(
         self, img: Image.Image, face_count: int = 0
     ) -> tuple[str, dict[str, float]]:
-        blob = _preprocess(img)
-        (pooled,) = self._session.run(["pooler_output"], {self._input: blob})
+        return self.tag_embedding(self.encoder.embed_image(img), face_count)
+
+    def tag_embedding(
+        self, embedding: np.ndarray, face_count: int = 0
+    ) -> tuple[str, dict[str, float]]:
+        """Tag from a precomputed SigLIP image embedding (no re-inference)."""
+
         return classify_embedding(
-            pooled[0],
+            embedding,
             self._matrix,
             self._labels,
             temperature=self._temperature,

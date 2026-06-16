@@ -17,7 +17,13 @@ from pathlib import Path
 
 from . import db
 from .config import AtlasConfig
-from .indexer import cluster_library, index_path, prune_library, retag_scenes
+from .indexer import (
+    cluster_library,
+    embed_library,
+    index_path,
+    prune_library,
+    retag_scenes,
+)
 from .search import facets
 
 
@@ -52,6 +58,7 @@ def _cmd_index(args) -> int:
         geocode=not args.no_geocode,
         recompute=args.recompute,
         workers=workers,
+        embed=args.embed,
         progress=progress,
     )
     print()
@@ -103,6 +110,27 @@ def _cmd_retag_scenes(args) -> int:
     print(f"Re-tagging scenes with the '{args.scene}' tagger ...")
     n = retag_scenes(config, progress=progress)
     print(f"\nDone: {n} photo(s) retagged.")
+    return 0
+
+
+def _cmd_embed(args) -> int:
+    config = _config(args)
+
+    def progress(done: int, total: int) -> None:
+        sys.stdout.write(f"\r  embedded {done}/{total}")
+        sys.stdout.flush()
+
+    print("Computing SigLIP image embeddings for semantic search ...")
+    try:
+        n = embed_library(config, recompute=args.recompute, progress=progress)
+    except Exception as exc:  # noqa: BLE001 - surface a clean message, not a traceback
+        print(
+            f"\nerror: could not build embeddings ({type(exc).__name__}: {exc}). "
+            "Install the 'scene' extra with `uv sync --extra scene`.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"\nDone: {n} photo(s) embedded. Semantic search is now available in `serve`.")
     return 0
 
 
@@ -189,6 +217,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_index.add_argument("--no-geocode", action="store_true", help="Skip reverse geocoding")
     p_index.add_argument("--recompute", action="store_true", help="Re-index already known photos")
     p_index.add_argument(
+        "--embed", action="store_true",
+        help="Also store a SigLIP image embedding per photo for natural-language "
+             "semantic search (needs the 'scene' extra)",
+    )
+    p_index.add_argument(
         "--workers", type=int, default=None,
         help="Worker processes for decode/detect (default: CPU count; 1 = serial)",
     )
@@ -206,6 +239,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scene tagger to use (default: zeroshot)",
     )
     p_retag.set_defaults(func=_cmd_retag_scenes)
+
+    p_embed = sub.add_parser(
+        "embed", help="Backfill SigLIP image embeddings for semantic search (no re-index)"
+    )
+    p_embed.add_argument(
+        "--recompute", action="store_true", help="Re-embed photos that already have an embedding"
+    )
+    p_embed.set_defaults(func=_cmd_embed)
 
     p_export = sub.add_parser(
         "export-labels", help="Write person names to portable XMP sidecars"

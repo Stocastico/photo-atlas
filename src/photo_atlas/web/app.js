@@ -13,6 +13,8 @@ const state = {
   facetExpanded: {}, // facet key -> show all values
   rendered: new Map(), // index -> live card node (virtualised grid window)
   layout: null,        // last computed grid layout
+  searchMode: "filter", // "filter" (substring q) or "semantic" (natural-language text)
+  semanticAvailable: false,
 };
 
 // Grid windowing constants — GAP/MIN must match the CSS .grid/.card rules.
@@ -22,7 +24,7 @@ const BUFFER_ROWS = 4;    // rows rendered above/below the viewport
 
 const FILTER_NAMES = {
   person_id: "Person", scene: "Scene", country: "Country", city: "City",
-  place: "Place", year: "Year", camera: "Camera", q: "Search",
+  place: "Place", year: "Year", camera: "Camera", q: "Search", text: "Smart",
   date_from: "From", date_to: "To", people: "People", known: "Known",
 };
 // Friendly labels for the number-of-people buckets (tokens come from the API).
@@ -118,7 +120,7 @@ function removeFilterValue(key, value) {
   } else {
     delete state.filters[key];
   }
-  if (key === "q") $("#search").value = "";
+  if (key === "q" || key === "text") $("#search").value = "";
   refresh();
 }
 
@@ -150,7 +152,7 @@ function filterParams() {
 // ---- URL / history state --------------------------------------------------
 // Reflect filters + view + sort in the querystring so the back button undoes a
 // filter and a filtered view is shareable/bookmarkable.
-const SCALAR_FILTERS = new Set(["q", "date_from", "date_to", "person_mode"]);
+const SCALAR_FILTERS = new Set(["q", "text", "date_from", "date_to", "person_mode"]);
 let restoringState = false;
 
 function buildQuery() {
@@ -180,7 +182,11 @@ function applyQuery() {
   state.filters = filters;
   state.view = params.get("view") || "photos";
   state.sort = params.get("sort") || "newest";
-  const search = $("#search"); if (search) search.value = filters.q || "";
+  // A `text` filter implies the semantic search mode; otherwise plain substring.
+  state.searchMode = filters.text != null ? "semantic" : "filter";
+  const search = $("#search");
+  if (search) search.value = (filters.text != null ? filters.text : filters.q) || "";
+  applySearchMode();
   const sort = $("#sort"); if (sort) sort.value = state.sort;
 }
 
@@ -491,6 +497,7 @@ async function renderPhotos(reset = true) {
   state.offset += data.photos.length;
 
   $("#result-count").textContent = `${state.total} result${state.total === 1 ? "" : "s"}`;
+  renderSearchPlan(data.plan);
   // Distinguish a genuinely empty library (first-run onboarding) from a filter
   // that simply matched nothing.
   const empty = state.photos.length === 0;
@@ -504,6 +511,24 @@ async function renderPhotos(reset = true) {
   $("#grid-loading").textContent = "Loading…";
   state.loading = false;
   maybeLoadMore();
+}
+
+// Show how the server decomposed a natural-language query ("Stefano eating food"
+// -> 👤 Stefano + “eating food”) so the hybrid planning is transparent.
+function renderSearchPlan(plan) {
+  const el = $("#search-plan");
+  if (!el) return;
+  if (!plan) { el.textContent = ""; el.title = ""; return; }
+  const bits = [];
+  (plan.persons || []).forEach((n) => bits.push(`👤 ${n}`));
+  if ((plan.persons || []).length >= 2 && plan.person_mode === "all") bits.push("(all of them)");
+  const people = plan.people || [];
+  if (people.length === 1 && people[0] === "1") bits.push("alone");
+  else if (people.includes("2-4") && people.includes("5+")) bits.push("with others");
+  else people.forEach((t) => bits.push(PEOPLE_LABELS[t] || t));
+  if (plan.text) bits.push(`“${plan.text}”`);
+  el.textContent = bits.length ? `Interpreting: ${bits.join(" · ")}` : "";
+  el.title = "How your words were split into people/scene filters and a visual query";
 }
 
 function nearBottom() {
@@ -930,15 +955,62 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// ---- search: substring filter vs natural-language semantic ----------------
+// One input drives two modes. "filter" sets `q` (a substring match); "semantic"
+// sets `text` (SigLIP image-embedding ranking). The ✨ toggle appears only when
+// the server reports semantic search is available (embeddings + the scene extra).
+function applySearchMode() {
+  const input = $("#search");
+  const btn = $("#search-mode");
+  const semantic = state.searchMode === "semantic";
+  if (input) input.placeholder = semantic
+    ? "Describe a photo… (e.g. kids on the beach)"
+    : "Search name, place, camera…";
+  if (btn) {
+    btn.classList.toggle("active", semantic);
+    btn.setAttribute("aria-pressed", semantic ? "true" : "false");
+    // Reveal the toggle once we know semantic search is available, or whenever a
+    // semantic query is already active (e.g. opening a shared ?text= link).
+    if (semantic || state.semanticAvailable) btn.hidden = false;
+  }
+}
+
+function setSearchMode(mode) {
+  if (state.searchMode === mode) return;
+  state.searchMode = mode;
+  // Carry whatever's typed across to the new mode's filter key so toggling
+  // doesn't silently drop the query.
+  const v = ($("#search").value || "").trim();
+  delete state.filters.q;
+  delete state.filters.text;
+  if (v) state.filters[mode === "semantic" ? "text" : "q"] = v;
+  applySearchMode();
+  refresh();
+}
+
 let searchTimer;
 $("#search").oninput = (e) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
     const v = e.target.value.trim();
-    if (v) state.filters.q = v; else delete state.filters.q;
+    const key = state.searchMode === "semantic" ? "text" : "q";
+    const other = key === "text" ? "q" : "text";
+    delete state.filters[other];
+    if (v) state.filters[key] = v; else delete state.filters[key];
     refresh();
-  }, 250);
+  }, state.searchMode === "semantic" ? 350 : 250);
 };
+
+const _searchModeBtn = $("#search-mode");
+if (_searchModeBtn) _searchModeBtn.onclick = () =>
+  setSearchMode(state.searchMode === "semantic" ? "filter" : "semantic");
+
+// Reveal the semantic toggle only when the backend can serve it.
+api("/api/capabilities").then((caps) => {
+  state.semanticAvailable = !!(caps && caps.semantic);
+  const btn = $("#search-mode");
+  if (btn && state.semanticAvailable) btn.hidden = false;
+}).catch(() => { /* capabilities are best-effort; leave the toggle hidden */ });
 
 // Restore filters/view from the URL on back/forward navigation.
 window.addEventListener("popstate", () => {

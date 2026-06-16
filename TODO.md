@@ -252,25 +252,30 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   `(folder_place, taken_at)`, `(person_id, taken_at)`.
 
 ### Bold features
-- [ ] ⭐ **Natural-language semantic search** — the headline opportunity now that a
-  SigLIP encoder is in the pipeline. Persist each photo's image embedding at index
-  time; at query time embed the user's text ("kids on the beach at sunset", "my red
-  car") and rank by cosine — zero tagging, finds things facets never could. Reuses
-  the exact model/space we already ship; the label matrix is just a 9-row special
-  case of this. Store embeddings as a BLOB (or a small Annoy/FAISS-free numpy memmap)
-  and add a `/api/search?text=` endpoint.
-  - **Hybrid person + semantic queries** ("Stefano eating food", "Stefano with
-    other people"). SigLIP can't match a personal *name* (it has no notion of your
-    identities — that's the face pipeline's job), so don't feed names to the model:
-    **decompose** the query instead. A small planner peels off known person-names
-    (`persons` table) → a person filter; maps "with other people / alone" → the
-    existing **number-of-people buckets**; handles multiple names via the existing
-    **People AND-mode**; and sends the residual text ("eating food", "at the beach")
-    to SigLIP. AND everything together. The structured legs already exist from the
-    people-filter work — this just adds the visual leg. Caveat: the visual score is
-    whole-image, so it means "a photo *containing* Stefano that *looks like* eating
-    food", not "Stefano is the one eating"; true per-person grounding (run SigLIP on
-    the crop around that person) is a heavier follow-up.
+- [x] ⭐ **Natural-language semantic search** — the headline opportunity now that a
+  SigLIP encoder is in the pipeline. **Done (core):** each photo's SigLIP image
+  embedding is persisted (new `photos.embedding`/`embed_dim` BLOB columns) at index
+  time (`index --embed`) or via a decode-once backfill (`photo-atlas embed`, no face
+  re-detect) — and reused for free from the zero-shot scene pass when both run (one
+  vision inference per photo). A free-text query is embedded into the same space by a
+  new `embed.SigLipTextEncoder` (text tower + tokenizer, downloaded on demand; the
+  `scene` extra now also pulls `tokenizers`); `search.SemanticIndex` caches the matrix
+  and ranks by cosine, ANDed with the structured filters and capped at
+  `config.semantic_top_k`. Exposed as `GET /api/photos?text=` (+ `/api/capabilities`),
+  with a ✨ **Smart** toggle on the search bar. Unit + DB + API tested (stub encoders,
+  no model download); an optional live round-trip is still gated on the model env vars.
+  - [x] **Hybrid person + semantic queries** ("Stefano eating food", "Stefano with
+    other people"). **Done:** a small, model-free `planner.plan_query` decomposes the
+    text — peels known person-names (`persons` table) → a person filter (2+ names →
+    the existing **People AND-mode**), maps "alone / with other people / in a group"
+    → the **number-of-people buckets**, and leaves the residual ("eating food", "at
+    the beach") for SigLIP. `/api/photos?text=` runs the planner, ANDs the structured
+    legs with the visual ranking, and echoes the `plan` back so the UI shows how the
+    words were split. A query that reduces to pure filters ("Stefano alone") needs no
+    model at all. Caveat unchanged: the visual score is whole-image (photo
+    *containing* Stefano that *looks like* the residual), not per-person grounding —
+    running SigLIP on the per-person crop is the heavier follow-up. Planner + API
+    (person-AND-visual and structured-only) unit-tested.
 - [ ] **Near-duplicate & burst grouping.** Only exact SHA-1 dedup exists today; real
   libraries have 5–20-frame bursts. Add a perceptual hash (dHash/pHash) column,
   group near-identical shots, collapse them in the grid behind a "best of N" cover,

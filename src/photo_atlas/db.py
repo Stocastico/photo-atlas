@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS photos (
     scene_scores TEXT,          -- JSON map label -> score
     face_count   INTEGER DEFAULT 0,
     thumb_path   TEXT,
+    embedding    BLOB,          -- SigLIP image embedding (float32) for semantic search
+    embed_dim    INTEGER,       -- length of ``embedding`` (NULL when not embedded)
     indexed_at   TEXT
 );
 
@@ -92,6 +94,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(photos)")}
         if "folder_place" not in cols:
             conn.execute("ALTER TABLE photos ADD COLUMN folder_place TEXT")
+        # Semantic-search embedding columns (added 2026-06): additive, so older
+        # catalogs gain them empty and are filled by `index --embed` / `embed`.
+        if "embedding" not in cols:
+            conn.execute("ALTER TABLE photos ADD COLUMN embedding BLOB")
+        if "embed_dim" not in cols:
+            conn.execute("ALTER TABLE photos ADD COLUMN embed_dim INTEGER")
 
 
 def connect(db_path: Path, *, ensure_schema: bool = True) -> sqlite3.Connection:
@@ -163,6 +171,23 @@ def upsert_photo(conn: sqlite3.Connection, record: dict) -> int:
     # insert and the update branch (lastrowid is unreliable after an UPSERT).
     row = conn.execute("SELECT id FROM photos WHERE path=?", (record["path"],)).fetchone()
     return int(row["id"])
+
+
+def set_photo_embedding(
+    conn: sqlite3.Connection, photo_id: int, vector: np.ndarray | None
+) -> None:
+    """Persist (or clear) a photo's SigLIP image embedding for semantic search.
+
+    Kept out of :data:`PHOTO_COLUMNS` (and thus out of the grid/list SELECT) so the
+    multi-kilobyte BLOB is never shipped to the browser for every card; it is
+    written separately, only when an embedding was computed.
+    """
+
+    blob = embedding_to_blob(vector)
+    dim = None if vector is None else int(np.asarray(vector).reshape(-1).shape[0])
+    conn.execute(
+        "UPDATE photos SET embedding=?, embed_dim=? WHERE id=?", (blob, dim, photo_id)
+    )
 
 
 def replace_faces(conn: sqlite3.Connection, photo_id: int, faces: Iterable[dict]) -> None:
