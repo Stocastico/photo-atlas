@@ -340,9 +340,18 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
     @app.get("/api/face/{face_id}")
     def api_face(face_id: int, conn: sqlite3.Connection = Depends(get_conn)):
         row = conn.execute("SELECT crop_path FROM faces WHERE id=?", (face_id,)).fetchone()
-        if row is None or not row["crop_path"] or not Path(row["crop_path"]).exists():
+        if row is None:
             raise HTTPException(404, "face crop not found")
-        return FileResponse(row["crop_path"])
+        crop = row["crop_path"]
+        if not crop or not Path(crop).exists():
+            # The crop may have failed to write at index time (crop_path=NULL) or
+            # been deleted since; rebuild it from the source photo before 404ing.
+            from . import indexer
+
+            crop = indexer.regenerate_face_crop(conn, config, face_id)
+            if not crop:
+                raise HTTPException(404, "face crop not found")
+        return FileResponse(crop)
 
     # -- persons ----------------------------------------------------------
     @app.get("/api/persons")

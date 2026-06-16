@@ -222,9 +222,13 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   that face still exists, still belongs to the person and still has a crop) and falls
   back to the person's first valid crop otherwise — so a dangling pin no longer
   serves a 404 avatar.
-- [ ] **Silent face-crop save failure is unrecoverable.** `indexer` swallows a
-  crop write error and stores `crop_path=NULL`; the face still exists (embedding +
-  bbox) but `/api/face/{id}` 404s forever with no retry path. Track + offer re-save.
+- [x] **Silent face-crop save failure is unrecoverable.** **Done:** a crop write
+  error at index time still stores `crop_path=NULL` (the face keeps its embedding +
+  bbox), but `/api/face/{id}` no longer 404s forever — when the crop is missing it
+  calls `indexer.regenerate_face_crop`, which rebuilds the crop from the source photo
+  (re-decoding with the same EXIF-transpose, cropping the stored bbox) and persists
+  the new path. This also recovers crops whose files were later deleted. Covered by
+  `tests/test_api_errors.py` (regenerate-on-demand + the source-gone 404 path).
 - [x] **Thin input validation.** **Done:** `offset` is `Query(0, ge=0)` (and `limit`
   is bounded `ge=1, le=500`); `date_from`/`date_to` are constrained to an ISO
   `^\d{4}-\d{2}-\d{2}$` pattern, so bad params 422 instead of silently mis-filtering.

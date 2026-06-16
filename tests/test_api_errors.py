@@ -6,9 +6,19 @@ The happy paths live in ``test_photo_atlas.py``; this file pins the 404 / 400 /
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from photo_atlas import db, indexer
+
 
 def _first_photo_id(client):
     return client.get("/api/photos?limit=1").json()["photos"][0]["id"]
+
+
+def _a_face_with_crop(conn):
+    return conn.execute(
+        "SELECT id, crop_path FROM faces WHERE crop_path IS NOT NULL LIMIT 1"
+    ).fetchone()
 
 
 # -- not-found branches ----------------------------------------------------
@@ -60,6 +70,46 @@ def test_zero_limit_is_422(client):
 def test_malformed_date_is_422(client):
     assert client.get("/api/photos?date_from=not-a-date").status_code == 422
     assert client.get("/api/facets?date_to=garbage").status_code == 422
+
+
+# -- face-crop re-save (recover from a missing crop) -----------------------
+def test_missing_face_crop_is_regenerated_on_demand(client, indexed):
+    """A face whose crop file is gone (or never written: ``crop_path=NULL``)
+    rebuilds the crop from the source photo instead of 404ing forever."""
+    conn = db.connect(indexed.db_path)
+    face = _a_face_with_crop(conn)
+    assert face is not None, "demo library should produce at least one face crop"
+    fid = face["id"]
+    # Simulate the index-time write failure: drop the file and the stored path.
+    Path(face["crop_path"]).unlink()
+    conn.execute("UPDATE faces SET crop_path=NULL WHERE id=?", (fid,))
+    conn.commit()
+    conn.close()
+
+    assert client.get(f"/api/face/{fid}").status_code == 200
+
+    conn = db.connect(indexed.db_path)
+    row = conn.execute("SELECT crop_path FROM faces WHERE id=?", (fid,)).fetchone()
+    conn.close()
+    assert row["crop_path"] and Path(row["crop_path"]).exists()
+
+
+def test_regenerate_face_crop_none_when_source_gone(client, indexed):
+    conn = db.connect(indexed.db_path)
+    face = _a_face_with_crop(conn)
+    fid = face["id"]
+    # Point the owning photo at a path that no longer exists: no retry possible.
+    conn.execute(
+        "UPDATE photos SET path=? WHERE id=(SELECT photo_id FROM faces WHERE id=?)",
+        ("/nonexistent/gone.jpg", fid),
+    )
+    conn.execute("UPDATE faces SET crop_path=NULL WHERE id=?", (fid,))
+    conn.commit()
+    assert indexer.regenerate_face_crop(conn, indexed, fid) is None
+    assert indexer.regenerate_face_crop(conn, indexed, 999999) is None
+    conn.close()
+
+    assert client.get(f"/api/face/{fid}").status_code == 404
 
 
 def test_wellformed_date_is_accepted(client):
