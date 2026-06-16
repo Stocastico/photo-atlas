@@ -6,7 +6,7 @@ filters (``person_id``, ``scene``, ``country``, ``city``, ``place``, ``year``,
 any of them (OR within the facet, AND across facets).
 
 ``person_id``  only photos containing this person (or any of these people).
-``scene``      scene tag (people/landscape/food/document/other).
+``scene``      scene tag (see ``classify.SCENE_LABELS``).
 ``country``    place country (from GPS).
 ``city``       place city (from GPS).
 ``place``      trip/region label mined from the folder name.

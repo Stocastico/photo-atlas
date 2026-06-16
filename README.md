@@ -21,9 +21,10 @@ recognised automatically once a person has been named.
 - **Name people once** — unrecognised faces are grouped into clusters; name a
   cluster and every matching photo becomes filterable. Future imports are
   auto-recognised against the people you've named.
-- **Filter by anything** — person, scene type (`people` / `landscape` / `food` /
-  `document` / `other`), country, city, place (trip/folder), year, camera, or
-  filename — combined.
+- **Filter by anything** — person, scene type (heuristic: `people` / `landscape`
+  / `food` / `document` / `other`; or zero-shot's richer set incl. `animals` /
+  `plants` / `vehicle` / `building` / `screenshot`), country, city, place
+  (trip/folder), year, camera, or filename — combined.
 - **Offline reverse geocoding** — GPS EXIF → city + country using a bundled
   dataset (no network). Install `reverse_geocoder` for ~150k-city resolution.
 - **Rich metadata** — capture date (EXIF, with file-mtime fallback), camera,
@@ -76,6 +77,10 @@ that beats CLIP at zero-shot for its size):
 uv sync --extra scene
 photo-atlas index ~/Pictures --scene zeroshot   # or --scene auto
 ```
+
+It also tags a richer set of classes than the heuristic — `people`, `animals`,
+`landscape`, `plants`, `food`, `vehicle`, `building`, `document`, `screenshot`
+(plus `other`) — which simply show up as extra options in the scene filter.
 
 Only SigLIP's *vision* tower runs at index time (a ~95 MB quantised ONNX,
 downloaded on first use via [ONNX Runtime](https://onnxruntime.ai/) — **no

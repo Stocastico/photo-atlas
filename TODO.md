@@ -177,11 +177,15 @@ A full-app review at ~27k images + ~600 videos drove a round of hardening.
   (`scripts/build_scene_embeddings.py`) and shipped as a tiny bundled matrix
   (`data/scene_labels.npz`), so there's no text encoder/tokenizer at runtime. The
   catch-all `other` is a learned-bias logit (single argmax, no separate threshold);
-  a detected face nudges `people`. Same `tag()` contract, so the indexer/DB/facets
-  are unchanged. The heuristic stays the zero-dep default and the fallback when the
-  extra/model isn't present. Validated on real photos (document/food/landscape/
-  people correct; out-of-vocabulary images route to `other`); scoring logic, label
-  matrix and fallback are unit-tested, with an optional live round-trip gated on
+  a detected face nudges `people`. It also tags a richer class set than the
+  heuristic — people/animals/landscape/plants/food/vehicle/building/document/
+  screenshot (+other) — which just appear as extra scene-filter options (no schema
+  change; the facet is built from DB values). Same `tag()` contract, so the
+  indexer/DB/facets are unchanged. The heuristic stays the zero-dep default and the
+  fallback when the extra/model isn't present. Each class was validated on real
+  ground-truth photos (correct + well separated; out-of-vocabulary images route to
+  `other`, and a detected face recovers `people`); scoring logic, label matrix and
+  fallback are unit-tested, with an optional live round-trip gated on
   `PHOTO_ATLAS_SCENE_MODEL`. The architecture is model-agnostic — point
   `--model`/`PHOTO_ATLAS_SCENE_MODEL` at a SigLIP 2 or MobileCLIP2 export and
   rebuild the matrix to upgrade.

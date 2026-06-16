@@ -17,7 +17,11 @@ contract, selected by :func:`get_tagger`:
   no PyTorch, no text encoder and no tokenizer in the runtime -- just the ONNX
   vision model (downloaded on demand like the face models) plus NumPy.
 
-Categories: ``people``, ``landscape``, ``food``, ``document``, ``other``.
+Categories: ``people``, ``animals``, ``landscape``, ``plants``, ``food``,
+``vehicle``, ``building``, ``document``, ``screenshot``, ``other``. (The
+heuristic tagger only ever emits the original coarse five — ``people``,
+``landscape``, ``food``, ``document``, ``other`` — while the zero-shot tagger
+uses the full set.)
 """
 
 from __future__ import annotations
@@ -31,7 +35,18 @@ from PIL import Image
 if TYPE_CHECKING:
     from .config import AtlasConfig
 
-SCENE_LABELS = ["people", "landscape", "food", "document", "other"]
+SCENE_LABELS = [
+    "people",
+    "animals",
+    "landscape",
+    "plants",
+    "food",
+    "vehicle",
+    "building",
+    "document",
+    "screenshot",
+    "other",
+]
 #: ``other`` is the catch-all fallback, not a thing we can write a text prompt
 #: for, so the zero-shot label matrix only covers the concrete labels.
 OTHER_LABEL = "other"

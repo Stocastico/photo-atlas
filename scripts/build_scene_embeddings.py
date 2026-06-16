@@ -43,6 +43,13 @@ LABEL_PROMPTS: dict[str, list[str]] = {
         "a selfie of people",
         "a photo of a family",
     ],
+    "animals": [
+        "a photo of an animal",
+        "a photo of a pet",
+        "a photo of a dog",
+        "a photo of a cat",
+        "a photo of a bird",
+    ],
     "landscape": [
         "a landscape photograph",
         "a photo of scenery",
@@ -50,17 +57,41 @@ LABEL_PROMPTS: dict[str, list[str]] = {
         "a photo of mountains and sky",
         "a photo of a beach",
     ],
+    "plants": [
+        "a photo of a flower",
+        "a close-up photo of a plant",
+        "a photo of a garden",
+        "a macro photo of a blossom",
+    ],
     "food": [
         "a photo of food",
         "a photo of a meal on a plate",
         "a close-up photo of a dish",
         "a photo of a dessert",
     ],
+    "vehicle": [
+        "a photo of a car",
+        "a photo of a vehicle",
+        "a photo of a truck",
+        "a photo of a motorcycle",
+    ],
+    "building": [
+        "a photo of a building",
+        "a photo of architecture",
+        "a photo of a city street",
+        "a photo of a house",
+    ],
     "document": [
         "a scan of a document",
-        "a screenshot of text",
         "a photo of a page of text",
         "a photo of a receipt",
+        "a photo of a book page",
+    ],
+    "screenshot": [
+        "a screenshot of an app",
+        "a screenshot of a phone screen",
+        "a screenshot of a website",
+        "a screenshot of a user interface",
     ],
 }
 
