@@ -158,6 +158,8 @@ clustering and naming without any real photos.
 photo-atlas index ~/Pictures        # walk the tree, extract metadata + faces
 photo-atlas cluster                 # group the unnamed faces
 photo-atlas serve                   # browse, filter, and name people
+photo-atlas embed                   # backfill SigLIP embeddings for semantic search
+photo-atlas retag-scenes            # recompute scene tags in place (no re-index)
 photo-atlas stats                   # quick catalog summary
 photo-atlas prune                   # drop entries whose files were deleted/moved
 photo-atlas export-labels           # write person names to portable XMP sidecars
@@ -196,7 +198,9 @@ indexer ─┬─ metadata.py    EXIF date / camera / GPS  + thumbnails
          ├─ embed.py      SigLIP image/text embeddings for semantic search
          └─ db.py         SQLite catalog (photos / persons / faces)
 
-api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces)
+api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces · ✨ smart search)
+   ├─ search.py    filter→SQL + SigLIP relevance ranking (SemanticIndex)
+   └─ planner.py   decompose NL queries → person/people filters + visual text
 ```
 
 - **Recognition.** When new photos are indexed, each detected face is matched by
