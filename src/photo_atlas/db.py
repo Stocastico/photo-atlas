@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS photos (
     thumb_path   TEXT,
     embedding    BLOB,          -- SigLIP image embedding (float32) for semantic search
     embed_dim    INTEGER,       -- length of ``embedding`` (NULL when not embedded)
+    phash        TEXT,          -- perceptual hash (dHash, hex) for near-duplicate grouping
     indexed_at   TEXT
 );
 
@@ -177,6 +178,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # (like favorite) so a re-index never un-hides a photo.
         if "hidden" not in cols:
             conn.execute("ALTER TABLE photos ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+        # Perceptual hash (added 2026-06): a dHash hex string for near-duplicate /
+        # burst grouping. Additive, so older catalogs gain it empty and fill it in
+        # via a re-index or the `photo-atlas dedup` backfill.
+        if "phash" not in cols:
+            conn.execute("ALTER TABLE photos ADD COLUMN phash TEXT")
         # Denormalised named-face count (added 2026-06): add the column, then
         # backfill it once from the faces table before the maintenance triggers
         # (created by the schema script below) take over for future writes.
@@ -282,6 +288,34 @@ def set_photo_embedding(
     conn.execute(
         "UPDATE photos SET embedding=?, embed_dim=? WHERE id=?", (blob, dim, photo_id)
     )
+
+
+def set_phash(conn: sqlite3.Connection, photo_id: int, phash: str | None) -> None:
+    """Persist (or clear) a photo's perceptual hash for near-duplicate grouping.
+
+    Kept out of :data:`PHOTO_COLUMNS` (like the embedding) so the grid/list SELECT
+    never ships it; it's written here, only when a hash was computed. A re-index
+    still refreshes it because the commit path always calls this with the freshly
+    derived value.
+    """
+
+    conn.execute("UPDATE photos SET phash=? WHERE id=?", (phash, photo_id))
+
+
+def delete_photos(conn: sqlite3.Connection, ids: list[int]) -> int:
+    """Delete photo rows (faces cascade); return the number removed.
+
+    The catalog half of a hard delete — removing the source files + derivatives
+    on disk is the caller's job (see ``indexer.delete_photos``).
+    """
+
+    clean = [int(i) for i in ids]
+    if not clean:
+        return 0
+    placeholders = ", ".join(["?"] * len(clean))
+    cur = conn.execute(f"DELETE FROM photos WHERE id IN ({placeholders})", clean)
+    conn.commit()
+    return cur.rowcount
 
 
 def set_favorite(conn: sqlite3.Connection, photo_id: int, favorite: bool) -> bool:

@@ -89,6 +89,18 @@ class AtlasConfig:
     #: stray handful of shots isn't a trip).
     trip_min_photos: int = 4
 
+    #: Near-duplicate / burst grouping: two shots are perceptually near-identical
+    #: when their dHash Hamming distance is at most this (out of 64 bits).
+    dup_max_distance: int = 10
+
+    #: Near-duplicate / burst grouping: shots more than this many seconds apart are
+    #: never grouped, so only a genuine burst (rapid consecutive frames) collapses.
+    dup_max_gap_seconds: float = 10.0
+
+    #: Near-duplicate / burst grouping: groups with fewer photos than this are
+    #: dropped (a lone shot isn't a duplicate set).
+    dup_min_group: int = 2
+
     @property
     def models_dir(self) -> Path:
         return self.home / "models"

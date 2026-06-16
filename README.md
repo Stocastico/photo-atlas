@@ -31,6 +31,11 @@ recognised automatically once a person has been named.
   image embedding is stored at index time and a free-text query is embedded into
   the same space at search time; the ✨ **Smart** toggle in the search bar switches
   it on, and it ANDs with every other filter.
+- **Near-duplicate & burst grouping** — a perceptual hash (dHash) is stored for
+  every photo at index time, and the **Duplicates** tab groups near-identical
+  shots taken moments apart (camera bursts, re-saved copies). Each set keeps a
+  best-of-N cover (favorite → highest resolution → earliest) and lets you **hide**
+  the rest (reversible) or **delete** them from disk (irreversible) in one click.
 - **Offline reverse geocoding** — GPS EXIF → city + country using a bundled
   dataset (no network). Install `reverse_geocoder` for ~150k-city resolution.
 - **Rich metadata** — capture date (EXIF, with file-mtime fallback), camera,
@@ -153,6 +158,7 @@ photo-atlas index ~/Pictures        # walk the tree, extract metadata + faces
 photo-atlas cluster                 # group the unnamed faces
 photo-atlas serve                   # browse, filter, and name people
 photo-atlas embed                   # backfill SigLIP embeddings for semantic search
+photo-atlas dedup                   # backfill perceptual hashes for the Duplicates tab
 photo-atlas retag-scenes            # recompute scene tags in place (no re-index)
 photo-atlas stats                   # quick catalog summary
 photo-atlas prune                   # reconcile: drop dead rows + sweep orphaned derivatives
@@ -168,7 +174,10 @@ demand). Choose the face backend with `--faces {auto,yunet,dlib,synthetic,none}`
 (`--workers N`, default = CPU count; `--workers 1` for serial): each file is
 decoded once and face detection runs on a downscaled copy, while the single main
 process performs all database writes. Byte-identical duplicates (same photo in
-two folders) are detected by SHA-1 and skipped. Video files are catalogued when
+two folders) are detected by SHA-1 and skipped; *near*-duplicates (bursts,
+re-saved copies) are grouped in the **Duplicates** tab via a perceptual hash
+computed at index time (run `photo-atlas dedup` to backfill it on a library
+indexed before this feature). Video files are catalogued when
 `ffmpeg`/`ffprobe` are on `PATH` — a poster frame plus the capture date/GPS are
 extracted so clips are browsable (and playable) alongside photos; without ffmpeg
 they're counted but skipped.

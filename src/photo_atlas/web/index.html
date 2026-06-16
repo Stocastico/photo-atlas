@@ -21,6 +21,8 @@
         aria-controls="view-memories" data-view="memories">Memories</button>
       <button class="tab" id="tab-trips" role="tab" aria-selected="false" tabindex="-1"
         aria-controls="view-trips" data-view="trips">Trips</button>
+      <button class="tab" id="tab-duplicates" role="tab" aria-selected="false" tabindex="-1"
+        aria-controls="view-duplicates" data-view="duplicates">Duplicates</button>
       <button class="tab" id="tab-map" role="tab" aria-selected="false" tabindex="-1"
         aria-controls="view-map" data-view="map">Map</button>
       <button class="tab" id="tab-people" role="tab" aria-selected="false" tabindex="-1"
@@ -91,6 +93,19 @@ photo-atlas serve              # browse, filter, and name people</code></pre>
         <div class="toolbar"><h2 style="margin:0">Trips</h2></div>
         <div id="trips"></div>
         <div id="trips-empty" class="empty" style="display:none">No trips detected yet — index a dated, geotagged library to see them here.</div>
+      </div>
+
+      <div id="view-duplicates" role="tabpanel" aria-labelledby="tab-duplicates" style="display:none">
+        <div class="toolbar">
+          <h2 style="margin:0">Duplicates &amp; bursts</h2>
+          <span id="dup-summary" class="trip-meta" aria-live="polite"></span>
+        </div>
+        <p class="tagline">Near-identical shots taken moments apart. The ★ best of each set is
+          pre-kept; the rest are selected for removal. <strong>Hide</strong> is reversible;
+          <strong>Delete</strong> permanently removes the files from disk.</p>
+        <div id="duplicates"></div>
+        <div id="duplicates-empty" class="empty" style="display:none">No near-duplicates found. If this
+          library was indexed before duplicate detection, run <code>photo-atlas dedup</code> first.</div>
       </div>
 
       <div id="view-map" role="tabpanel" aria-labelledby="tab-map" style="display:none">

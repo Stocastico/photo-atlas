@@ -274,6 +274,34 @@ def read_exif_settings(path: Path) -> dict[str, str]:
         return exif_settings(img)
 
 
+def dhash(img: Image.Image, hash_size: int = 8) -> str:
+    """Return the difference-hash (dHash) of an image as a hex string.
+
+    dHash is a tiny, robust perceptual fingerprint: downscale to greyscale
+    ``(hash_size+1) x hash_size``, then emit one bit per adjacent-pixel pair
+    (1 when the left pixel is brighter). Near-identical shots — a camera burst,
+    a re-saved/lightly-edited copy — differ in only a handful of bits, so a small
+    Hamming distance between two dHashes flags them as near-duplicates.
+
+    Stored as a ``hash_size*hash_size``-bit value rendered hex (16 chars for the
+    default 64-bit hash) rather than an INTEGER: a 64-bit unsigned value doesn't
+    fit SQLite's signed-64 INTEGER, and grouping compares hashes in Python anyway.
+    """
+
+    small = img.convert("L").resize((hash_size + 1, hash_size), Image.Resampling.LANCZOS)
+    pixels = list(small.tobytes())  # one byte per pixel (mode "L"), row-major
+    row_stride = hash_size + 1
+    bits = 0
+    for row in range(hash_size):
+        base = row * row_stride
+        for col in range(hash_size):
+            left = pixels[base + col]
+            right = pixels[base + col + 1]
+            bits = (bits << 1) | (1 if left > right else 0)
+    width = (hash_size * hash_size + 3) // 4  # hex digits needed
+    return f"{bits:0{width}x}"
+
+
 def resize_image_to(img: Image.Image, dest: Path, size: int, quality: int) -> Path:
     """Write an orientation-corrected, downscaled JPEG from an open image.
 

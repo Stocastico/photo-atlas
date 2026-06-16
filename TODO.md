@@ -314,10 +314,24 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
     *containing* Stefano that *looks like* the residual), not per-person grounding —
     running SigLIP on the per-person crop is the heavier follow-up. Planner + API
     (person-AND-visual and structured-only) unit-tested.
-- [ ] **Near-duplicate & burst grouping.** Only exact SHA-1 dedup exists today; real
-  libraries have 5–20-frame bursts. Add a perceptual hash (dHash/pHash) column,
-  group near-identical shots, collapse them in the grid behind a "best of N" cover,
-  and offer bulk-delete of the rest. Huge real-world decluttering win.
+- [x] **Near-duplicate & burst grouping.** **Done:** a perceptual hash (dHash,
+  `metadata.dhash`) is stored hex in `photos.phash` — computed for free at index time
+  (kept out of `PHOTO_COLUMNS` like the embedding, refreshed on every re-index) and
+  backfillable for older catalogs via `indexer.backfill_phashes` / the `photo-atlas
+  dedup` command. `search.find_burst_groups` groups near-identical shots that are both
+  perceptually close (dHash Hamming ≤ `config.dup_max_distance`) **and** captured within
+  `config.dup_max_gap_seconds` of a neighbour — a union-find over a time-sorted sliding
+  window, so it's `O(N·window)` and a burst survives the odd off frame. Each group picks
+  a **best-of-N** cover (favorite → highest resolution → earliest) and is served over
+  `GET /api/duplicates`. A new **Duplicates** tab lists each set with the cover pre-kept
+  (★) and the rest checkbox-selected for removal: **Hide selected** (reversible, reuses
+  the bulk action) or **Delete selected** (irreversible hard delete of rows + source
+  files + derivatives via `POST /api/photos/delete` → `indexer.delete_photos`, behind a
+  confirm + the same-origin guard). dHash/Hamming, grouping (burst/time-gap/cover/hidden/
+  undated), backfill, hard delete and both endpoints are unit + API tested
+  (`tests/test_dedup.py`); the CLI backfill in `tests/test_cli.py`. Follow-up: inline
+  grid collapse behind the cover (the virtualised grid rewrite) was deferred in favour of
+  the dedicated review tab.
 - [x] **"On this day" / Memories.** **Done:** a new **Memories** tab surfaces photos
   taken on the same calendar date in earlier years. `search.on_this_day` slices on
   the `taken_at` month/day prefix and groups by year (newest first, each group a
