@@ -124,20 +124,59 @@ def assign_face(
     name: str | None = None,
     person_id: int | None = None,
 ) -> int:
+    """Assign a face to a person (a human label, so confidence becomes 1.0).
+
+    Active learning: reassigning a face that was tagged as *someone else* records a
+    "not that person" negative, and any stale negative against the new person is
+    cleared (the user just confirmed it *is* them).
+    """
+
     if person_id is None:
         if not name:
             raise ValueError("Provide either a person name or an existing person_id")
         person_id = db.get_or_create_person(conn, name)
+    prev = conn.execute("SELECT person_id FROM faces WHERE id=?", (face_id,)).fetchone()
+    if prev is not None and prev["person_id"] not in (None, person_id):
+        db.add_face_negative(conn, face_id, int(prev["person_id"]))
+    db.remove_face_negative(conn, face_id, person_id)
     conn.execute(
-        "UPDATE faces SET person_id=?, cluster_id=NULL WHERE id=?", (person_id, face_id)
+        "UPDATE faces SET person_id=?, cluster_id=NULL, confidence=1.0 WHERE id=?",
+        (person_id, face_id),
     )
     conn.commit()
     return person_id
 
 
 def unassign_face(conn: sqlite3.Connection, face_id: int) -> None:
+    """Send a face back to unknown, recording a negative for the person it had."""
+
+    prev = conn.execute("SELECT person_id FROM faces WHERE id=?", (face_id,)).fetchone()
+    if prev is not None and prev["person_id"] is not None:
+        db.add_face_negative(conn, face_id, int(prev["person_id"]))
     conn.execute("UPDATE faces SET person_id=NULL WHERE id=?", (face_id,))
     conn.commit()
+
+
+def low_confidence_faces(
+    conn: sqlite3.Connection, *, max_confidence: float, limit: int = 60
+) -> list[dict]:
+    """Auto-recognised faces below ``max_confidence``, for the review queue.
+
+    Only machine guesses (``confidence`` strictly between 0 and the threshold) with
+    a crop are returned, weakest first; a human assignment sets confidence to 1.0
+    and so drops out once reviewed.
+    """
+
+    rows = conn.execute(
+        "SELECT f.id, f.photo_id, f.person_id, f.confidence, f.crop_path, "
+        "p.name AS person_name "
+        "FROM faces f JOIN persons p ON p.id = f.person_id "
+        "WHERE f.person_id IS NOT NULL AND f.crop_path IS NOT NULL "
+        "AND f.confidence > 0 AND f.confidence < ? "
+        "ORDER BY f.confidence ASC, f.id ASC LIMIT ?",
+        (max_confidence, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def list_clusters(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:

@@ -370,9 +370,20 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   (`tests/test_similar.py`) and the request-URL switch via a Node harness
   (`tests/js/similar_harness.mjs`). Follow-up: SFace "same person" similarity is
   still open (the person filter already covers exact-match).
-- [ ] **Face active-learning (negative feedback).** Reassigning/unassigning an
-  auto-tag is thrown away today. Record "not this person" negatives and feed them
-  into the k-NN vote (penalise), and surface low-confidence auto-tags for review.
+- [x] **Face active-learning (negative feedback).** **Done:** correcting an auto-tag
+  now teaches recognition. Unassigning a face — or reassigning it to someone else —
+  records a "not this person" **negative** (new `face_negatives` table, both FKs
+  cascade, `UNIQUE(face_id, person_id)`); `library.assign_face`/`unassign_face` write
+  them and a human assignment sets `confidence=1.0` (so a confirmed face is certain).
+  `Enrollment` now carries the negatives and `knn_person_match` is **negative-aware**:
+  each identity's net vote is its positive neighbours minus its near negatives, so a
+  probe that looks like a rejected example is penalised — or vetoed when the negatives
+  outweigh the positives — with behaviour identical to plain k-NN when there are none.
+  Low-confidence guesses are surfaced in a **"Review guesses"** section of the Name-faces
+  tab (`GET /api/faces/review`, `config.review_confidence` default 0.6) where each can be
+  confirmed (→ 1.0, drops out) or rejected (→ unassign + negative). Negative-aware k-NN,
+  the DB/cascade, the correction flow and the review API are unit + API tested
+  (`tests/test_active_learning.py`).
 - [x] **Lightbox power tools.** **Done:** the lightbox gained scroll-wheel / `+`/`-`/`0`
   **zoom** with drag-to-**pan** past 1× (double-click toggles; the centre-anchored
   transform `nextZoom` is pure + Node-harness tested), a **slideshow** auto-advance

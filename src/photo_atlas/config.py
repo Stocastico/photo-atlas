@@ -50,6 +50,11 @@ class AtlasConfig:
     #: when a person's appearance drifts over the years.
     recognition_k: int = 5
 
+    #: Auto-recognised faces whose confidence is below this are surfaced in the
+    #: "Review guesses" list for the user to confirm or reject (active learning).
+    #: A human assignment sets confidence to 1.0, so it drops out once reviewed.
+    review_confidence: float = 0.6
+
     #: Logit temperature applied to the zero-shot cosine similarities before the
     #: softmax. Higher = sharper label probabilities.
     scene_temperature: float = 50.0

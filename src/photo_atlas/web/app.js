@@ -1295,7 +1295,48 @@ function openMergePicker(panel, person, allPersons) {
 }
 
 // ---- clusters (name faces) ------------------------------------------------
+// Active-learning review: low-confidence auto-tags the user can confirm or
+// reject. Confirming assigns the proposed person (confidence → 1.0); rejecting
+// unassigns and records a "not this person" negative for future recognition.
+async function renderReview() {
+  const section = $("#review-section");
+  const wrap = $("#review");
+  if (!section || !wrap) return;
+  let data;
+  try {
+    data = await api("/api/faces/review");
+  } catch (e) { return; }
+  const faces = (data && data.faces) || [];
+  section.style.display = faces.length ? "block" : "none";
+  wrap.innerHTML = "";
+  for (const f of faces) {
+    const el = document.createElement("div");
+    el.className = "review-card";
+    el.innerHTML = `
+      <img src="/api/face/${f.id}" onerror="this.style.visibility='hidden'" />
+      <div class="sub">Looks like <strong>${esc(f.person_name)}</strong>?</div>
+      <div class="row">
+        <button class="primary" data-act="confirm">✓ Yes</button>
+        <button class="ghost" data-act="reject">✗ Not ${esc(f.person_name)}</button>
+      </div>`;
+    const refresh = () => { renderReview(); renderSidebar(); };
+    el.querySelector('[data-act="confirm"]').onclick = async () => {
+      await api(`/api/faces/${f.id}/assign`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ person_id: f.person_id }),
+      });
+      refresh();
+    };
+    el.querySelector('[data-act="reject"]').onclick = async () => {
+      await api(`/api/faces/${f.id}/unassign`, { method: "POST" });
+      refresh();
+    };
+    wrap.appendChild(el);
+  }
+}
+
 async function renderClusters() {
+  renderReview();
   const { clusters } = await api("/api/clusters");
   const wrap = $("#clusters");
   wrap.innerHTML = "";
