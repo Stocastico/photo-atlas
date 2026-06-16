@@ -76,6 +76,10 @@ class AlbumRequest(BaseModel):
     query: str = ""
 
 
+class DeleteRequest(BaseModel):
+    ids: list[int]
+
+
 def create_app(config: AtlasConfig | None = None) -> FastAPI:
     config = (config or AtlasConfig()).ensure_dirs()
     app = FastAPI(title="Photo Atlas", version="0.1.0")
@@ -301,6 +305,33 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             min_photos=config.trip_min_photos,
         )
         return {"count": len(trips), "trips": trips}
+
+    @app.get("/api/duplicates")
+    def api_duplicates(conn: sqlite3.Connection = Depends(get_conn)):
+        # Near-duplicate / burst groups: runs of visually near-identical shots taken
+        # close together in time, each with a best-of-N cover. Derived on the fly
+        # from the stored perceptual hashes (no schema change beyond ``phash``), so
+        # it tracks re-indexing for free. The UI offers "keep the cover, hide/delete
+        # the rest" per group.
+        groups = search.find_burst_groups(
+            conn,
+            max_distance=config.dup_max_distance,
+            max_gap_seconds=config.dup_max_gap_seconds,
+            min_group=config.dup_min_group,
+        )
+        redundant = sum(g["count"] - 1 for g in groups)
+        return {"count": len(groups), "redundant": redundant, "groups": groups}
+
+    @app.post("/api/photos/delete")
+    def api_delete_photos(payload: DeleteRequest):
+        # Hard delete: removes the catalog rows *and* the source files + derivatives
+        # from disk (irreversible). Behind the same-origin write guard; the UI gates
+        # it behind an explicit confirm, separate from the reversible "hide" action.
+        # ``indexer.delete_photos`` opens its own connection (it also sweeps files).
+        from . import indexer
+
+        result = indexer.delete_photos(config, payload.ids)
+        return {"ok": True, **result}
 
     @app.get("/api/map")
     def api_map(

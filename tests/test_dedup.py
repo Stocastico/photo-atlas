@@ -221,3 +221,64 @@ def test_hidden_and_undated_excluded(tmp_path):
         assert search.find_burst_groups(conn) == []
     finally:
         conn.close()
+
+
+# -- API --------------------------------------------------------------------
+def _client(config):
+    from fastapi.testclient import TestClient
+
+    from photo_atlas.api import create_app
+
+    return TestClient(create_app(config))
+
+
+def test_api_duplicates(tmp_path):
+    config = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    conn = db.connect(config.db_path)
+    base = 0x0F0F0F0F0F0F0F0F
+    for i in range(3):
+        _insert(conn, f"/burst{i}.jpg", f"2021-06-01T10:00:0{i}", f"{base ^ i:016x}")
+    conn.commit()
+    conn.close()
+
+    data = _client(config).get("/api/duplicates").json()
+    assert data["count"] == 1
+    assert data["redundant"] == 2  # one cover kept, two redundant
+    assert data["groups"][0]["count"] == 3
+
+
+def test_api_delete_photos(tmp_path):
+    config = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    photos = _photos_dir(tmp_path)
+    indexer.index_path(config, photos, backend_name="none", geocode=False)
+    client = _client(config)
+    conn = db.connect(config.db_path)
+    target = conn.execute("SELECT id FROM photos WHERE filename='a.jpg'").fetchone()[0]
+    conn.close()
+
+    resp = client.post("/api/photos/delete", json={"ids": [target]})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] and body["rows"] == 1 and body["files"] == 1
+    assert not (photos / "a.jpg").exists()
+    assert client.get(f"/api/photos/{target}").status_code == 404
+
+
+def test_api_hide_rest_via_bulk(tmp_path):
+    # "Hide the rest" reuses the existing bulk action — verify the integration.
+    config = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    conn = db.connect(config.db_path)
+    base = 0x0F0F0F0F0F0F0F0F
+    ids = [
+        _insert(conn, f"/burst{i}.jpg", f"2021-06-01T10:00:0{i}", f"{base ^ i:016x}")
+        for i in range(3)
+    ]
+    conn.commit()
+    conn.close()
+    client = _client(config)
+
+    rest = ids[1:]
+    hidden = client.post("/api/photos/bulk", json={"ids": rest, "action": "hide"})
+    assert hidden.json()["updated"] == 2
+    # Hidden shots drop out of the group, leaving the lone cover → no group.
+    assert client.get("/api/duplicates").json()["count"] == 0

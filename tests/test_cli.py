@@ -139,6 +139,25 @@ def test_export_labels_command_writes_sidecars(tmp_path, capsys):
     assert (out / "p.jpg.xmp").exists()
 
 
+def test_dedup_command_backfills_hashes(tmp_path, capsys):
+    from photo_atlas import demo
+
+    photos = tmp_path / "pics"
+    demo.generate(photos, count=4, seed=5)
+    home = tmp_path / "lib"
+    cli.main(["--home", str(home), "index", str(photos), "--faces", "none"])
+    # Clear the hashes computed at index time to simulate a pre-phash catalog.
+    conn = db.connect(AtlasConfig(home=home).db_path)
+    conn.execute("UPDATE photos SET phash=NULL")
+    conn.commit()
+    conn.close()
+    capsys.readouterr()
+
+    rc = cli.main(["--home", str(home), "dedup"])
+    assert rc == 0
+    assert "4 photo(s) hashed" in capsys.readouterr().out
+
+
 def test_index_missing_path_returns_error(tmp_path, capsys):
     rc = cli.main(["--home", str(tmp_path / "lib"), "index", str(tmp_path / "nope")])
     assert rc == 2

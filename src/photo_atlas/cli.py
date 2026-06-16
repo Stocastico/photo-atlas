@@ -18,6 +18,7 @@ from pathlib import Path
 from . import db
 from .config import AtlasConfig
 from .indexer import (
+    backfill_phashes,
     cluster_library,
     embed_library,
     index_path,
@@ -147,6 +148,22 @@ def _cmd_embed(args) -> int:
         )
         return 1
     print(f"\nDone: {n} photo(s) embedded. Semantic search is now available in `serve`.")
+    return 0
+
+
+def _cmd_dedup(args) -> int:
+    config = _config(args)
+
+    def progress(done: int, total: int) -> None:
+        sys.stdout.write(f"\r  hashed {done}/{total}")
+        sys.stdout.flush()
+
+    print("Computing perceptual hashes for near-duplicate detection ...")
+    n = backfill_phashes(config, recompute=args.recompute, progress=progress)
+    print(
+        f"\nDone: {n} photo(s) hashed. Open the Duplicates tab in `photo-atlas serve` "
+        "to review bursts and near-duplicates."
+    )
     return 0
 
 
@@ -282,6 +299,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--recompute", action="store_true", help="Re-embed photos that already have an embedding"
     )
     p_embed.set_defaults(func=_cmd_embed)
+
+    p_dedup = sub.add_parser(
+        "dedup",
+        help="Backfill perceptual hashes for near-duplicate / burst detection (no re-index)",
+    )
+    p_dedup.add_argument(
+        "--recompute", action="store_true", help="Re-hash photos that already have a hash"
+    )
+    p_dedup.set_defaults(func=_cmd_dedup)
 
     p_export = sub.add_parser(
         "export-labels", help="Write person names to portable XMP sidecars"

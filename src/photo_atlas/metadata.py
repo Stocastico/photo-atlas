@@ -288,7 +288,7 @@ def dhash(img: Image.Image, hash_size: int = 8) -> str:
     fit SQLite's signed-64 INTEGER, and grouping compares hashes in Python anyway.
     """
 
-    small = img.convert("L").resize((hash_size + 1, hash_size), Image.LANCZOS)
+    small = img.convert("L").resize((hash_size + 1, hash_size), Image.Resampling.LANCZOS)
     pixels = list(small.tobytes())  # one byte per pixel (mode "L"), row-major
     row_stride = hash_size + 1
     bits = 0
