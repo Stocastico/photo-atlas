@@ -222,9 +222,13 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   that face still exists, still belongs to the person and still has a crop) and falls
   back to the person's first valid crop otherwise — so a dangling pin no longer
   serves a 404 avatar.
-- [ ] **Silent face-crop save failure is unrecoverable.** `indexer` swallows a
-  crop write error and stores `crop_path=NULL`; the face still exists (embedding +
-  bbox) but `/api/face/{id}` 404s forever with no retry path. Track + offer re-save.
+- [x] **Silent face-crop save failure is unrecoverable.** **Done:** a crop write
+  error at index time still stores `crop_path=NULL` (the face keeps its embedding +
+  bbox), but `/api/face/{id}` no longer 404s forever — when the crop is missing it
+  calls `indexer.regenerate_face_crop`, which rebuilds the crop from the source photo
+  (re-decoding with the same EXIF-transpose, cropping the stored bbox) and persists
+  the new path. This also recovers crops whose files were later deleted. Covered by
+  `tests/test_api_errors.py` (regenerate-on-demand + the source-gone 404 path).
 - [x] **Thin input validation.** **Done:** `offset` is `Query(0, ge=0)` (and `limit`
   is bounded `ge=1, le=500`); `date_from`/`date_to` are constrained to an ISO
   `^\d{4}-\d{2}-\d{2}$` pattern, so bad params 422 instead of silently mis-filtering.
@@ -244,10 +248,26 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
 - [ ] **Resumable / crash-safe indexing.** An interrupted run leaves a mixed state
   and orphans; `prune` is a separate manual step. Checkpoint progress and
   auto-prune orphaned rows + derivative files.
-- [ ] **Hot-path denormalisation & composite indexes.** Backfill a
-  `named_face_count` column (already flagged) to kill the per-row subquery, and add
-  composite indexes for the real access patterns: `(scene_type, taken_at)`,
-  `(folder_place, taken_at)`, `(person_id, taken_at)`.
+- [x] **Hot-path denormalisation & composite indexes.**
+  - [x] **Composite indexes for the browse/filter access patterns.** Added
+    `(scene_type, taken_at)` and `(folder_place, taken_at)` on `photos` so a facet
+    filter + the default `taken_at DESC` sort is served from one index (no separate
+    sort step), and `(person_id, photo_id)` on `faces` so the person `EXISTS` subquery
+    is a covering seek (`taken_at` lives on `photos`, so the cross-table
+    `(person_id, taken_at)` isn't expressible). Their leading columns supersede the
+    old single-column `idx_photos_scene`/`idx_photos_folder`/`idx_faces_person`, which
+    are dropped (in `_migrate`, so existing catalogs shed the now-redundant indexes).
+    Verified via `EXPLAIN QUERY PLAN`; index presence/migration unit-tested.
+  - [x] **Backfill a `named_face_count` column** to kill the per-row "known
+    people" subquery. The column is **trigger-maintained** (AFTER INSERT/DELETE/
+    UPDATE-OF-person_id on `faces`), so every write path stays exact — index-time
+    auto-recognition, assign/unassign/cluster-assign, merge (named→named, no
+    change), delete-person, re-index via `replace_faces`, and prune's FK cascade —
+    without any Python call site having to remember to update it. `_migrate` adds
+    the column and backfills it once for existing catalogs before the triggers take
+    over; `search.KNOWN_BUCKETS` now reads `p.named_face_count` directly instead of
+    a correlated subquery. Maintenance across all paths + facet/result agreement +
+    migration backfill are unit-tested (`tests/test_named_face_count.py`).
 
 ### Bold features
 - [x] ⭐ **Natural-language semantic search** — the headline opportunity now that a
@@ -281,8 +301,16 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
 - [ ] **"On this day" / Memories + trip auto-detection.** A 15-year archive is made
   for "this week, 8 years ago". Add day/week-of-year endpoints and auto-group trips
   from date gaps + place/GPS proximity (folders already hint at it).
-- [ ] **Favorites + Smart Albums (saved searches).** Star shots (`favorite` column +
-  facet) and persist any filter set as a named, shareable album.
+- [x] **Favorites.** Star shots: a `favorite` 0/1 column (kept out of
+  `PHOTO_COLUMNS` so a re-index never clears it; written via `db.set_favorite` and
+  `PUT /api/photos/{id}/favorite`, guarded by the same-origin write middleware), a
+  filter-aware **`favorites`** facet count, and a `favorite` filter on
+  `/api/photos`. The UI adds a "★ Favorites" quick-filter chip, a hover/keyboard
+  star overlay on every grid card, and an inline star in the lightbox; all star
+  buttons for a photo stay in sync. URL round-trip + db/search/facet/API tested
+  (`tests/test_favorites.py`, `tests/js/url_state_harness.mjs`).
+  - [ ] **Smart Albums (saved searches).** Persist any filter set as a named,
+    shareable album. (Favorites shipped; saved searches still open.)
 - [ ] **Multi-select + bulk actions.** Shift/Ctrl-click in the grid → assign a
   person, favorite, export, or hide a whole selection at once.
 - [ ] **"More like this."** Reuse the embeddings we already compute: SFace for

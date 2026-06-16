@@ -130,6 +130,59 @@ function toggleHasFaces() {
   refresh();
 }
 
+function toggleFavoriteFilter() {
+  if (state.filters.favorite) delete state.filters.favorite;
+  else state.filters.favorite = true;
+  refresh();
+}
+
+// ---- favorites (per-photo star) -------------------------------------------
+// Paint a star button to match a photo's favourite state (used by both the grid
+// overlay and the lightbox); keeps the icon, pressed-state and label in sync.
+function paintStar(btn, fav) {
+  btn.classList.toggle("on", !!fav);
+  btn.textContent = fav ? "★" : "☆";
+  btn.title = "Toggle favorite";
+  btn.setAttribute("aria-pressed", fav ? "true" : "false");
+  btn.setAttribute("aria-label", fav ? "Remove from favorites" : "Add to favorites");
+}
+
+function makeStar(photo, { inline = false } = {}) {
+  const btn = document.createElement("button");
+  btn.className = "star" + (inline ? " star-inline" : "");
+  btn.dataset.favId = photo.id;
+  paintStar(btn, photo.favorite);
+  btn.onclick = (e) => { e.stopPropagation(); toggleFavorite(photo); };
+  return btn;
+}
+
+// Repaint every star button in the DOM that points at this photo, so the grid
+// overlay and the lightbox toggle never disagree.
+function syncStars(id, fav) {
+  document.querySelectorAll(`.star[data-fav-id="${id}"]`).forEach((b) => paintStar(b, fav));
+}
+
+async function toggleFavorite(photo) {
+  const next = !photo.favorite;
+  try {
+    await api(`/api/photos/${photo.id}/favorite`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ favorite: next }),
+    });
+  } catch (e) {
+    return; // api() already toasted; leave the star as-is
+  }
+  const fav = next ? 1 : 0;
+  photo.favorite = fav;
+  // Keep every in-memory copy in sync (the grid list and the lightbox detail
+  // can be distinct objects for the same photo).
+  for (const gp of state.photos) if (gp.id === photo.id) gp.favorite = fav;
+  syncStars(photo.id, fav);
+  // When the Favorites filter is on, un-starring removes the photo from the set,
+  // so re-run the query to drop it from the grid.
+  if (state.filters.favorite && !next) refresh();
+}
+
 function chip(label, count, active, onClick) {
   const el = document.createElement("button");
   el.className = "chip" + (active ? " active" : "");
@@ -175,7 +228,7 @@ function applyQuery() {
   const filters = {};
   for (const [k, v] of params.entries()) {
     if (k === "view" || k === "sort") continue;
-    if (k === "has_faces") filters.has_faces = true;
+    if (k === "has_faces" || k === "favorite") filters[k] = true;
     else if (SCALAR_FILTERS.has(k)) filters[k] = v;
     else (filters[k] = filters[k] || []).push(v);
   }
@@ -258,10 +311,11 @@ async function renderSidebar() {
   hdr.appendChild(clear);
   side.appendChild(hdr);
 
-  // Quick toggle: only photos with at least one detected face.
+  // Quick toggles: starred photos, and photos with at least one detected face.
   heading("Quick filters");
   const quick = document.createElement("div");
   quick.className = "facet";
+  quick.appendChild(chip("★ Favorites", f.favorites, !!state.filters.favorite, toggleFavoriteFilter));
   quick.appendChild(chip("👤 Has people", f.with_faces, !!state.filters.has_faces, toggleHasFaces));
   side.appendChild(quick);
 
@@ -358,7 +412,9 @@ function renderActiveFilters() {
   for (const [k, v] of pairs) {
     const pill = document.createElement("button");
     pill.className = "filter-pill";
-    const text = k === "has_faces" ? "Has people" : `${FILTER_NAMES[k] || k}: ${filterValueLabel(k, v)}`;
+    const text = k === "has_faces" ? "Has people"
+      : k === "favorite" ? "★ Favorites"
+      : `${FILTER_NAMES[k] || k}: ${filterValueLabel(k, v)}`;
     pill.innerHTML = `<span>${esc(text)}</span><span class="x">✕</span>`;
     pill.title = "Remove filter";
     pill.setAttribute("aria-label", `Remove filter ${text}`);
@@ -397,6 +453,7 @@ function photoCard(p, index) {
   card.onkeydown = (e) => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openLightbox(index); }
   };
+  card.appendChild(makeStar(p)); // favourite toggle overlay
   return card;
 }
 
@@ -600,9 +657,12 @@ function renderLightboxSide(p, id, reopen) {
     ${kv("Camera", [p.camera_make, p.camera_model].filter(Boolean).join(" "))}
     ${kv("Size", p.width && p.height ? `${p.width}×${p.height}` : "")}
     ${kv("Coordinates", p.lat != null ? `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}` : "")}
-    <p class="lb-actions"><a href="/api/image/${id}" target="_blank" rel="noopener">View full size ↗</a></p>
+    <p class="lb-actions" id="lb-actions"><a href="/api/image/${id}" target="_blank" rel="noopener">View full size ↗</a></p>
     <h3 style="margin-top:16px">Faces (${p.faces.length})</h3>
     <div class="face-list" id="lb-faces"></div>`;
+
+  // A favourite toggle for the open photo; shares paint/sync logic with the grid.
+  $("#lb-actions").prepend(makeStar(p, { inline: true }));
 
   const list = $("#lb-faces");
   if (!p.faces.length) list.innerHTML = `<span class="tagline">No faces detected.</span>`;

@@ -96,6 +96,24 @@ main { padding: 18px 20px 60px; min-height: calc(100vh - 58px); }
 .card .meta { position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 8px 6px; font-size: 11px;
   background: linear-gradient(transparent, rgba(0,0,0,.8)); color: #dfe7f0; display: flex; justify-content: space-between; }
 .badge { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,.6); border-radius: 6px; padding: 2px 6px; font-size: 11px; }
+/* Favourite star: grid overlay (top-right), revealed on hover but always shown
+   when the photo is starred; an inline variant is reused in the lightbox. */
+.star {
+  position: absolute; top: 6px; right: 6px; z-index: 2; padding: 0;
+  width: 28px; height: 28px; border-radius: 50%; font-size: 16px; line-height: 1;
+  background: rgba(0,0,0,.55); color: #cdd6e0; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity .12s ease;
+}
+.card:hover .star, .star.on, .star:focus-visible { opacity: 1; }
+.star.on { color: #ffcf33; }
+.star:hover { background: rgba(0,0,0,.82); }
+.star.star-inline {
+  position: static; opacity: 1; width: auto; height: auto; border-radius: 6px;
+  background: var(--panel-2); border: 1px solid var(--border); padding: 5px 10px;
+  margin-right: 10px; font-size: 14px;
+}
+.star.star-inline.on { border-color: #ffcf33; }
 .people-grid, .cluster-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
 .person-card, .cluster-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; text-align: center; }
 .person-card img.avatar, .cluster-card img.avatar { width: 96px; height: 96px; border-radius: 50%; object-fit: cover; background: var(--panel-2); }

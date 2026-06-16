@@ -56,14 +56,18 @@ const { __state: state, __buildQuery: buildQuery, __applyQuery: applyQuery, __sy
 let pass = 0, fail = 0;
 const check = (name, cond) => { cond ? pass++ : (fail++, console.error("FAIL:", name)); };
 
-// buildQuery serialises multi-value facets, scalars, the boolean toggle, view and sort.
-state.filters = { country: ["Italy", "France"], scene: ["food"], q: "beach", has_faces: true };
+// buildQuery serialises multi-value facets, scalars, the boolean toggles, view and sort.
+state.filters = {
+  country: ["Italy", "France"], scene: ["food"], q: "beach",
+  has_faces: true, favorite: true,
+};
 state.view = "people"; state.sort = "filename";
 const p = new URLSearchParams(buildQuery());
 check("country repeats", p.getAll("country").join(",") === "Italy,France");
 check("scene scalar", p.get("scene") === "food");
 check("q scalar", p.get("q") === "beach");
 check("has_faces flag", p.get("has_faces") != null);
+check("favorite flag", p.get("favorite") != null);
 check("view", p.get("view") === "people");
 check("sort", p.get("sort") === "filename");
 
@@ -75,6 +79,7 @@ applyQuery();
 check("restore multi-value", JSON.stringify(state.filters.country) === JSON.stringify(["Italy", "France"]));
 check("restore scalar", state.filters.q === "beach");
 check("restore boolean", state.filters.has_faces === true);
+check("restore favorite", state.filters.favorite === true);
 check("restore view", state.view === "people");
 check("restore sort", state.sort === "filename");
 

@@ -153,3 +153,49 @@ def test_db_migration_adds_folder_place_column(tmp_path):
     conn = db.connect(db_path)
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(photos)")}
     assert "folder_place" in cols
+
+
+def _index_names(conn):
+    return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+
+
+def test_composite_indexes_present_and_supersede_singles(config):
+    """Fresh catalog: the browse/filter composites exist and the single-column
+    scene/folder/person indexes they supersede are gone."""
+    from photo_atlas import db
+
+    conn = db.connect(config.db_path)
+    names = _index_names(conn)
+    assert {
+        "idx_photos_scene_taken",
+        "idx_photos_folder_taken",
+        "idx_faces_person_photo",
+    } <= names
+    assert names.isdisjoint({"idx_photos_scene", "idx_photos_folder", "idx_faces_person"})
+
+
+def test_migration_drops_superseded_single_column_indexes(tmp_path):
+    """An old catalog carrying the single-column indexes sheds them on open."""
+    import sqlite3
+
+    from photo_atlas import db
+
+    db_path = tmp_path / "old.db"
+    raw = sqlite3.connect(db_path)
+    raw.executescript(
+        "CREATE TABLE photos (id INTEGER PRIMARY KEY, path TEXT UNIQUE, "
+        "taken_at TEXT, scene_type TEXT, folder_place TEXT, place_country TEXT, "
+        "place_city TEXT, camera_model TEXT, indexed_at TEXT);"
+        "CREATE TABLE faces (id INTEGER PRIMARY KEY, photo_id INTEGER, "
+        "person_id INTEGER, cluster_id INTEGER);"
+        "CREATE INDEX idx_photos_scene ON photos(scene_type);"
+        "CREATE INDEX idx_photos_folder ON photos(folder_place);"
+        "CREATE INDEX idx_faces_person ON faces(person_id);"
+    )
+    raw.commit()
+    raw.close()
+
+    conn = db.connect(db_path)
+    names = _index_names(conn)
+    assert names.isdisjoint({"idx_photos_scene", "idx_photos_folder", "idx_faces_person"})
+    assert "idx_photos_scene_taken" in names

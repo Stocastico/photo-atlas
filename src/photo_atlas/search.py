@@ -14,6 +14,7 @@ any of them (OR within the facet, AND across facets).
 ``date_from``  / ``date_to`` -- ISO date bounds on ``taken_at``.
 ``camera``     exact ``camera_model`` (the value emitted by the camera facet).
 ``has_faces``  ``True`` -> at least one face.
+``favorite``   ``True`` -> only starred photos.
 ``q``          free-text substring matched across filename, city, country,
                place label, folder/trip and camera make/model.
 ``sort``       result ordering: ``newest`` (default), ``oldest``, ``filename``,
@@ -33,8 +34,11 @@ from . import db
 # ``scene_scores`` JSON blob, which only the single-photo detail view uses.
 # Shipping it for 60 photos/page bloats the payload (and the browser decodes and
 # discards it), so the list query selects an explicit set instead of ``p.*``.
+# ``favorite`` is appended explicitly: it's deliberately not in ``PHOTO_COLUMNS``
+# (so a re-index can't reset a user's star), but the grid needs it per card to
+# render the star state.
 _LIST_COLUMNS = ", ".join(
-    ["p.id", *(f"p.{c}" for c in db.PHOTO_COLUMNS if c != "scene_scores")]
+    ["p.id", *(f"p.{c}" for c in db.PHOTO_COLUMNS if c != "scene_scores"), "p.favorite"]
 )
 
 
@@ -78,22 +82,19 @@ _PEOPLE_CASE = (
 )
 
 # Number of *known* (named) people in a photo: how many of its faces are assigned
-# to a person. Counted with a correlated subquery over faces (cheap via
-# idx_faces_photo). Buckets: nobody identified / one / two-or-more. A denormalised
-# ``named_face_count`` column would avoid the per-row subquery if this ever shows
-# on a hot path (see TODO).
-_KNOWN_SUBQ = (
-    "(SELECT COUNT(*) FROM faces kf WHERE kf.photo_id = p.id AND kf.person_id IS NOT NULL)"
-)
+# to a person. Read straight from the trigger-maintained ``named_face_count``
+# column (denormalised in ``db``), so this is a plain indexed read rather than a
+# per-row correlated subquery. Buckets: nobody identified / one / two-or-more.
+_KNOWN_COL = "p.named_face_count"
 KNOWN_BUCKETS: list[tuple[str, str]] = [
-    ("0", f"{_KNOWN_SUBQ} = 0"),
-    ("1", f"{_KNOWN_SUBQ} = 1"),
-    ("2+", f"{_KNOWN_SUBQ} >= 2"),
+    ("0", f"{_KNOWN_COL} = 0"),
+    ("1", f"{_KNOWN_COL} = 1"),
+    ("2+", f"{_KNOWN_COL} >= 2"),
 ]
 _KNOWN_PREDICATE = dict(KNOWN_BUCKETS)
 _KNOWN_CASE = (
-    f"CASE WHEN {_KNOWN_SUBQ} = 0 THEN '0' "
-    f"WHEN {_KNOWN_SUBQ} = 1 THEN '1' ELSE '2+' END"
+    f"CASE WHEN {_KNOWN_COL} = 0 THEN '0' "
+    f"WHEN {_KNOWN_COL} = 1 THEN '1' ELSE '2+' END"
 )
 
 
@@ -149,6 +150,8 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any]]:
         params.append(filters["date_to"])
     if filters.get("has_faces"):
         clauses.append("p.face_count > 0")
+    if filters.get("favorite"):
+        clauses.append("p.favorite = 1")
     # Number-of-people buckets (OR within the facet); unknown tokens are ignored.
     people = [
         _PEOPLE_PREDICATE[b]
@@ -429,6 +432,14 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
         sql = f"SELECT COUNT(*) FROM photos p{where}{glue}p.face_count > 0"
         return int(conn.execute(sql, params).fetchone()[0])
 
+    def favorites_count() -> int:
+        # Starred photos under the other active filters (powers the ★ chip).
+        sub = {k: v for k, v in filters.items() if k != "favorite"}
+        where, params = _where(sub)
+        glue = " AND " if where else " WHERE "
+        sql = f"SELECT COUNT(*) FROM photos p{where}{glue}p.favorite = 1"
+        return int(conn.execute(sql, params).fetchone()[0])
+
     def people_facet() -> list[dict]:
         # Number-of-people buckets (portrait = 1, group = 2+), in canonical order,
         # filter-aware against the other dimensions but not the people bucket itself.
@@ -472,6 +483,7 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
         "people": people_facet(),
         "known": known_facet(),
         "with_faces": with_faces_count(),
+        "favorites": favorites_count(),
         "date_min": drow[0],
         "date_max": drow[1],
     }

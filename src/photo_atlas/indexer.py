@@ -175,6 +175,51 @@ def _encode_face_crop(img: Image.Image, bbox: tuple[int, int, int, int]) -> byte
         return None
 
 
+def regenerate_face_crop(
+    conn: sqlite3.Connection, config: AtlasConfig, face_id: int
+) -> str | None:
+    """Re-create a face's crop JPEG from its source photo and persist the path.
+
+    This is the retry path for a crop that failed to write at index time (the
+    face row keeps its embedding + bbox but ``crop_path`` is ``NULL``, so
+    ``/api/face/{id}`` 404s forever otherwise) or whose file was later deleted.
+    Returns the new crop path on success, or ``None`` if the face/source is gone
+    or the crop still can't be written.
+    """
+
+    row = conn.execute(
+        "SELECT f.photo_id, f.bbox_x, f.bbox_y, f.bbox_w, f.bbox_h, p.path "
+        "FROM faces f JOIN photos p ON p.id = f.photo_id WHERE f.id=?",
+        (face_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    src = row["path"]
+    bbox = (row["bbox_x"], row["bbox_y"], row["bbox_w"], row["bbox_h"])
+    if not src or not Path(src).exists() or any(v is None for v in bbox):
+        return None
+    try:
+        with Image.open(src) as raw:
+            raw.load()
+            # Match the index-time pixels: detection ran on the EXIF-transposed
+            # (upright) image, so the stored bbox indexes the upright frame.
+            img = ImageOps.exif_transpose(raw) or raw
+            crop_jpeg = _encode_face_crop(img, cast(tuple[int, int, int, int], bbox))
+    except Exception:
+        return None
+    if crop_jpeg is None:
+        return None
+    crop_path = config.faces_dir / str(row["photo_id"]) / f"face_{face_id}.jpg"
+    try:
+        crop_path.parent.mkdir(parents=True, exist_ok=True)
+        crop_path.write_bytes(crop_jpeg)
+    except Exception:
+        return None
+    conn.execute("UPDATE faces SET crop_path=? WHERE id=?", (str(crop_path), face_id))
+    conn.commit()
+    return str(crop_path)
+
+
 def _build_encoders(
     config: AtlasConfig, *, embed: bool
 ) -> tuple[SigLipImageEncoder | None, Tagger]:

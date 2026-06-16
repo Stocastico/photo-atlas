@@ -61,6 +61,10 @@ class CoverRequest(BaseModel):
     face_id: int
 
 
+class FavoriteRequest(BaseModel):
+    favorite: bool
+
+
 def create_app(config: AtlasConfig | None = None) -> FastAPI:
     config = (config or AtlasConfig()).ensure_dirs()
     app = FastAPI(title="Photo Atlas", version="0.1.0")
@@ -148,6 +152,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         people: list[str] | None = Query(None),
         known: list[str] | None = Query(None),
         has_faces: bool | None = None,
+        favorite: bool | None = None,
         q: str | None = None,
     ):
         filters = {
@@ -155,7 +160,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
             "date_to": date_to, "camera": camera, "people": people, "known": known,
-            "has_faces": has_faces, "q": q,
+            "has_faces": has_faces, "favorite": favorite, "q": q,
         }
         return search.facets(conn, filters)
 
@@ -175,6 +180,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         people: list[str] | None = Query(None),
         known: list[str] | None = Query(None),
         has_faces: bool | None = None,
+        favorite: bool | None = None,
         q: str | None = None,
         text: str | None = None,
         sort: str | None = None,
@@ -186,7 +192,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
             "date_to": date_to, "camera": camera, "people": people, "known": known,
-            "has_faces": has_faces, "q": q, "text": text, "sort": sort,
+            "has_faces": has_faces, "favorite": favorite, "q": q, "text": text, "sort": sort,
         }
         # A natural-language ``text`` query switches to semantic ranking (by image
         # embedding), ANDed with the structured filters. It supersedes ``sort`` —
@@ -267,6 +273,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         people: list[str] | None = Query(None),
         known: list[str] | None = Query(None),
         has_faces: bool | None = None,
+        favorite: bool | None = None,
         q: str | None = None,
     ):
         filters = {
@@ -274,7 +281,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
             "date_to": date_to, "camera": camera, "people": people, "known": known,
-            "has_faces": has_faces, "q": q,
+            "has_faces": has_faces, "favorite": favorite, "q": q,
         }
         return {"points": search.map_points(conn, filters, limit=config.map_point_limit)}
 
@@ -284,6 +291,16 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         if photo is None:
             raise HTTPException(404, "photo not found")
         return photo
+
+    @app.put("/api/photos/{photo_id}/favorite")
+    def api_set_favorite(
+        photo_id: int,
+        payload: FavoriteRequest,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ):
+        if not db.set_favorite(conn, photo_id, payload.favorite):
+            raise HTTPException(404, "photo not found")
+        return {"ok": True, "favorite": payload.favorite}
 
     # -- media ------------------------------------------------------------
     @app.get("/api/image/{photo_id}")
@@ -340,9 +357,18 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
     @app.get("/api/face/{face_id}")
     def api_face(face_id: int, conn: sqlite3.Connection = Depends(get_conn)):
         row = conn.execute("SELECT crop_path FROM faces WHERE id=?", (face_id,)).fetchone()
-        if row is None or not row["crop_path"] or not Path(row["crop_path"]).exists():
+        if row is None:
             raise HTTPException(404, "face crop not found")
-        return FileResponse(row["crop_path"])
+        crop = row["crop_path"]
+        if not crop or not Path(crop).exists():
+            # The crop may have failed to write at index time (crop_path=NULL) or
+            # been deleted since; rebuild it from the source photo before 404ing.
+            from . import indexer
+
+            crop = indexer.regenerate_face_crop(conn, config, face_id)
+            if not crop:
+                raise HTTPException(404, "face crop not found")
+        return FileResponse(crop)
 
     # -- persons ----------------------------------------------------------
     @app.get("/api/persons")

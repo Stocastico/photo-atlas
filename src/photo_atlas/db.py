@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS photos (
     scene_type   TEXT,
     scene_scores TEXT,          -- JSON map label -> score
     face_count   INTEGER DEFAULT 0,
+    named_face_count INTEGER NOT NULL DEFAULT 0,  -- faces assigned to a named person (trigger-kept)
+    favorite     INTEGER NOT NULL DEFAULT 0,      -- user star (0/1); preserved across re-index
     thumb_path   TEXT,
     embedding    BLOB,          -- SigLIP image embedding (float32) for semantic search
     embed_dim    INTEGER,       -- length of ``embedding`` (NULL when not embedded)
@@ -71,14 +73,48 @@ CREATE TABLE IF NOT EXISTS faces (
 
 CREATE INDEX IF NOT EXISTS idx_photos_taken   ON photos(taken_at);
 CREATE INDEX IF NOT EXISTS idx_photos_indexed ON photos(indexed_at);
-CREATE INDEX IF NOT EXISTS idx_photos_scene   ON photos(scene_type);
 CREATE INDEX IF NOT EXISTS idx_photos_country ON photos(place_country);
 CREATE INDEX IF NOT EXISTS idx_photos_city    ON photos(place_city);
 CREATE INDEX IF NOT EXISTS idx_photos_camera  ON photos(camera_model);
-CREATE INDEX IF NOT EXISTS idx_photos_folder  ON photos(folder_place);
 CREATE INDEX IF NOT EXISTS idx_faces_photo    ON faces(photo_id);
-CREATE INDEX IF NOT EXISTS idx_faces_person   ON faces(person_id);
 CREATE INDEX IF NOT EXISTS idx_faces_cluster  ON faces(cluster_id);
+-- Composite indexes for the real browse/filter access patterns: filter on a
+-- facet column and sort by capture time (the default ``taken_at DESC`` order),
+-- so SQLite can satisfy the WHERE + ORDER BY from one index without a sort.
+-- Their leading column supersedes the old single-column scene/folder indexes
+-- (dropped in ``_migrate``). The person filter is an EXISTS into ``faces``
+-- correlated on ``photo_id``; ``(person_id, photo_id)`` seeks both at once
+-- (taken_at lives on ``photos``, so it can't join this cross-table index).
+CREATE INDEX IF NOT EXISTS idx_photos_scene_taken  ON photos(scene_type, taken_at);
+CREATE INDEX IF NOT EXISTS idx_photos_folder_taken ON photos(folder_place, taken_at);
+CREATE INDEX IF NOT EXISTS idx_faces_person_photo  ON faces(person_id, photo_id);
+CREATE INDEX IF NOT EXISTS idx_photos_favorite     ON photos(favorite);
+
+-- ``photos.named_face_count`` denormalises "how many of this photo's faces are
+-- assigned to a named person" so the Known-people facet is a plain column read
+-- instead of a per-row correlated subquery. Triggers keep it exact across every
+-- write path (auto-recognition at index time, assign/unassign, merge, delete,
+-- re-index via replace_faces, prune's FK cascade) — no Python call site can
+-- forget to update it. They touch ``photos`` only, so no recursive firing.
+CREATE TRIGGER IF NOT EXISTS trg_faces_named_insert
+AFTER INSERT ON faces WHEN NEW.person_id IS NOT NULL
+BEGIN
+    UPDATE photos SET named_face_count = named_face_count + 1 WHERE id = NEW.photo_id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_faces_named_delete
+AFTER DELETE ON faces WHEN OLD.person_id IS NOT NULL
+BEGIN
+    UPDATE photos SET named_face_count = named_face_count - 1 WHERE id = OLD.photo_id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_faces_named_update
+AFTER UPDATE OF person_id ON faces
+WHEN (OLD.person_id IS NULL) <> (NEW.person_id IS NULL)
+BEGIN
+    UPDATE photos
+       SET named_face_count =
+           named_face_count + (CASE WHEN NEW.person_id IS NULL THEN -1 ELSE 1 END)
+     WHERE id = NEW.photo_id;
+END;
 """
 
 
@@ -100,6 +136,28 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE photos ADD COLUMN embedding BLOB")
         if "embed_dim" not in cols:
             conn.execute("ALTER TABLE photos ADD COLUMN embed_dim INTEGER")
+        # User favorites (added 2026-06): a 0/1 star, additive so older catalogs
+        # gain it un-starred. Kept out of ``PHOTO_COLUMNS`` so a re-index never
+        # clobbers it.
+        if "favorite" not in cols:
+            conn.execute("ALTER TABLE photos ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
+        # Denormalised named-face count (added 2026-06): add the column, then
+        # backfill it once from the faces table before the maintenance triggers
+        # (created by the schema script below) take over for future writes.
+        if "named_face_count" not in cols:
+            conn.execute(
+                "ALTER TABLE photos ADD COLUMN named_face_count INTEGER NOT NULL DEFAULT 0"
+            )
+            if "faces" in tables:
+                conn.execute(
+                    "UPDATE photos SET named_face_count = (SELECT COUNT(*) FROM faces f "
+                    "WHERE f.photo_id = photos.id AND f.person_id IS NOT NULL)"
+                )
+    # Drop single-column indexes that the new composite indexes (added to the
+    # schema below) fully supersede on their leading column, so existing catalogs
+    # don't carry redundant indexes that only cost extra on every write.
+    for name in ("idx_photos_scene", "idx_photos_folder", "idx_faces_person"):
+        conn.execute(f"DROP INDEX IF EXISTS {name}")
 
 
 def connect(db_path: Path, *, ensure_schema: bool = True) -> sqlite3.Connection:
@@ -188,6 +246,20 @@ def set_photo_embedding(
     conn.execute(
         "UPDATE photos SET embedding=?, embed_dim=? WHERE id=?", (blob, dim, photo_id)
     )
+
+
+def set_favorite(conn: sqlite3.Connection, photo_id: int, favorite: bool) -> bool:
+    """Star/un-star a photo. Returns ``True`` if the photo exists (was updated).
+
+    ``favorite`` lives outside :data:`PHOTO_COLUMNS` so a re-index never resets a
+    user's star; it's written only through here (and the API).
+    """
+
+    cur = conn.execute(
+        "UPDATE photos SET favorite=? WHERE id=?", (1 if favorite else 0, photo_id)
+    )
+    conn.commit()
+    return cur.rowcount > 0
 
 
 def replace_faces(conn: sqlite3.Connection, photo_id: int, faces: Iterable[dict]) -> None:
