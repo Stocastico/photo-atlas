@@ -17,6 +17,8 @@
     <div class="tabbar" role="tablist" aria-label="Views">
       <button class="tab active" id="tab-photos" role="tab" aria-selected="true"
         aria-controls="view-photos" data-view="photos">Photos</button>
+      <button class="tab" id="tab-memories" role="tab" aria-selected="false" tabindex="-1"
+        aria-controls="view-memories" data-view="memories">Memories</button>
       <button class="tab" id="tab-map" role="tab" aria-selected="false" tabindex="-1"
         aria-controls="view-map" data-view="map">Map</button>
       <button class="tab" id="tab-people" role="tab" aria-selected="false" tabindex="-1"
@@ -64,6 +66,12 @@ photo-atlas serve              # browse, filter, and name people</code></pre>
         </div>
         <div id="grid-empty" class="empty" style="display:none">No photos match these filters.</div>
         <div id="grid-loading" class="loading" style="display:none" role="status" aria-live="polite">Loading…</div>
+      </div>
+
+      <div id="view-memories" role="tabpanel" aria-labelledby="tab-memories" style="display:none">
+        <div class="toolbar"><h2 id="memories-title" style="margin:0">On this day</h2></div>
+        <div id="memories"></div>
+        <div id="memories-empty" class="empty" style="display:none">No photos from this day in earlier years — check back another day.</div>
       </div>
 
       <div id="view-map" role="tabpanel" aria-labelledby="tab-map" style="display:none">

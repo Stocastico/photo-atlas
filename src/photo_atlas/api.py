@@ -11,6 +11,7 @@ custom :class:`~photo_atlas.config.AtlasConfig` can be injected; importing
 
 from __future__ import annotations
 
+import datetime
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -260,6 +261,23 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         return {
             "total": total if total >= 0 else None,
             "count": len(rows), "offset": offset, "photos": rows,
+        }
+
+    @app.get("/api/memories")
+    def api_memories(
+        month: int | None = Query(None, ge=1, le=12),
+        day: int | None = Query(None, ge=1, le=31),
+        conn: sqlite3.Connection = Depends(get_conn),
+    ):
+        # "On this day": photos from the same calendar date in past years. Defaults
+        # to the server's current date when month/day are omitted.
+        today = datetime.date.today()
+        m = month or today.month
+        d = day or today.day
+        groups = search.on_this_day(conn, m, d)
+        return {
+            "month": m, "day": d,
+            "total": sum(g["count"] for g in groups), "groups": groups,
         }
 
     @app.get("/api/map")

@@ -74,6 +74,16 @@ aside h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; co
 .album-row { display: flex; gap: 6px; }
 .album-row .chip:first-child { flex: 1; justify-content: flex-start; }
 .chip.icon { padding: 4px 8px; }
+/* Memories ("on this day"): one horizontal film-strip per past year. */
+.memory-year { margin-bottom: 22px; }
+.memory-year h3 { margin: 0 0 8px; }
+.memory-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; }
+.memory-card {
+  flex: 0 0 auto; width: 160px; height: 160px; border-radius: 8px;
+  overflow: hidden; cursor: pointer; background: var(--chip);
+}
+.memory-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.memory-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .date-range { display: flex; align-items: center; gap: 6px; }
 .date-input {
   flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border);

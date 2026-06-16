@@ -299,9 +299,15 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   libraries have 5–20-frame bursts. Add a perceptual hash (dHash/pHash) column,
   group near-identical shots, collapse them in the grid behind a "best of N" cover,
   and offer bulk-delete of the rest. Huge real-world decluttering win.
-- [ ] **"On this day" / Memories + trip auto-detection.** A 15-year archive is made
-  for "this week, 8 years ago". Add day/week-of-year endpoints and auto-group trips
-  from date gaps + place/GPS proximity (folders already hint at it).
+- [x] **"On this day" / Memories.** **Done:** a new **Memories** tab surfaces photos
+  taken on the same calendar date in earlier years. `search.on_this_day` slices on
+  the `taken_at` month/day prefix and groups by year (newest first, each group a
+  full `count` + a capped photo sample); `GET /api/memories?month=&day=` defaults to
+  the server's current date. The UI renders one horizontal film-strip per past year
+  ("3 years ago"), each thumb opening in the lightbox. db + API tested
+  (`tests/test_memories.py`, incl. the 422 on a bad date).
+  - [ ] **Trip auto-detection.** Still open: auto-group trips from date gaps +
+    place/GPS proximity (folders already hint at it).
 - [x] **Favorites.** Star shots: a `favorite` 0/1 column (kept out of
   `PHOTO_COLUMNS` so a re-index never clears it; written via `db.set_favorite` and
   `PUT /api/photos/{id}/favorite`, guarded by the same-origin write middleware), a

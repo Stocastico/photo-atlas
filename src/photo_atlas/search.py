@@ -400,6 +400,41 @@ def search_photos(
     return [dict(r) for r in rows], int(total)
 
 
+def on_this_day(
+    conn: sqlite3.Connection, month: int, day: int, *, per_year: int = 24
+) -> list[dict]:
+    """Photos taken on ``month``/``day`` in past years ("on this day").
+
+    Returns one group per year (newest first), each ``{year, count, photos}`` where
+    ``count`` is the full number of matches that year and ``photos`` is a capped
+    sample (``per_year``, newest first) carrying the grid columns (minus the heavy
+    ``scene_scores`` blob). The match is on the ``taken_at`` month/day prefix, so a
+    time component doesn't matter and undated photos are skipped.
+    """
+
+    mm, dd = f"{int(month):02d}", f"{int(day):02d}"
+    rows = conn.execute(
+        f"SELECT {_LIST_COLUMNS}, substr(p.taken_at, 1, 4) AS year FROM photos p "
+        "WHERE substr(p.taken_at, 6, 2) = ? AND substr(p.taken_at, 9, 2) = ? "
+        "ORDER BY p.taken_at DESC, p.id DESC",
+        (mm, dd),
+    ).fetchall()
+
+    groups: dict[str, dict] = {}
+    order: list[str] = []
+    for r in rows:
+        row = dict(r)
+        year = row.pop("year")
+        grp = groups.get(year)
+        if grp is None:
+            grp = groups[year] = {"year": year, "count": 0, "photos": []}
+            order.append(year)
+        grp["count"] += 1
+        if len(grp["photos"]) < per_year:
+            grp["photos"].append(row)
+    return [groups[y] for y in order]
+
+
 def map_points(
     conn: sqlite3.Connection, filters: dict[str, Any], limit: int = 20000
 ) -> list[dict]:

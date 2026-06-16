@@ -240,10 +240,7 @@ function moreLikeThis(id, label) {
     t.classList.toggle("active", on);
     t.setAttribute("aria-selected", on ? "true" : "false");
   });
-  $("#view-photos").style.display = "block";
-  $("#view-map").style.display = "none";
-  $("#view-people").style.display = "none";
-  $("#view-clusters").style.display = "none";
+  showViewPanel("photos");
   refresh();
 }
 
@@ -874,6 +871,55 @@ async function openPhotoById(id) {
   renderLightboxSide(p, id, () => openPhotoById(id));
 }
 
+// ---- memories ("on this day") ---------------------------------------------
+async function renderMemories() {
+  const wrap = $("#memories");
+  if (!wrap) return;
+  const today = new Date();
+  let data;
+  try {
+    data = await api(`/api/memories?month=${today.getMonth() + 1}&day=${today.getDate()}`);
+  } catch (e) { return; }
+
+  const title = $("#memories-title");
+  if (title) {
+    const when = today.toLocaleDateString(undefined, { month: "long", day: "numeric" });
+    title.textContent = `On this day · ${when}`;
+  }
+  wrap.innerHTML = "";
+  const groups = (data && data.groups) || [];
+  $("#memories-empty").style.display = groups.length ? "none" : "block";
+
+  for (const g of groups) {
+    const sec = document.createElement("section");
+    sec.className = "memory-year";
+    const yearsAgo = today.getFullYear() - Number(g.year);
+    const label = yearsAgo > 0
+      ? `${g.year} · ${yearsAgo} year${yearsAgo === 1 ? "" : "s"} ago`
+      : `${g.year}`;
+    const h = document.createElement("h3");
+    h.textContent = `${label} · ${g.count} photo${g.count === 1 ? "" : "s"}`;
+    sec.appendChild(h);
+    const strip = document.createElement("div");
+    strip.className = "memory-strip";
+    for (const p of g.photos) {
+      const card = document.createElement("div");
+      card.className = "memory-card";
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+      card.setAttribute("aria-label", `Open ${p.filename}`);
+      card.innerHTML = `<img loading="lazy" decoding="async" src="/api/thumb/${p.id}" alt="${esc(p.filename)}" />`;
+      card.onclick = () => openPhotoById(p.id);
+      card.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPhotoById(p.id); }
+      };
+      strip.appendChild(card);
+    }
+    sec.appendChild(strip);
+    wrap.appendChild(sec);
+  }
+}
+
 // ---- map ------------------------------------------------------------------
 let _map = null, _markers = null, _leafletIcons = false;
 
@@ -1093,6 +1139,15 @@ async function renderClusters() {
 }
 
 // ---- view switching -------------------------------------------------------
+const VIEWS = ["photos", "memories", "map", "people", "clusters"];
+
+function showViewPanel(view) {
+  for (const v of VIEWS) {
+    const el = $("#view-" + v);
+    if (el) el.style.display = v === view ? "block" : "none";
+  }
+}
+
 function setView(view) {
   state.view = view;
   document.querySelectorAll(".tab").forEach((t) => {
@@ -1101,10 +1156,7 @@ function setView(view) {
     t.setAttribute("aria-selected", on ? "true" : "false");
     t.tabIndex = on ? 0 : -1; // roving tabindex for the WAI-ARIA tabs pattern
   });
-  $("#view-photos").style.display = view === "photos" ? "block" : "none";
-  $("#view-map").style.display = view === "map" ? "block" : "none";
-  $("#view-people").style.display = view === "people" ? "block" : "none";
-  $("#view-clusters").style.display = view === "clusters" ? "block" : "none";
+  showViewPanel(view);
   refresh();
 }
 
@@ -1113,6 +1165,7 @@ function refresh() {
   renderActiveFilters();
   renderSidebar();
   if (state.view === "photos") renderPhotos(true);
+  else if (state.view === "memories") renderMemories();
   else if (state.view === "map") renderMap();
   else if (state.view === "people") renderPeople();
   else renderClusters();
