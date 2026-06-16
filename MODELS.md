@@ -105,7 +105,9 @@ if CPU index-time speed becomes the binding constraint.
 
 1. **SigLIP → SigLIP 2** — biggest quality-per-effort win, no architectural change
    (swap URLs, rebuild `scene_labels.npz`, re-embed). Improves scene tags *and*
-   search together.
+   search together. **Scoped in detail in [`SIGLIP2_MIGRATION.md`](SIGLIP2_MIGRATION.md)**
+   (files, gaps, runbook, eval, effort); the vision input-size auto-detect enabling
+   refactor is already done.
 2. **YuNet → latest Zoo YuNet** — trivial, possibly-free detection gain.
 3. **SFace → ArcFace R100 (or AdaFace for low-quality)** — highest ceiling on
    recognition, but the most invasive (dim/alignment change ⇒ re-embed + re-cluster

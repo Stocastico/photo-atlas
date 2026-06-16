@@ -452,3 +452,55 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   win, no architecture change), then a YuNet Zoo bump, then ArcFace (highest ceiling but
   most invasive). No swap made yet — each needs a local A/B eval first. Implementation of
   any actual swap remains open as a follow-up.
+
+## Optional follow-ups (open, prioritised)
+
+Every feature/bug item above is done; what's left are *optional* enhancements, each
+noted inline on its parent item but consolidated here with upside / effort / risk so
+the next slice is easy to pick. Ordered by value-per-effort.
+
+- [ ] **Adopt SigLIP 2** (scene tags + semantic search). **Upside: high** — strictly
+  better zero-shot tags *and* NL retrieval from one swap, no architecture change.
+  **Effort: medium** (~2–3 days + a real A/B eval). **Risk: medium** — the SigLIP 2
+  text tower may use the Gemma tokenizer (the hardcoded `</s>`/pad-64 assumption needs
+  verifying). **Fully scoped in [`SIGLIP2_MIGRATION.md`](SIGLIP2_MIGRATION.md)**; the
+  vision input-size auto-detect enabling refactor is already merged on that branch.
+- [ ] **YuNet → latest Zoo revision.** **Upside: low–medium** (possibly-free face-recall
+  gain). **Effort: trivial** (bump the `.onnx` name/URL in `models.py`, same
+  `FaceDetectorYN` API). **Risk: very low.** Gate on a quick recall A/B. See
+  [`MODELS.md`](MODELS.md) §1.
+- [ ] **SFace → ArcFace R100 (or AdaFace for low-quality).** **Upside: high** —
+  recognition is the product's backbone; 512-d raises the "same person across 15 years"
+  ceiling. **Effort: high / most invasive** — embedding dim 128→512 ⇒ re-embed + re-cluster
+  migration, ArcFace-standard 5-pt alignment. **Risk: medium–high.** Do it behind the
+  `PHOTO_ATLAS_SFACE` override with a verification-accuracy A/B first. See
+  [`MODELS.md`](MODELS.md) §2.
+- [ ] **YuNet → SCRFD.** **Upside: medium** but only realised if hard-face *recall* is
+  proven to be the bottleneck. **Effort: medium** (new anchor decode in `faces.py`, not a
+  `FaceDetectorYN` drop-in). **Risk: medium.** Lower priority than ArcFace unless an eval
+  says detection (not embedding) is the limiter.
+- [ ] **Per-person semantic grounding.** Run SigLIP on the per-person face crop so
+  "Stefano eating food" scores the region containing Stefano, not the whole frame.
+  **Upside: medium** (sharper hybrid queries). **Effort: medium–high** (per-crop
+  embedding store + ranking). **Risk: medium.** Follow-up to the hybrid planner.
+- [ ] **Inline duplicate-grid collapse.** Collapse a burst behind its cover *in the main
+  photo grid* (badge + expand) instead of only the dedicated Duplicates tab. **Upside:
+  medium** (nicer browsing). **Effort: high** — reworks the virtualised windowing grid
+  (variable-height rows / group headers). **Risk: medium** (grid perf regressions).
+- [ ] **"More like this person" (SFace similarity).** A face-embedding "same person"
+  ranking alongside the existing whole-image "more like this". **Upside: low–medium**
+  (the exact person filter already covers named people). **Effort: medium.** **Risk: low.**
+- [ ] **Unified "type of picture" facet.** Fold scene tags + people-count buckets into one
+  facet. **Upside: low** (UX tidy-up). **Effort: low–medium.** **Risk: low.**
+- [ ] **Bulk assign-a-person / bulk export.** Dropped from the multi-select slice.
+  Assign is ambiguous at the photo level (faces are the unit); export is a file copy.
+  **Upside: low–medium.** **Effort: low–medium.** **Risk: low** (export touches the
+  filesystem — confirm + dry-run).
+- [ ] **Semantic-index cache signature.** `api._embed_signature` keys on `(count, max_id)`,
+  so an in-place `embed --recompute` while `serve` is running won't reload the matrix
+  (restart works today). **Upside: low** (only matters for live model swaps). **Effort:
+  low** (hash/model-tag the signature). **Risk: low.** See `SIGLIP2_MIGRATION.md` Gap 5.
+
+### Won't do (already decided)
+- ~~Responsive / mobile layout~~ — desktop-browser target (2026-06-16).
+- ~~RAW ingest~~ (`.CR2/.NEF/.ARW`) — library targets developed JPEG/HEIC/PNG (2026-06-16).
