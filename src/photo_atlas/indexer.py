@@ -658,6 +658,52 @@ def prune_library(config: AtlasConfig) -> dict[str, int]:
     return {"removed": removed, "kept": kept}
 
 
+def retag_scenes(
+    config: AtlasConfig,
+    *,
+    tagger: Tagger | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> int:
+    """Recompute every photo's scene tag in place, without a full re-index.
+
+    Scene tags are independent of faces/thumbnails, so switching tagger
+    (heuristic <-> zero-shot) or tuning its hyperparameters shouldn't require
+    re-decoding + re-detecting the whole library. This decodes each still-present
+    source file once, re-runs the configured tagger (reusing the stored
+    ``face_count`` so the people bonus still applies), and upserts only the
+    ``scene_type``/``scene_scores`` columns. Returns the number of photos retagged.
+    """
+
+    tagger = tagger or get_tagger(config)
+    conn = db.connect(config.db_path)
+    retagged = 0
+    try:
+        rows = conn.execute("SELECT id, path, face_count FROM photos").fetchall()
+        total = len(rows)
+        for i, row in enumerate(rows):
+            path = Path(row["path"])
+            if not path.exists():
+                continue
+            try:
+                with Image.open(path) as raw:
+                    raw.load()
+                    img = ImageOps.exif_transpose(raw) or raw
+                    label, scores = tagger.tag_image(img, face_count=row["face_count"] or 0)
+            except Exception:
+                continue
+            conn.execute(
+                "UPDATE photos SET scene_type=?, scene_scores=? WHERE id=?",
+                (label, json.dumps(scores), row["id"]),
+            )
+            retagged += 1
+            if progress is not None:
+                progress(i + 1, total)
+        conn.commit()
+    finally:
+        conn.close()
+    return retagged
+
+
 def cluster_library(config: AtlasConfig) -> dict[str, int]:
     """Cluster all unnamed faces so groups can be labelled in one go."""
 

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import db
 from .config import AtlasConfig
-from .indexer import cluster_library, index_path, prune_library
+from .indexer import cluster_library, index_path, prune_library, retag_scenes
 from .search import facets
 
 
@@ -89,6 +89,20 @@ def _cmd_prune(args) -> int:
         f"Pruned {result['removed']} photo(s) whose files are gone; "
         f"{result['kept']} still present."
     )
+    return 0
+
+
+def _cmd_retag_scenes(args) -> int:
+    config = _config(args)
+    config.scene_backend = args.scene
+
+    def progress(done: int, total: int) -> None:
+        sys.stdout.write(f"\r  retagged {done}/{total}")
+        sys.stdout.flush()
+
+    print(f"Re-tagging scenes with the '{args.scene}' tagger ...")
+    n = retag_scenes(config, progress=progress)
+    print(f"\nDone: {n} photo(s) retagged.")
     return 0
 
 
@@ -185,6 +199,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_prune = sub.add_parser("prune", help="Remove catalog entries for deleted files")
     p_prune.set_defaults(func=_cmd_prune)
+
+    p_retag = sub.add_parser("retag-scenes", help="Recompute scene tags in place (no re-index)")
+    p_retag.add_argument(
+        "--scene", choices=["heuristic", "zeroshot", "auto"], default="zeroshot",
+        help="Scene tagger to use (default: zeroshot)",
+    )
+    p_retag.set_defaults(func=_cmd_retag_scenes)
 
     p_export = sub.add_parser(
         "export-labels", help="Write person names to portable XMP sidecars"
