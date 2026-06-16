@@ -187,6 +187,19 @@ def _cmd_stats(args) -> int:
     return 0
 
 
+def _is_loopback(host: str) -> bool:
+    """True when ``host`` keeps the server bound to the local machine only."""
+
+    import ipaddress
+
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _cmd_serve(args) -> int:
     import uvicorn
 
@@ -194,6 +207,16 @@ def _cmd_serve(args) -> int:
 
     config = _config(args)
     app = create_app(config)
+    if not _is_loopback(args.host):
+        # The API has no authentication; writes are same-origin-guarded but every
+        # GET (photos, thumbnails, metadata) is open. Binding off-loopback exposes
+        # the whole library to anything that can reach this host.
+        print(
+            f"WARNING: --host {args.host} exposes Photo Atlas on the network with no "
+            "authentication — any device that can reach this host can browse your "
+            "entire library. Use the default 127.0.0.1 unless you mean to share it.",
+            file=sys.stderr,
+        )
     print(f"Serving Photo Atlas on http://{args.host}:{args.port}  (library: {config.home})")
     uvicorn.run(app, host=args.host, port=args.port)
     return 0

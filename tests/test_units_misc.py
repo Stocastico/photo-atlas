@@ -63,7 +63,10 @@ def test_config_derived_paths(tmp_path):
 def test_ratio_handles_scalars_tuples_and_garbage():
     assert metadata._ratio(2.5) == 2.5
     assert metadata._ratio((10, 4)) == 2.5
-    assert metadata._ratio(object()) == 0.0
+    # Garbage and zero-denominator rationals are *invalid*, not 0.0 — returning
+    # 0.0 would silently drag a coordinate to Null Island.
+    assert metadata._ratio(object()) is None
+    assert metadata._ratio((10, 0)) is None
 
 
 def test_dms_to_decimal_sign_and_bad_input():
@@ -71,6 +74,53 @@ def test_dms_to_decimal_sign_and_bad_input():
     south = metadata._dms_to_decimal((41, 54, 0), "S")
     assert north > 0 and south == -north
     assert metadata._dms_to_decimal((1,), "N") is None  # too few components
+    # One unparseable component invalidates the whole coordinate (no partial 0).
+    assert metadata._dms_to_decimal((41, (1, 0), 0), "N") is None
+    assert metadata._dms_to_decimal((41, object(), 0), "N") is None
+
+
+def _img_with_gps(tmp_path, lat, lon):
+    from PIL import Image
+    from PIL.TiffImagePlugin import IFDRational
+
+    def dms(v):
+        v = abs(v)
+        d = int(v)
+        m = int((v - d) * 60)
+        s = round((v - d - m / 60) * 3600, 2)
+        return (IFDRational(d, 1), IFDRational(m, 1), IFDRational(int(s * 100), 100))
+
+    img = Image.new("RGB", (8, 8), (120, 120, 120))
+    exif = Image.Exif()
+    exif[0x8825] = {
+        1: "N" if lat >= 0 else "S", 2: dms(lat),
+        3: "E" if lon >= 0 else "W", 4: dms(lon),
+    }
+    p = tmp_path / f"gps_{lat}_{lon}.jpg"
+    img.save(p, exif=exif)
+    return p
+
+
+def test_extract_gps_reads_valid_and_rejects_out_of_range(tmp_path):
+    from PIL import Image
+
+    with Image.open(_img_with_gps(tmp_path, 41.9, 12.5)) as im:
+        lat, lon = metadata._extract_gps(im)
+    assert lat == pytest.approx(41.9, abs=1e-3) and lon == pytest.approx(12.5, abs=1e-3)
+
+    # A corrupt out-of-range degree (200°) is dropped; the valid longitude stays.
+    with Image.open(_img_with_gps(tmp_path, 200.0, 12.5)) as im:
+        lat, lon = metadata._extract_gps(im)
+    assert lat is None and lon == pytest.approx(12.5, abs=1e-3)
+
+
+def test_extract_gps_none_without_exif(tmp_path):
+    from PIL import Image
+
+    p = tmp_path / "plain.jpg"
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(p)
+    with Image.open(p) as im:
+        assert metadata._extract_gps(im) == (None, None)
 
 
 def test_parse_exif_datetime_variants():

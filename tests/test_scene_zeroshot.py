@@ -134,6 +134,52 @@ def test_preprocess_shape_and_normalisation():
     assert np.allclose(blob, 1.0, atol=1e-5)
 
 
+# -- tagger instance methods, driven by a stub encoder (no model download) -----
+class _StubEncoder:
+    """A vision encoder that returns a fixed embedding (one label prototype)."""
+
+    def __init__(self, vector):
+        self._vec = vector
+
+    def embed_image(self, _img):
+        return self._vec
+
+
+def _bundled_matrix():
+    data = np.load(scene_labels_path(), allow_pickle=True)
+    return [str(x) for x in data["labels"]], np.asarray(data["matrix"], dtype=np.float32)
+
+
+def test_zeroshot_tagger_instance_paths_with_stub_encoder(tmp_path):
+    labels, matrix = _bundled_matrix()
+    target = labels.index("food") if "food" in labels else 0
+    tagger = ZeroShotSceneTagger(encoder=_StubEncoder(matrix[target]))
+
+    # tag_embedding: a probe equal to the prototype must pick that label.
+    label, scores = tagger.tag_embedding(matrix[target])
+    assert label == labels[target]
+    assert set(scores) == set(SCENE_LABELS)
+
+    # tag_image runs through the stub encoder.
+    assert tagger.tag_image(Image.new("RGB", (32, 32), (1, 2, 3)))[0] == labels[target]
+
+    # tag(path) opens the file then delegates to tag_image.
+    p = tmp_path / "x.jpg"
+    Image.new("RGB", (16, 16), (4, 5, 6)).save(p)
+    assert tagger.tag(p)[0] == labels[target]
+
+
+def test_zeroshot_from_config_accepts_injected_encoder():
+    _, matrix = _bundled_matrix()
+    tagger = ZeroShotSceneTagger.from_config(AtlasConfig(), encoder=_StubEncoder(matrix[0]))
+    assert isinstance(tagger, ZeroShotSceneTagger)
+
+
+def test_zeroshot_requires_model_or_encoder():
+    with pytest.raises(ValueError):
+        ZeroShotSceneTagger()
+
+
 # -- optional live round trip (needs onnxruntime + a local SigLIP vision ONNX) --
 _MODEL = os.environ.get("PHOTO_ATLAS_SCENE_MODEL")
 

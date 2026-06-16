@@ -100,22 +100,31 @@ def _parse_exif_datetime(value: str) -> str | None:
     return None
 
 
-def _ratio(value) -> float:
+def _ratio(value) -> float | None:
+    """A single EXIF rational as a float, or ``None`` if it can't be parsed.
+
+    Returning ``None`` (rather than the old ``0.0``) matters: a malformed or
+    zero-denominator component must *invalidate* the coordinate, not silently
+    contribute a 0 that drags the location to Null Island (0°,0°).
+    """
+
     try:
         return float(value)
     except (TypeError, ValueError):
         try:
-            return value[0] / value[1]
+            num, den = value[0], value[1]
+            return num / den if den else None
         except Exception:  # pragma: no cover - defensive
-            return 0.0
+            return None
 
 
 def _dms_to_decimal(dms, ref) -> float | None:
     try:
-        degrees = _ratio(dms[0])
-        minutes = _ratio(dms[1])
-        seconds = _ratio(dms[2])
+        degrees, minutes, seconds = _ratio(dms[0]), _ratio(dms[1]), _ratio(dms[2])
     except (TypeError, IndexError):
+        return None
+    # Any unparseable component invalidates the whole coordinate.
+    if degrees is None or minutes is None or seconds is None:
         return None
     dec = degrees + minutes / 60.0 + seconds / 3600.0
     if ref in ("S", "W"):
@@ -139,6 +148,12 @@ def _extract_gps(img: Image.Image) -> tuple[float | None, float | None]:
         lat = _dms_to_decimal(gps["GPSLatitude"], gps["GPSLatitudeRef"])
     if "GPSLongitude" in gps and "GPSLongitudeRef" in gps:
         lon = _dms_to_decimal(gps["GPSLongitude"], gps["GPSLongitudeRef"])
+    # Reject impossible coordinates (corrupt EXIF can yield out-of-range values),
+    # so the geocoder and map are never fed garbage.
+    if lat is not None and not -90.0 <= lat <= 90.0:
+        lat = None
+    if lon is not None and not -180.0 <= lon <= 180.0:
+        lon = None
     return lat, lon
 
 
