@@ -122,6 +122,18 @@ Semantic queries combine with every other filter (person, place, date, scene…)
 — the structured filters narrow the set, the query orders what's left — and are
 capped at the most relevant `config.semantic_top_k` (default 200) matches.
 
+**Hybrid person + visual queries.** SigLIP has no idea *who* "Stefano" is —
+identity is the face pipeline's job — so a query like "Stefano eating food" is
+**decomposed** server-side (`planner.py`) rather than fed whole to the model:
+known person names are peeled into a person filter (multiple names → the People
+AND-mode), count phrases like "alone" / "with other people" map to the
+number-of-people buckets, and only the residual ("eating food") goes to SigLIP.
+The legs are AND-ed, and the UI shows how it split your words. So "Stefano alone"
+is answered with zero ML at query time (pure filters), while "Anna at the beach"
+filters to Anna and ranks by the beach. The visual score is whole-image, so it
+means a photo *containing* Stefano that *looks like* the residual — not that
+Stefano is the one eating.
+
 Unlike scene tagging (whose label text is pre-baked), an arbitrary query can't be
 precomputed, so semantic search additionally downloads SigLIP's *text* tower and
 tokenizer on first use (still **no PyTorch**; needs the `scene` extra, which now

@@ -497,6 +497,7 @@ async function renderPhotos(reset = true) {
   state.offset += data.photos.length;
 
   $("#result-count").textContent = `${state.total} result${state.total === 1 ? "" : "s"}`;
+  renderSearchPlan(data.plan);
   // Distinguish a genuinely empty library (first-run onboarding) from a filter
   // that simply matched nothing.
   const empty = state.photos.length === 0;
@@ -510,6 +511,24 @@ async function renderPhotos(reset = true) {
   $("#grid-loading").textContent = "Loading…";
   state.loading = false;
   maybeLoadMore();
+}
+
+// Show how the server decomposed a natural-language query ("Stefano eating food"
+// -> 👤 Stefano + “eating food”) so the hybrid planning is transparent.
+function renderSearchPlan(plan) {
+  const el = $("#search-plan");
+  if (!el) return;
+  if (!plan) { el.textContent = ""; el.title = ""; return; }
+  const bits = [];
+  (plan.persons || []).forEach((n) => bits.push(`👤 ${n}`));
+  if ((plan.persons || []).length >= 2 && plan.person_mode === "all") bits.push("(all of them)");
+  const people = plan.people || [];
+  if (people.length === 1 && people[0] === "1") bits.push("alone");
+  else if (people.includes("2-4") && people.includes("5+")) bits.push("with others");
+  else people.forEach((t) => bits.push(PEOPLE_LABELS[t] || t));
+  if (plan.text) bits.push(`“${plan.text}”`);
+  el.textContent = bits.length ? `Interpreting: ${bits.join(" · ")}` : "";
+  el.title = "How your words were split into people/scene filters and a visual query";
 }
 
 function nearBottom() {

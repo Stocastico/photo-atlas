@@ -21,10 +21,22 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, library, metadata, search
+from . import db, library, metadata, planner, search
 from .config import AtlasConfig
 
 WEB_DIR = Path(__file__).parent / "web"
+
+
+def _union(existing, derived: list) -> list:
+    """Merge ``derived`` values into ``existing`` (a scalar/list/None), de-duped."""
+
+    out: list = list(existing) if isinstance(existing, (list, tuple)) else (
+        [existing] if existing not in (None, "") else []
+    )
+    for value in derived:
+        if value not in out:
+            out.append(value)
+    return out
 
 # Inclusive ``date_taken`` range bounds are compared on the YYYY-MM-DD prefix, so
 # reject anything that isn't that shape (a malformed value would otherwise compare
@@ -180,25 +192,54 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         # embedding), ANDed with the structured filters. It supersedes ``sort`` —
         # results come back in relevance order — and returns its own (top-k) total.
         if text and text.strip():
-            index = _semantic_index(conn)
-            if index.size == 0:
-                raise HTTPException(
-                    409,
-                    "No photo embeddings yet — run `photo-atlas embed` (or "
-                    "`index --embed`) to enable semantic search.",
+            # Hybrid decomposition: peel known person-names and count phrases out of
+            # the query into structured filters, leaving the residual for SigLIP.
+            persons = [dict(r) for r in conn.execute("SELECT id, name FROM persons")]
+            plan = planner.plan_query(text.strip(), persons)
+            merged = {k: v for k, v in filters.items() if k != "text"}
+            if plan.person_ids:
+                merged["person_id"] = _union(merged.get("person_id"), plan.person_ids)
+            if plan.person_mode and not merged.get("person_mode"):
+                merged["person_mode"] = plan.person_mode
+            if plan.people:
+                merged["people"] = _union(merged.get("people"), plan.people)
+            plan_payload = {
+                "persons": plan.person_names, "people": plan.people,
+                "person_mode": plan.person_mode, "text": plan.text,
+            }
+
+            rows: list[dict]
+            total: int | None
+            if plan.text:
+                index = _semantic_index(conn)
+                if index.size == 0:
+                    raise HTTPException(
+                        409,
+                        "No photo embeddings yet — run `photo-atlas embed` (or "
+                        "`index --embed`) to enable semantic search.",
+                    )
+                encoder = _text_encoder()
+                if encoder is None:
+                    raise HTTPException(
+                        501,
+                        "Semantic search needs the 'scene' extra "
+                        "(`uv sync --extra scene`) for the SigLIP text encoder.",
+                    )
+                rows, total = search.semantic_search(
+                    conn, merged, encoder.embed_text(plan.text), index,
+                    top_k=config.semantic_top_k, limit=limit, offset=offset,
                 )
-            encoder = _text_encoder()
-            if encoder is None:
-                raise HTTPException(
-                    501,
-                    "Semantic search needs the 'scene' extra "
-                    "(`uv sync --extra scene`) for the SigLIP text encoder.",
+            else:
+                # The query reduced to pure structured filters ("Stefano alone"):
+                # no visual leg, so no embeddings/model needed — just filter + page.
+                rows, total_count = search.search_photos(
+                    conn, merged, limit=limit, offset=offset, count=(offset == 0)
                 )
-            rows, total = search.semantic_search(
-                conn, filters, encoder.embed_text(text.strip()), index,
-                top_k=config.semantic_top_k, limit=limit, offset=offset,
-            )
-            return {"total": total, "count": len(rows), "offset": offset, "photos": rows}
+                total = total_count if total_count >= 0 else None
+            return {
+                "total": total, "count": len(rows), "offset": offset,
+                "photos": rows, "plan": plan_payload,
+            }
 
         # ``total`` is page-invariant, so only count on the first page; later
         # infinite-scroll pages send ``total: null`` and the client keeps its copy.
