@@ -50,12 +50,6 @@ class AtlasConfig:
     #: when a person's appearance drifts over the years.
     recognition_k: int = 5
 
-    #: Scene tagger: ``heuristic`` (colour/brightness, zero deps, the default),
-    #: ``zeroshot`` (SigLIP ONNX zero-shot; needs the ``scene`` extra and warns +
-    #: falls back if unavailable) or ``auto`` (zero-shot when it loads, else
-    #: silently the heuristic).
-    scene_backend: str = "heuristic"
-
     #: Logit temperature applied to the zero-shot cosine similarities before the
     #: softmax. Higher = sharper label probabilities.
     scene_temperature: float = 50.0

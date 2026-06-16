@@ -35,7 +35,6 @@ def _config(args) -> AtlasConfig:
 
 def _cmd_index(args) -> int:
     config = _config(args)
-    config.scene_backend = args.scene
     root = Path(args.path).expanduser()
     if not root.exists():
         print(f"error: path not found: {root}", file=sys.stderr)
@@ -78,6 +77,13 @@ def _cmd_index(args) -> int:
             print(f"  - {line}", file=sys.stderr)
     if stats.faces:
         print("Tip: run `photo-atlas cluster` then name people in the web UI.")
+    if getattr(args, "prune", False):
+        result = prune_library(config)
+        print(
+            f"Pruned {result['removed']} photo(s) whose files are gone "
+            f"({result['kept']} still present); swept {result['orphans']} "
+            "orphaned derivative file(s)."
+        )
     return 0
 
 
@@ -93,21 +99,21 @@ def _cmd_prune(args) -> int:
     config = _config(args)
     result = prune_library(config)
     print(
-        f"Pruned {result['removed']} photo(s) whose files are gone; "
-        f"{result['kept']} still present."
+        f"Pruned {result['removed']} photo(s) whose files are gone "
+        f"({result['kept']} still present); swept {result['orphans']} "
+        "orphaned derivative file(s)."
     )
     return 0
 
 
 def _cmd_retag_scenes(args) -> int:
     config = _config(args)
-    config.scene_backend = args.scene
 
     def progress(done: int, total: int) -> None:
         sys.stdout.write(f"\r  retagged {done}/{total}")
         sys.stdout.flush()
 
-    print(f"Re-tagging scenes with the '{args.scene}' tagger ...")
+    print("Re-tagging scenes with the SigLIP zero-shot tagger ...")
     n = retag_scenes(config, progress=progress)
     print(f"\nDone: {n} photo(s) retagged.")
     return 0
@@ -126,7 +132,8 @@ def _cmd_embed(args) -> int:
     except Exception as exc:  # noqa: BLE001 - surface a clean message, not a traceback
         print(
             f"\nerror: could not build embeddings ({type(exc).__name__}: {exc}). "
-            "Install the 'scene' extra with `uv sync --extra scene`.",
+            "Check that the SigLIP model can be downloaded (or set "
+            "PHOTO_ATLAS_SCENE_MODEL / PHOTO_ATLAS_TEXT_MODEL to local files).",
             file=sys.stderr,
         )
         return 1
@@ -232,17 +239,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_index.add_argument("--faces", default="auto",
                          choices=["auto", "yunet", "dlib", "synthetic", "none"],
                          help="Face detection backend (yunet = deep YuNet+SFace)")
-    p_index.add_argument(
-        "--scene", choices=["heuristic", "zeroshot", "auto"], default="heuristic",
-        help="Scene tagger: heuristic (default, no deps), zeroshot (SigLIP ONNX; "
-             "needs the 'scene' extra), or auto (zeroshot when available)",
-    )
     p_index.add_argument("--no-geocode", action="store_true", help="Skip reverse geocoding")
     p_index.add_argument("--recompute", action="store_true", help="Re-index already known photos")
     p_index.add_argument(
+        "--prune", action="store_true",
+        help="After indexing, reconcile the catalog: drop rows for deleted files and "
+             "sweep orphaned thumbnail/preview/crop files (no separate prune step)",
+    )
+    p_index.add_argument(
         "--embed", action="store_true",
         help="Also store a SigLIP image embedding per photo for natural-language "
-             "semantic search (needs the 'scene' extra)",
+             "semantic search",
     )
     p_index.add_argument(
         "--workers", type=int, default=None,
@@ -257,10 +264,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_prune.set_defaults(func=_cmd_prune)
 
     p_retag = sub.add_parser("retag-scenes", help="Recompute scene tags in place (no re-index)")
-    p_retag.add_argument(
-        "--scene", choices=["heuristic", "zeroshot", "auto"], default="zeroshot",
-        help="Scene tagger to use (default: zeroshot)",
-    )
     p_retag.set_defaults(func=_cmd_retag_scenes)
 
     p_embed = sub.add_parser(

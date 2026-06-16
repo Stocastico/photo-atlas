@@ -228,6 +228,20 @@ class SemanticIndex:
     def size(self) -> int:
         return int(self.ids.shape[0])
 
+    def vector_for(self, photo_id: int) -> np.ndarray | None:
+        """Return the (L2-normalised) embedding row for ``photo_id``, or ``None``.
+
+        ``None`` when the matrix is empty or the photo has no stored embedding —
+        powers "more like this" by using a photo's own vector as the query.
+        """
+
+        if self.size == 0:
+            return None
+        matches = np.nonzero(self.ids == int(photo_id))[0]
+        if matches.size == 0:
+            return None
+        return self.matrix[int(matches[0])]
+
     def rank(
         self,
         query_vec: np.ndarray,
@@ -292,10 +306,19 @@ def semantic_search(
     }
     ranked = index.rank(query_vec, allowed_ids=allowed, top_k=top_k)
     total = len(ranked)
-    page = ranked[offset : offset + limit]
-    if not page:
-        return [], total
+    return _rows_for_ranked(conn, ranked[offset : offset + limit]), total
 
+
+def _rows_for_ranked(conn: sqlite3.Connection, page: list[tuple[int, float]]) -> list[dict]:
+    """Fetch the grid columns for a ranked ``(photo_id, score)`` page.
+
+    Preserves the ranked order and attaches each row's ``score`` (the heavy
+    ``scene_scores`` blob is excluded via ``_LIST_COLUMNS``). Shared by
+    ``semantic_search`` and ``similar_photos``.
+    """
+
+    if not page:
+        return []
     ids = [pid for pid, _ in page]
     placeholders = ", ".join(["?"] * len(ids))
     by_id = {
@@ -310,7 +333,38 @@ def semantic_search(
         if row is not None:
             row["score"] = score
             rows.append(row)
-    return rows, total
+    return rows
+
+
+def similar_photos(
+    conn: sqlite3.Connection,
+    photo_id: int,
+    index: SemanticIndex,
+    *,
+    top_k: int = 200,
+    limit: int = 60,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    """Rank the library by visual similarity to ``photo_id`` ("more like this").
+
+    Uses the target photo's own SigLIP image embedding as the query vector and
+    cosine-ranks every *other* embedded photo. Returns ``(rows, total)`` where the
+    target is always excluded and ``total`` is the number of neighbours up to
+    ``top_k``. If the target has no embedding, returns ``([], 0)``.
+    """
+
+    query_vec = index.vector_for(photo_id)
+    if query_vec is None:
+        return [], 0
+    # Rank one extra candidate so dropping the target (cosine 1.0 with itself, so
+    # always rank 0) still leaves a full top_k of genuine neighbours.
+    ranked = [
+        (pid, score)
+        for pid, score in index.rank(query_vec, top_k=top_k + 1)
+        if pid != photo_id
+    ][:top_k]
+    total = len(ranked)
+    return _rows_for_ranked(conn, ranked[offset : offset + limit]), total
 
 
 def search_photos(
@@ -344,6 +398,41 @@ def search_photos(
         [*params, int(limit), int(offset)],
     ).fetchall()
     return [dict(r) for r in rows], int(total)
+
+
+def on_this_day(
+    conn: sqlite3.Connection, month: int, day: int, *, per_year: int = 24
+) -> list[dict]:
+    """Photos taken on ``month``/``day`` in past years ("on this day").
+
+    Returns one group per year (newest first), each ``{year, count, photos}`` where
+    ``count`` is the full number of matches that year and ``photos`` is a capped
+    sample (``per_year``, newest first) carrying the grid columns (minus the heavy
+    ``scene_scores`` blob). The match is on the ``taken_at`` month/day prefix, so a
+    time component doesn't matter and undated photos are skipped.
+    """
+
+    mm, dd = f"{int(month):02d}", f"{int(day):02d}"
+    rows = conn.execute(
+        f"SELECT {_LIST_COLUMNS}, substr(p.taken_at, 1, 4) AS year FROM photos p "
+        "WHERE substr(p.taken_at, 6, 2) = ? AND substr(p.taken_at, 9, 2) = ? "
+        "ORDER BY p.taken_at DESC, p.id DESC",
+        (mm, dd),
+    ).fetchall()
+
+    groups: dict[str, dict] = {}
+    order: list[str] = []
+    for r in rows:
+        row = dict(r)
+        year = row.pop("year")
+        grp = groups.get(year)
+        if grp is None:
+            grp = groups[year] = {"year": year, "count": 0, "photos": []}
+            order.append(year)
+        grp["count"] += 1
+        if len(grp["photos"]) < per_year:
+            grp["photos"].append(row)
+    return [groups[y] for y in order]
 
 
 def map_points(

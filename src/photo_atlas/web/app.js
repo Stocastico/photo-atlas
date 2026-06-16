@@ -15,6 +15,8 @@ const state = {
   layout: null,        // last computed grid layout
   searchMode: "filter", // "filter" (substring q) or "semantic" (natural-language text)
   semanticAvailable: false,
+  similarTo: null,    // photo id when the grid is in "more like this" mode
+  similarLabel: "",   // its filename, for the banner pill
 };
 
 // Grid windowing constants — GAP/MIN must match the CSS .grid/.card rules.
@@ -100,6 +102,7 @@ function isActive(key, value) {
 }
 
 function toggleFilter(key, value) {
+  state.similarTo = null; // picking a filter exits "more like this" mode
   const arr = Array.isArray(state.filters[key])
     ? state.filters[key].slice()
     : (state.filters[key] != null ? [state.filters[key]] : []);
@@ -125,12 +128,14 @@ function removeFilterValue(key, value) {
 }
 
 function toggleHasFaces() {
+  state.similarTo = null;
   if (state.filters.has_faces) delete state.filters.has_faces;
   else state.filters.has_faces = true;
   refresh();
 }
 
 function toggleFavoriteFilter() {
+  state.similarTo = null;
   if (state.filters.favorite) delete state.filters.favorite;
   else state.filters.favorite = true;
   refresh();
@@ -202,6 +207,49 @@ function filterParams() {
   return params;
 }
 
+// Build the /api/photos request URL for one page of the grid. In "more like
+// this" mode (state.similarTo set) it pages the similarity endpoint and ignores
+// the structured filters/sort; otherwise the normal filtered+sorted query.
+function photosRequestURL(offset) {
+  if (state.similarTo != null) {
+    const p = new URLSearchParams();
+    p.set("limit", String(PAGE));
+    p.set("offset", String(offset));
+    return `/api/photos/${state.similarTo}/similar?` + p.toString();
+  }
+  const params = filterParams();
+  if (state.sort && state.sort !== "newest") params.set("sort", state.sort);
+  params.set("limit", String(PAGE));
+  params.set("offset", String(offset));
+  return "/api/photos?" + params.toString();
+}
+
+// Enter "more like this": page the similarity endpoint for ``id`` in the grid.
+// Similar is its own mode (the endpoint ignores filters), so the filter set is
+// cleared; exitSimilar restores the normal filtered grid.
+function moreLikeThis(id, label) {
+  state.similarTo = id;
+  state.similarLabel = label || "";
+  state.filters = {};
+  state.searchMode = "filter";
+  const search = $("#search"); if (search) search.value = "";
+  closeLightbox();
+  state.view = "photos";
+  document.querySelectorAll(".tab").forEach((t) => {
+    const on = t.dataset.view === "photos";
+    t.classList.toggle("active", on);
+    t.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  showViewPanel("photos");
+  refresh();
+}
+
+function exitSimilar() {
+  state.similarTo = null;
+  state.similarLabel = "";
+  refresh();
+}
+
 // ---- URL / history state --------------------------------------------------
 // Reflect filters + view + sort in the querystring so the back button undoes a
 // filter and a filtered view is shareable/bookmarkable.
@@ -233,6 +281,10 @@ function applyQuery() {
     else (filters[k] = filters[k] || []).push(v);
   }
   state.filters = filters;
+  // Similar mode isn't part of the URL state, so any history navigation (or a
+  // fresh load) returns to the normal filtered grid.
+  state.similarTo = null;
+  state.similarLabel = "";
   state.view = params.get("view") || "photos";
   state.sort = params.get("sort") || "newest";
   // A `text` filter implies the semantic search mode; otherwise plain substring.
@@ -331,8 +383,76 @@ async function renderSidebar() {
   dateSection(side, f);
   section("Camera", f.cameras, "camera");
 
+  await renderAlbums(side);
+
   // Person names just became available — refresh the pills' labels.
   renderActiveFilters();
+}
+
+// ---- smart albums (saved searches) ----------------------------------------
+// Persist the current filter set under a name and restore it later. The stored
+// "query" is the same querystring the URL uses (buildQuery), so loading an album
+// reuses the URL-state machinery (applyQuery) to repopulate filters/view/sort.
+async function renderAlbums(side) {
+  const h = document.createElement("h3");
+  h.textContent = "Smart albums";
+  side.appendChild(h);
+
+  const save = document.createElement("button");
+  save.className = "show-more";
+  save.textContent = "💾 Save current search";
+  save.onclick = saveCurrentSearch;
+  side.appendChild(save);
+
+  let data;
+  try { data = await api("/api/albums"); } catch (e) { return; }
+  const albums = (data && data.albums) || [];
+  if (!albums.length) return;
+  const wrap = document.createElement("div");
+  wrap.className = "facet album-list";
+  for (const al of albums) {
+    const row = document.createElement("div");
+    row.className = "album-row";
+    const open = document.createElement("button");
+    open.className = "chip";
+    open.textContent = al.name;
+    open.title = "Load this saved search";
+    open.onclick = () => loadAlbum(al);
+    const del = document.createElement("button");
+    del.className = "chip icon";
+    del.textContent = "✕";
+    del.title = "Delete album";
+    del.setAttribute("aria-label", `Delete album ${al.name}`);
+    del.onclick = (e) => { e.stopPropagation(); deleteAlbum(al.id); };
+    row.appendChild(open);
+    row.appendChild(del);
+    wrap.appendChild(row);
+  }
+  side.appendChild(wrap);
+}
+
+async function saveCurrentSearch() {
+  const query = buildQuery(); // filters + non-default view/sort, same as the URL
+  const name = (window.prompt("Name this album:", "") || "").trim();
+  if (!name) return;
+  await api("/api/albums", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, query }),
+  });
+  toast(`Saved album “${name}”.`, "info");
+  renderSidebar();
+}
+
+function loadAlbum(al) {
+  // Push the saved querystring and restore it through the URL-state machinery.
+  history.pushState(null, "", al.query ? "?" + al.query : location.pathname);
+  applyQuery();
+  setView(state.view); // updates the tab highlight and re-renders the view
+}
+
+async function deleteAlbum(id) {
+  await api(`/api/albums/${id}`, { method: "DELETE" });
+  renderSidebar();
 }
 
 // Two date-taken bounds (inclusive). Inputs read/write state.filters directly.
@@ -388,6 +508,7 @@ function renderPeopleModeToggle(side) {
 
 function clearAllFilters() {
   state.filters = {};
+  state.similarTo = null;
   $("#search").value = "";
   refresh();
 }
@@ -408,7 +529,18 @@ function renderActiveFilters() {
   if (!bar) return;
   bar.innerHTML = "";
   const pairs = activeFilterPairs();
-  bar.style.display = pairs.length ? "flex" : "none";
+  const similar = state.similarTo != null;
+  bar.style.display = pairs.length || similar ? "flex" : "none";
+  if (similar) {
+    const text = `✨ Similar to ${state.similarLabel || "#" + state.similarTo}`;
+    const pill = document.createElement("button");
+    pill.className = "filter-pill";
+    pill.innerHTML = `<span>${esc(text)}</span><span class="x">✕</span>`;
+    pill.title = "Exit similar photos";
+    pill.setAttribute("aria-label", "Exit similar photos");
+    pill.onclick = exitSimilar;
+    bar.appendChild(pill);
+  }
   for (const [k, v] of pairs) {
     const pill = document.createElement("button");
     pill.className = "filter-pill";
@@ -533,14 +665,9 @@ async function renderPhotos(reset = true) {
   }
   $("#grid-loading").style.display = "block";
 
-  const params = filterParams();
-  if (state.sort && state.sort !== "newest") params.set("sort", state.sort);
-  params.set("limit", String(PAGE));
-  params.set("offset", String(state.offset));
-
   let data;
   try {
-    data = await api("/api/photos?" + params.toString());
+    data = await api(photosRequestURL(state.offset));
   } catch (e) {
     $("#grid-loading").textContent = "Could not load photos.";
     state.loading = false;
@@ -558,7 +685,8 @@ async function renderPhotos(reset = true) {
   // Distinguish a genuinely empty library (first-run onboarding) from a filter
   // that simply matched nothing.
   const empty = state.photos.length === 0;
-  const libraryEmpty = empty && activeFilterPairs().length === 0;
+  const libraryEmpty =
+    empty && activeFilterPairs().length === 0 && state.similarTo == null;
   $("#onboarding").style.display = libraryEmpty ? "block" : "none";
   $("#grid-empty").style.display = empty && !libraryEmpty ? "block" : "none";
 
@@ -664,6 +792,18 @@ function renderLightboxSide(p, id, reopen) {
   // A favourite toggle for the open photo; shares paint/sync logic with the grid.
   $("#lb-actions").prepend(makeStar(p, { inline: true }));
 
+  // "More like this" reuses the stored SigLIP embeddings, so only offer it when
+  // the library is embedded (same signal the Smart-search toggle uses).
+  if (state.semanticAvailable) {
+    const sim = document.createElement("button");
+    sim.className = "ghost";
+    sim.type = "button";
+    sim.textContent = "✨ More like this";
+    sim.title = "Find visually similar photos";
+    sim.onclick = () => moreLikeThis(id, p.filename);
+    $("#lb-actions").appendChild(sim);
+  }
+
   const list = $("#lb-faces");
   if (!p.faces.length) list.innerHTML = `<span class="tagline">No faces detected.</span>`;
   for (const face of p.faces) {
@@ -729,6 +869,55 @@ async function openPhotoById(id) {
   const p = await api(`/api/photos/${id}`);
   if (!$("#lightbox").classList.contains("open")) return; // closed while loading
   renderLightboxSide(p, id, () => openPhotoById(id));
+}
+
+// ---- memories ("on this day") ---------------------------------------------
+async function renderMemories() {
+  const wrap = $("#memories");
+  if (!wrap) return;
+  const today = new Date();
+  let data;
+  try {
+    data = await api(`/api/memories?month=${today.getMonth() + 1}&day=${today.getDate()}`);
+  } catch (e) { return; }
+
+  const title = $("#memories-title");
+  if (title) {
+    const when = today.toLocaleDateString(undefined, { month: "long", day: "numeric" });
+    title.textContent = `On this day · ${when}`;
+  }
+  wrap.innerHTML = "";
+  const groups = (data && data.groups) || [];
+  $("#memories-empty").style.display = groups.length ? "none" : "block";
+
+  for (const g of groups) {
+    const sec = document.createElement("section");
+    sec.className = "memory-year";
+    const yearsAgo = today.getFullYear() - Number(g.year);
+    const label = yearsAgo > 0
+      ? `${g.year} · ${yearsAgo} year${yearsAgo === 1 ? "" : "s"} ago`
+      : `${g.year}`;
+    const h = document.createElement("h3");
+    h.textContent = `${label} · ${g.count} photo${g.count === 1 ? "" : "s"}`;
+    sec.appendChild(h);
+    const strip = document.createElement("div");
+    strip.className = "memory-strip";
+    for (const p of g.photos) {
+      const card = document.createElement("div");
+      card.className = "memory-card";
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+      card.setAttribute("aria-label", `Open ${p.filename}`);
+      card.innerHTML = `<img loading="lazy" decoding="async" src="/api/thumb/${p.id}" alt="${esc(p.filename)}" />`;
+      card.onclick = () => openPhotoById(p.id);
+      card.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPhotoById(p.id); }
+      };
+      strip.appendChild(card);
+    }
+    sec.appendChild(strip);
+    wrap.appendChild(sec);
+  }
 }
 
 // ---- map ------------------------------------------------------------------
@@ -950,6 +1139,15 @@ async function renderClusters() {
 }
 
 // ---- view switching -------------------------------------------------------
+const VIEWS = ["photos", "memories", "map", "people", "clusters"];
+
+function showViewPanel(view) {
+  for (const v of VIEWS) {
+    const el = $("#view-" + v);
+    if (el) el.style.display = v === view ? "block" : "none";
+  }
+}
+
 function setView(view) {
   state.view = view;
   document.querySelectorAll(".tab").forEach((t) => {
@@ -958,10 +1156,7 @@ function setView(view) {
     t.setAttribute("aria-selected", on ? "true" : "false");
     t.tabIndex = on ? 0 : -1; // roving tabindex for the WAI-ARIA tabs pattern
   });
-  $("#view-photos").style.display = view === "photos" ? "block" : "none";
-  $("#view-map").style.display = view === "map" ? "block" : "none";
-  $("#view-people").style.display = view === "people" ? "block" : "none";
-  $("#view-clusters").style.display = view === "clusters" ? "block" : "none";
+  showViewPanel(view);
   refresh();
 }
 
@@ -970,6 +1165,7 @@ function refresh() {
   renderActiveFilters();
   renderSidebar();
   if (state.view === "photos") renderPhotos(true);
+  else if (state.view === "memories") renderMemories();
   else if (state.view === "map") renderMap();
   else if (state.view === "people") renderPeople();
   else renderClusters();
@@ -1053,6 +1249,7 @@ $("#search").oninput = (e) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
     const v = e.target.value.trim();
+    state.similarTo = null; // a new search exits "more like this" mode
     const key = state.searchMode === "semantic" ? "text" : "q";
     const other = key === "text" ? "q" : "text";
     delete state.filters[other];

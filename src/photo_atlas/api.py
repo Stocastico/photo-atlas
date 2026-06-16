@@ -11,6 +11,7 @@ custom :class:`~photo_atlas.config.AtlasConfig` can be injected; importing
 
 from __future__ import annotations
 
+import datetime
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -63,6 +64,11 @@ class CoverRequest(BaseModel):
 
 class FavoriteRequest(BaseModel):
     favorite: bool
+
+
+class AlbumRequest(BaseModel):
+    name: str
+    query: str = ""
 
 
 def create_app(config: AtlasConfig | None = None) -> FastAPI:
@@ -228,8 +234,9 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
                 if encoder is None:
                     raise HTTPException(
                         501,
-                        "Semantic search needs the 'scene' extra "
-                        "(`uv sync --extra scene`) for the SigLIP text encoder.",
+                        "Semantic search could not load the SigLIP text encoder — "
+                        "check the model can be downloaded (or set "
+                        "PHOTO_ATLAS_TEXT_MODEL to a local file).",
                     )
                 rows, total = search.semantic_search(
                     conn, merged, encoder.embed_text(plan.text), index,
@@ -255,6 +262,23 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         return {
             "total": total if total >= 0 else None,
             "count": len(rows), "offset": offset, "photos": rows,
+        }
+
+    @app.get("/api/memories")
+    def api_memories(
+        month: int | None = Query(None, ge=1, le=12),
+        day: int | None = Query(None, ge=1, le=31),
+        conn: sqlite3.Connection = Depends(get_conn),
+    ):
+        # "On this day": photos from the same calendar date in past years. Defaults
+        # to the server's current date when month/day are omitted.
+        today = datetime.date.today()
+        m = month or today.month
+        d = day or today.day
+        groups = search.on_this_day(conn, m, d)
+        return {
+            "month": m, "day": d,
+            "total": sum(g["count"] for g in groups), "groups": groups,
         }
 
     @app.get("/api/map")
@@ -291,6 +315,30 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         if photo is None:
             raise HTTPException(404, "photo not found")
         return photo
+
+    @app.get("/api/photos/{photo_id}/similar")
+    def api_similar(
+        photo_id: int,
+        limit: int = Query(60, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+        conn: sqlite3.Connection = Depends(get_conn),
+    ):
+        # "More like this": rank the library by SigLIP image-embedding similarity to
+        # this photo. No text encoder/model download needed — it reuses the stored
+        # embeddings directly — so it works whenever `embed`/`index --embed` has run.
+        if conn.execute("SELECT 1 FROM photos WHERE id=?", (photo_id,)).fetchone() is None:
+            raise HTTPException(404, "photo not found")
+        index = _semantic_index(conn)
+        if index.size == 0:
+            raise HTTPException(
+                409,
+                "No photo embeddings yet — run `photo-atlas embed` (or "
+                "`index --embed`) to enable similarity search.",
+            )
+        rows, total = search.similar_photos(
+            conn, photo_id, index, top_k=config.semantic_top_k, limit=limit, offset=offset
+        )
+        return {"total": total, "count": len(rows), "offset": offset, "photos": rows}
 
     @app.put("/api/photos/{photo_id}/favorite")
     def api_set_favorite(
@@ -369,6 +417,25 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             if not crop:
                 raise HTTPException(404, "face crop not found")
         return FileResponse(crop)
+
+    # -- smart albums (saved searches) ------------------------------------
+    @app.get("/api/albums")
+    def api_albums(conn: sqlite3.Connection = Depends(get_conn)):
+        return {"albums": db.list_saved_searches(conn)}
+
+    @app.post("/api/albums")
+    def api_create_album(
+        payload: AlbumRequest, conn: sqlite3.Connection = Depends(get_conn)
+    ):
+        if not payload.name.strip():
+            raise HTTPException(400, "name must not be empty")
+        album_id = db.create_saved_search(conn, payload.name, payload.query)
+        return {"ok": True, "id": album_id}
+
+    @app.delete("/api/albums/{album_id}")
+    def api_delete_album(album_id: int, conn: sqlite3.Connection = Depends(get_conn)):
+        db.delete_saved_search(conn, album_id)
+        return {"ok": True}
 
     # -- persons ----------------------------------------------------------
     @app.get("/api/persons")

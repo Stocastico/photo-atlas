@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable
+from datetime import UTC
 from pathlib import Path
 
 import numpy as np
@@ -54,6 +55,17 @@ CREATE TABLE IF NOT EXISTS persons (
     name          TEXT UNIQUE NOT NULL,
     cover_face_id INTEGER,
     created_at    TEXT
+);
+
+-- Smart Albums: a saved search is a user-named filter set, stored as the
+-- querystring of filters to re-apply. Independent of the photo tables, so it's
+-- created via CREATE IF NOT EXISTS (no _migrate entry needed) and survives a
+-- re-index untouched.
+CREATE TABLE IF NOT EXISTS saved_searches (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT UNIQUE NOT NULL,
+    query      TEXT NOT NULL,
+    created_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS faces (
@@ -262,6 +274,44 @@ def set_favorite(conn: sqlite3.Connection, photo_id: int, favorite: bool) -> boo
     return cur.rowcount > 0
 
 
+# -- saved searches (Smart Albums) ----------------------------------------
+def create_saved_search(conn: sqlite3.Connection, name: str, query: str) -> int:
+    """Create (or overwrite by name) a saved search and return its id.
+
+    Upserts on ``name`` so re-saving an album under the same name updates its
+    stored query in place — no duplicate row, no ``IntegrityError``.
+    """
+
+    from datetime import datetime
+
+    name = name.strip()
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT INTO saved_searches (name, query, created_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(name) DO UPDATE SET query=excluded.query",
+        (name, query, now),
+    )
+    conn.commit()
+    row = conn.execute("SELECT id FROM saved_searches WHERE name=?", (name,)).fetchone()
+    return int(row["id"])
+
+
+def list_saved_searches(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, name, query, created_at FROM saved_searches "
+        "ORDER BY name COLLATE NOCASE"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_saved_search(conn: sqlite3.Connection, search_id: int) -> bool:
+    """Delete a saved search. Returns ``True`` if a row was removed."""
+
+    cur = conn.execute("DELETE FROM saved_searches WHERE id=?", (search_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def replace_faces(conn: sqlite3.Connection, photo_id: int, faces: Iterable[dict]) -> None:
     """Replace all faces for a photo (used when re-indexing)."""
 
@@ -291,11 +341,11 @@ def get_or_create_person(conn: sqlite3.Connection, name: str) -> int:
     row = conn.execute("SELECT id FROM persons WHERE name=?", (name,)).fetchone()
     if row:
         return int(row["id"])
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     cur = conn.execute(
         "INSERT INTO persons (name, created_at) VALUES (?, ?)",
-        (name, datetime.now(timezone.utc).isoformat(timespec="seconds")),
+        (name, datetime.now(UTC).isoformat(timespec="seconds")),
     )
     assert cur.lastrowid is not None  # row was just inserted
     return int(cur.lastrowid)

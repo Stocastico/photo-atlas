@@ -18,7 +18,6 @@ from PIL import Image
 from photo_atlas import classify
 from photo_atlas.classify import (
     SCENE_LABELS,
-    SceneTagger,
     ZeroShotSceneTagger,
     classify_embedding,
     get_tagger,
@@ -98,31 +97,15 @@ def test_bundled_label_matrix_is_valid():
     assert np.allclose(norms, 1.0, atol=1e-4)
 
 
-def test_get_tagger_default_is_heuristic():
-    assert isinstance(get_tagger(AtlasConfig()), SceneTagger)
-
-
-def test_get_tagger_zeroshot_falls_back_when_unavailable(monkeypatch, capsys):
-    def boom(_config):
-        raise RuntimeError("no onnxruntime")
-
-    monkeypatch.setattr(ZeroShotSceneTagger, "from_config", classmethod(lambda cls, c: boom(c)))
-    cfg = AtlasConfig()
-    cfg.scene_backend = "zeroshot"
-    tagger = get_tagger(cfg)
-    assert isinstance(tagger, SceneTagger)
-    assert "zero-shot scene tagging unavailable" in capsys.readouterr().err
-
-
-def test_get_tagger_auto_falls_back_silently(monkeypatch, capsys):
-    monkeypatch.setattr(
-        ZeroShotSceneTagger, "from_config",
-        classmethod(lambda cls, c: (_ for _ in ()).throw(RuntimeError("nope"))),
-    )
-    cfg = AtlasConfig()
-    cfg.scene_backend = "auto"
-    assert isinstance(get_tagger(cfg), SceneTagger)
-    assert capsys.readouterr().err == ""  # auto stays quiet
+def test_get_tagger_is_zeroshot_and_passes_through_the_injected_encoder():
+    # The heuristic tagger is gone: get_tagger always returns the SigLIP zero-shot
+    # one. Injecting a stub encoder keeps it offline (no model download) and proves
+    # get_tagger forwards the encoder rather than loading its own.
+    _, matrix = _bundled_matrix()
+    encoder = _StubEncoder(matrix[0])
+    tagger = get_tagger(AtlasConfig(), encoder=encoder)
+    assert isinstance(tagger, ZeroShotSceneTagger)
+    assert tagger.encoder is encoder
 
 
 def test_preprocess_shape_and_normalisation():

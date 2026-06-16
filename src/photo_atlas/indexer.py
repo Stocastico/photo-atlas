@@ -22,7 +22,7 @@ import sqlite3
 import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from typing import cast
@@ -226,30 +226,21 @@ def _build_encoders(
 ) -> tuple[SigLipImageEncoder | None, Tagger]:
     """Return ``(image_encoder, tagger)`` for one index/embed run.
 
-    ``image_encoder`` is non-``None`` only when semantic embeddings were requested.
-    When the scene tagger is the SigLIP zero-shot one, its vision encoder is reused
-    for embeddings — one ONNX session, one inference per photo, both jobs done. With
-    the heuristic tagger a standalone encoder is loaded (and, if that fails, semantic
-    embeddings are skipped with a warning rather than aborting the whole index).
+    The SigLIP zero-shot tagger already holds the vision encoder, so when semantic
+    embeddings are requested it's reused for them — one ONNX session, one inference
+    per photo, both jobs done. ``image_encoder`` is ``None`` when ``embed`` is off.
     """
 
     tagger = get_tagger(config)
     image_encoder: SigLipImageEncoder | None = None
     if embed:
-        if isinstance(tagger, ZeroShotSceneTagger):
-            image_encoder = tagger.encoder
-        else:
-            try:
-                image_encoder = SigLipImageEncoder.from_config(config)
-            except Exception as exc:  # noqa: BLE001 - missing extra/model -> skip embeddings
-                import sys  # noqa: PLC0415
-
-                print(
-                    "warning: semantic-search embeddings unavailable "
-                    f"({type(exc).__name__}: {exc}); install the 'scene' extra "
-                    "(`uv sync --extra scene`). Indexing without embeddings.",
-                    file=sys.stderr,
-                )
+        # The tagger is always the zero-shot one in production; a test may inject a
+        # stub tagger without an encoder, in which case load a standalone one.
+        image_encoder = (
+            tagger.encoder
+            if isinstance(tagger, ZeroShotSceneTagger)
+            else SigLipImageEncoder.from_config(config)
+        )
     return image_encoder, tagger
 
 
@@ -393,7 +384,7 @@ def _commit_prepared(
         "scene_scores": json.dumps(prepared.scene_scores),
         "face_count": len(prepared.faces),
         "thumb_path": prepared.thumb_path,
-        "indexed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "indexed_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
     photo_id = db.upsert_photo(conn, record)
     if prepared.embedding_blob is not None:
@@ -500,10 +491,18 @@ def _worker_init(
     config: AtlasConfig,
     enrollment: Enrollment | None,
     embed: bool,
+    tagger: Tagger | None = None,
 ) -> None:
-    """Initialise a pool worker with its own backend / tagger (called once)."""
+    """Initialise a pool worker with its own backend / tagger (called once).
 
-    image_encoder, tagger = _build_encoders(config, embed=embed)
+    ``tagger`` may be an injected (picklable) tagger — used by tests to keep the
+    suite offline; production passes ``None`` and the worker builds the SigLIP one.
+    """
+
+    if tagger is None:
+        image_encoder, tagger = _build_encoders(config, embed=embed)
+    else:
+        image_encoder = None
     _WORKER_STATE["backend"] = (
         get_backend(backend_name, model_dir=model_dir) if backend_name != "none" else None
     )
@@ -541,6 +540,7 @@ def _index_parallel(
     workers: int,
     embed: bool,
     progress: Callable[[Path, IndexStats], None] | None,
+    tagger: Tagger | None = None,
 ) -> None:
     """Fan the per-file decode/detect/thumbnail work out over a process pool.
 
@@ -563,8 +563,10 @@ def _index_parallel(
         except Exception:  # pragma: no cover - worker surfaces a clearer error
             pass
     # Likewise pre-fetch the SigLIP vision model so N workers don't race to
-    # download it (needed for the zero-shot scene tagger and/or embeddings).
-    if embed or config.scene_backend in ("zeroshot", "auto"):
+    # download it — it's needed for every index run now (the only scene tagger is
+    # zero-shot) and additionally for embeddings. Skipped when a tagger is injected
+    # (tests), since the worker then never builds the real one.
+    if tagger is None:
         try:
             from .models import ensure_scene_model
 
@@ -580,7 +582,7 @@ def _index_parallel(
     with ProcessPoolExecutor(
         max_workers=workers, mp_context=ctx,
         initializer=_worker_init,
-        initargs=(backend_name, config.models_dir, config, enrollment, embed),
+        initargs=(backend_name, config.models_dir, config, enrollment, embed, tagger),
     ) as pool:
         inflight: dict = {}
 
@@ -630,6 +632,7 @@ def index_path(
     workers: int | None = None,
     embed: bool = False,
     progress: Callable[[Path, IndexStats], None] | None = None,
+    tagger: Tagger | None = None,
 ) -> IndexStats:
     """Index every supported image under ``root`` into the library.
 
@@ -637,6 +640,11 @@ def index_path(
     larger value decodes and detects across that many worker processes (DB writes
     still funnel through the single main connection). ``embed`` additionally stores
     a SigLIP image embedding per photo for natural-language semantic search.
+
+    ``tagger`` injects a scene tagger instead of building the SigLIP one; it's the
+    dependency-injection seam the offline test suite uses (a picklable stub tagger),
+    and it's passed through to the worker processes unchanged. Production leaves it
+    ``None`` and every path builds the zero-shot tagger.
     """
 
     config.ensure_dirs()
@@ -726,9 +734,13 @@ def index_path(
                 conn, config, iter_tasks(),
                 backend_name=backend_name, enrollment=enrollment, geocoder=geocoder,
                 stats=stats, workers=workers, embed=embed, progress=progress,
+                tagger=tagger,
             )
         else:
-            image_encoder, tagger = _build_encoders(config, embed=embed)
+            if tagger is None:
+                image_encoder, tagger = _build_encoders(config, embed=embed)
+            else:
+                image_encoder = None
             for path_str, sha1 in iter_tasks():
                 path = Path(path_str)
                 try:
@@ -752,13 +764,66 @@ def index_path(
     return stats
 
 
+def sweep_orphan_derivatives(config: AtlasConfig) -> int:
+    """Delete derivative files no catalog row references; return how many were removed.
+
+    Thumbnails and preview/retina variants are content-addressed by the source
+    photo's SHA-1 (``{sha1}.jpg`` / ``{sha1}_{size}.jpg``), and face crops live
+    under ``faces_dir/<photo_id>/``. A crash mid-index, or a source photo whose
+    bytes (and thus SHA-1) changed, can strand such files with no owning row. This
+    reclaims them: any thumb/preview whose SHA-1 isn't in the catalog, any leftover
+    ``.part`` temp from an interrupted write, and any face-crop dir for a photo id
+    that no longer exists. Referenced files are always kept.
+    """
+
+    import shutil
+
+    conn = db.connect(config.db_path, ensure_schema=False)
+    try:
+        live_sha1 = {
+            r[0] for r in conn.execute("SELECT sha1 FROM photos WHERE sha1 IS NOT NULL")
+        }
+        live_ids = {str(r[0]) for r in conn.execute("SELECT id FROM photos")}
+    finally:
+        conn.close()
+
+    removed = 0
+    # Content-addressed thumbnails + preview/retina variants.
+    for cache_dir in (config.thumbs_dir, config.previews_dir):
+        if not cache_dir.exists():
+            continue
+        for f in cache_dir.rglob("*"):
+            if not f.is_file():
+                continue
+            # A leftover atomic-write temp is an orphan regardless of name.
+            if f.name.endswith(".part"):
+                f.unlink(missing_ok=True)
+                removed += 1
+                continue
+            # Filenames are ``{sha1}.jpg`` or ``{sha1}_{size}.jpg``; pull the sha1.
+            sha1 = f.name.split(".", 1)[0].split("_", 1)[0]
+            if sha1 not in live_sha1:
+                f.unlink(missing_ok=True)
+                removed += 1
+    # Face-crop directories keyed by photo id.
+    if config.faces_dir.exists():
+        for sub in config.faces_dir.iterdir():
+            if sub.is_dir() and sub.name not in live_ids:
+                shutil.rmtree(sub, ignore_errors=True)
+                removed += 1
+    return removed
+
+
 def prune_library(config: AtlasConfig) -> dict[str, int]:
-    """Drop catalog rows whose source file no longer exists on disk.
+    """Reconcile the catalog with the filesystem (rows *and* derivative files).
 
     Indexing only ever adds or updates rows, so moved/deleted photos linger as
-    dead entries that 404 in the UI. ``prune`` reconciles the catalog with the
-    filesystem: for each missing file it removes the photo row (its faces cascade
-    away) and deletes the now-orphaned thumbnail and face crops.
+    dead entries that 404 in the UI. ``prune`` removes the photo row for each
+    missing source file (its faces cascade away) plus that row's thumbnail and
+    face crops, then sweeps any remaining orphaned derivative files
+    (:func:`sweep_orphan_derivatives`) — e.g. preview/retina variants of the
+    removed photos, or files stranded by an interrupted index. Returns
+    ``{removed, kept, orphans}``.
     """
 
     import shutil
@@ -781,7 +846,10 @@ def prune_library(config: AtlasConfig) -> dict[str, int]:
         conn.commit()
     finally:
         conn.close()
-    return {"removed": removed, "kept": kept}
+    # Now that dead rows are gone, reclaim any derivative files they (or a crash)
+    # left without an owning row.
+    orphans = sweep_orphan_derivatives(config)
+    return {"removed": removed, "kept": kept, "orphans": orphans}
 
 
 def retag_scenes(

@@ -126,10 +126,11 @@ these items are the genuinely new pieces.
   chips expose `aria-pressed`, pills have `aria-label`s, and a visible
   `:focus-visible` outline was added.
 
-### Explicitly deferred (browser-only target)
-- [ ] **Responsive / mobile layout.** `.layout` is a fixed `250px 1fr` grid with
-  a sticky full-height sidebar; on small screens it needs a collapsible drawer.
-  Skipped for now per usage (desktop browser only).
+### Won't do (browser-only target)
+- [ ] ~~**Responsive / mobile layout.**~~ **Won't do** (2026-06-16). `.layout` is a
+  fixed `250px 1fr` grid with a sticky full-height sidebar; on small screens it would
+  need a collapsible drawer. The target is a desktop browser only, so this is out of
+  scope.
 
 ## Correctness / scale / quality (2026-06-15 final review)
 
@@ -245,9 +246,17 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   retag-scenes` command (`indexer.retag_scenes`) decodes each still-present photo
   once and upserts only `scene_type`/`scene_scores` (reusing the stored
   `face_count`), so switching heuristic↔zero-shot or tuning it needs no re-detect.
-- [ ] **Resumable / crash-safe indexing.** An interrupted run leaves a mixed state
-  and orphans; `prune` is a separate manual step. Checkpoint progress and
-  auto-prune orphaned rows + derivative files.
+- [x] **Resumable / crash-safe indexing.** **Done:** indexing is already
+  resume-on-rerun (per-file commits + skip-already-indexed by path), so the new
+  pieces are orphan reclamation and one-step reconciliation.
+  `indexer.sweep_orphan_derivatives` deletes derivative files no row references —
+  content-addressed thumbnails / preview+retina variants whose SHA-1 is no longer in
+  the catalog, leftover `.part` temps from interrupted atomic writes, and face-crop
+  dirs for vanished photo ids — and `prune_library` now runs it after dropping dead
+  rows (returns `{removed, kept, orphans}`). `index --prune` folds the whole
+  reconciliation into the index run so it's no longer a separate manual step. Unit +
+  CLI tested (`tests/test_prune_orphans.py`: referenced-kept/orphan-removed,
+  idempotence, prune integration, `--prune` flag).
 - [x] **Hot-path denormalisation & composite indexes.**
   - [x] **Composite indexes for the browse/filter access patterns.** Added
     `(scene_type, taken_at)` and `(folder_place, taken_at)` on `photos` so a facet
@@ -298,9 +307,15 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   libraries have 5–20-frame bursts. Add a perceptual hash (dHash/pHash) column,
   group near-identical shots, collapse them in the grid behind a "best of N" cover,
   and offer bulk-delete of the rest. Huge real-world decluttering win.
-- [ ] **"On this day" / Memories + trip auto-detection.** A 15-year archive is made
-  for "this week, 8 years ago". Add day/week-of-year endpoints and auto-group trips
-  from date gaps + place/GPS proximity (folders already hint at it).
+- [x] **"On this day" / Memories.** **Done:** a new **Memories** tab surfaces photos
+  taken on the same calendar date in earlier years. `search.on_this_day` slices on
+  the `taken_at` month/day prefix and groups by year (newest first, each group a
+  full `count` + a capped photo sample); `GET /api/memories?month=&day=` defaults to
+  the server's current date. The UI renders one horizontal film-strip per past year
+  ("3 years ago"), each thumb opening in the lightbox. db + API tested
+  (`tests/test_memories.py`, incl. the 422 on a bad date).
+  - [ ] **Trip auto-detection.** Still open: auto-group trips from date gaps +
+    place/GPS proximity (folders already hint at it).
 - [x] **Favorites.** Star shots: a `favorite` 0/1 column (kept out of
   `PHOTO_COLUMNS` so a re-index never clears it; written via `db.set_favorite` and
   `PUT /api/photos/{id}/favorite`, guarded by the same-origin write middleware), a
@@ -309,16 +324,61 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   star overlay on every grid card, and an inline star in the lightbox; all star
   buttons for a photo stay in sync. URL round-trip + db/search/facet/API tested
   (`tests/test_favorites.py`, `tests/js/url_state_harness.mjs`).
-  - [ ] **Smart Albums (saved searches).** Persist any filter set as a named,
-    shareable album. (Favorites shipped; saved searches still open.)
+  - [x] **Smart Albums (saved searches).** **Done:** any filter set can be saved
+    under a name and restored later. A `saved_searches` table (name UNIQUE + the
+    filter querystring) with `db.create_saved_search` (upsert-by-name, so re-saving
+    overwrites), `list_saved_searches`, `delete_saved_search`, surfaced over
+    `GET/POST /api/albums` and `DELETE /api/albums/{id}` (writes behind the
+    same-origin guard; empty name → 400). The sidebar gains a "Smart albums" section
+    with a "💾 Save current search" button and per-album load/delete chips; loading
+    pushes the saved querystring and restores it through the existing URL-state
+    machinery (`applyQuery`), so filters/view/sort all come back. db + API tested
+    (`tests/test_albums.py`, incl. upsert, unknown-id no-op, table-create migration).
 - [ ] **Multi-select + bulk actions.** Shift/Ctrl-click in the grid → assign a
   person, favorite, export, or hide a whole selection at once.
-- [ ] **"More like this."** Reuse the embeddings we already compute: SFace for
-  "same person", SigLIP for "same vibe/scene" — a similarity button in the lightbox.
+- [x] **"More like this."** **Done:** a ✨ **More like this** button in the lightbox
+  pages the new `GET /api/photos/{id}/similar` endpoint, which cosine-ranks the
+  library by the photo's own stored SigLIP image embedding (`search.similar_photos`
+  + `SemanticIndex.vector_for`, the target always excluded). No text encoder/model
+  download — it reuses the embeddings `embed`/`index --embed` already wrote, so it
+  works offline whenever the library is embedded. The grid enters a dedicated
+  "similar" mode (filters cleared, a removable "✨ Similar to …" banner pill,
+  infinite-scroll paging preserved); picking any filter/search exits it. Backend
+  (ranking, self-exclusion, paging, 404/409 edge cases) is unit + API tested
+  (`tests/test_similar.py`) and the request-URL switch via a Node harness
+  (`tests/js/similar_harness.mjs`). Follow-up: SFace "same person" similarity is
+  still open (the person filter already covers exact-match).
 - [ ] **Face active-learning (negative feedback).** Reassigning/unassigning an
   auto-tag is thrown away today. Record "not this person" negatives and feed them
   into the k-NN vote (penalise), and surface low-confidence auto-tags for review.
 - [ ] **Lightbox power tools.** Scroll/drag zoom + pan, an EXIF panel (ƒ/ISO/shutter/
   lens), a slideshow auto-advance, and a `?` keyboard-shortcut legend.
-- [ ] **RAW ingest.** A photographer's 15-year library has `.CR2/.NEF/.ARW`; add an
-  optional `rawpy` extra to pull the embedded preview + EXIF (currently dropped).
+- [ ] ~~**RAW ingest.**~~ **Won't do** (2026-06-16). A photographer's 15-year library
+  has `.CR2/.NEF/.ARW`; pulling the embedded preview + EXIF via an optional `rawpy`
+  extra was considered but is out of scope for now — the library targets
+  already-developed JPEG/HEIC/PNG, and RAW workflows live in dedicated tools.
+
+## New (2026-06-16)
+
+- [x] **Drop the heuristic scene tagger — SigLIP only.** **Done** (chosen option:
+  remove the heuristic + make SigLIP a core dependency). `SceneTagger`,
+  `config.scene_backend` and the `--scene` CLI flags are gone; `classify.get_tagger`
+  always returns the `ZeroShotSceneTagger`, and `onnxruntime`/`tokenizers` moved from
+  the `scene` extra into core `dependencies` (the extra is removed). The SigLIP
+  vision model downloads on demand for every index (prefetched once before the
+  worker fan-out). Offline tests are preserved via dependency injection: a picklable
+  `tests/scene_stub.StubTagger`, wired by an autouse conftest fixture that patches
+  `indexer.get_tagger` for in-process paths and passed explicitly via
+  `index_path(..., tagger=...)` for the parallel/spawn path (a monkeypatch can't
+  cross processes). Docs (README/CLAUDE.md) updated; full suite + ruff + mypy green
+  at 94% coverage.
+- [x] **Investigate newer / better models everywhere a deep-learning net is used.**
+  **Done (investigation):** written comparison in [`MODELS.md`](MODELS.md) covering all
+  three nets — face detection (YuNet → latest Zoo / SCRFD / RetinaFace), face
+  recognition (SFace → ArcFace R100 / AdaFace), and scene+semantic (SigLIP →
+  **SigLIP 2** / MobileCLIP2) — each with the ONNX/no-PyTorch path, size/speed,
+  licensing risk and migration mechanics (env overrides + rebuild `scene_labels.npz`
+  + re-embed on a dim change). Recommended order: SigLIP 2 first (biggest quality/effort
+  win, no architecture change), then a YuNet Zoo bump, then ArcFace (highest ceiling but
+  most invasive). No swap made yet — each needs a local A/B eval first. Implementation of
+  any actual swap remains open as a follow-up.
