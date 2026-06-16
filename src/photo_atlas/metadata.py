@@ -9,6 +9,7 @@ messaging-app exports).
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -229,6 +230,18 @@ def cached_resized(
     """
 
     dest = Path(cache_dir) / sha1[:2] / f"{sha1}_{size}.jpg"
-    if not dest.exists():
-        _write_resized(src, dest, size, quality)
+    if dest.exists():
+        return dest
+    # Write to a unique temp file and atomically rename into place. Two requests
+    # racing on the same first-time derivative (or one interrupted mid-write) can
+    # then never leave a half-written/corrupt file at ``dest`` — the loser's temp
+    # is simply discarded and the rename is atomic on POSIX.
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(f"{dest.name}.{os.getpid()}.part")
+    try:
+        _write_resized(src, tmp, size, quality)
+        os.replace(tmp, dest)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return dest
