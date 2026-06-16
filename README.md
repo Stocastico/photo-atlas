@@ -168,8 +168,10 @@ demand). Choose the face backend with `--faces {auto,yunet,dlib,synthetic,none}`
 (`--workers N`, default = CPU count; `--workers 1` for serial): each file is
 decoded once and face detection runs on a downscaled copy, while the single main
 process performs all database writes. Byte-identical duplicates (same photo in
-two folders) are detected by SHA-1 and skipped; video files are recognised and
-reported but not catalogued.
+two folders) are detected by SHA-1 and skipped. Video files are catalogued when
+`ffmpeg`/`ffprobe` are on `PATH` — a poster frame plus the capture date/GPS are
+extracted so clips are browsable (and playable) alongside photos; without ffmpeg
+they're counted but skipped.
 
 > **HEIC needs the `heic` extra.** iPhone HEIC photos (often a fifth of a
 > library) only decode — for thumbnails *and* face detection — once

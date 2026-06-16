@@ -67,10 +67,19 @@ def _cmd_index(args) -> int:
         f"{stats.faces} faces ({stats.recognized} auto-recognized)."
     )
     if stats.videos:
-        print(
-            f"Skipped {stats.videos} video file(s) — Photo Atlas indexes still "
-            "images only (videos aren't catalogued)."
-        )
+        from . import video
+
+        if video.ffmpeg_available():
+            print(
+                f"Found {stats.videos} video file(s); indexed a poster frame + "
+                "capture date for each (install nothing — ffmpeg detected)."
+            )
+        else:
+            print(
+                f"Found {stats.videos} video file(s) but ffmpeg/ffprobe aren't on "
+                "PATH, so they were counted but not indexed. Install ffmpeg for "
+                "poster-frame thumbnails + capture dates."
+            )
     if stats.errors:
         print(f"{stats.failed} file(s) failed; first errors:", file=sys.stderr)
         for line in stats.errors[:10]:

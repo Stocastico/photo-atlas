@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS photos (
     face_count   INTEGER DEFAULT 0,
     named_face_count INTEGER NOT NULL DEFAULT 0,  -- faces assigned to a named person (trigger-kept)
     favorite     INTEGER NOT NULL DEFAULT 0,      -- user star (0/1); preserved across re-index
+    is_video     INTEGER NOT NULL DEFAULT 0,      -- 1 for video rows (poster-frame thumbnail)
     thumb_path   TEXT,
     embedding    BLOB,          -- SigLIP image embedding (float32) for semantic search
     embed_dim    INTEGER,       -- length of ``embedding`` (NULL when not embedded)
@@ -153,6 +154,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # clobbers it.
         if "favorite" not in cols:
             conn.execute("ALTER TABLE photos ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
+        # Video rows (added 2026-06): a 0/1 flag marking poster-frame video entries,
+        # additive so older catalogs gain it as 0 (all-photos) until a re-index.
+        if "is_video" not in cols:
+            conn.execute("ALTER TABLE photos ADD COLUMN is_video INTEGER NOT NULL DEFAULT 0")
         # Denormalised named-face count (added 2026-06): add the column, then
         # backfill it once from the faces table before the maintenance triggers
         # (created by the schema script below) take over for future writes.

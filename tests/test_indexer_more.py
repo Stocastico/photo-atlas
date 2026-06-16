@@ -39,10 +39,14 @@ def test_iter_images_walks_nested_dirs_deterministically(tmp_path):
     assert found == ["a.png", "c.jpeg", "b.jpg"]  # .txt excluded, recursive
 
 
-def test_videos_are_counted_but_not_indexed(tmp_path):
+def test_videos_are_counted_but_not_indexed(tmp_path, monkeypatch):
     from PIL import Image
 
     from photo_atlas import db
+
+    # Pin the no-ffmpeg path so the test is deterministic regardless of whether
+    # ffmpeg happens to be installed (video ingest is covered in test_video.py).
+    monkeypatch.setattr(indexer.video, "ffmpeg_available", lambda: False)
 
     Image.new("RGB", (8, 8)).save(tmp_path / "photo.jpg", "JPEG")
     (tmp_path / "clip.mov").write_bytes(b"\x00\x00\x00\x18ftypqt  ")  # dummy video

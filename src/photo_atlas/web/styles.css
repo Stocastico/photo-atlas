@@ -111,6 +111,7 @@ main { padding: 18px 20px 60px; min-height: calc(100vh - 58px); }
 .card .meta { position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 8px 6px; font-size: 11px;
   background: linear-gradient(transparent, rgba(0,0,0,.8)); color: #dfe7f0; display: flex; justify-content: space-between; }
 .badge { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,.6); border-radius: 6px; padding: 2px 6px; font-size: 11px; }
+.video-badge { left: auto; right: 6px; font-size: 10px; padding: 3px 7px; }
 /* Favourite star: grid overlay (top-right), revealed on hover but always shown
    when the photo is starred; an inline variant is reused in the lightbox. */
 .star {
@@ -195,7 +196,7 @@ button.icon { padding: 6px 9px; line-height: 1; }
 .lightbox.open { display: flex; }
 .lb-inner { display: grid; grid-template-columns: 1fr 300px; max-width: 1100px; width: 92vw; max-height: 90vh; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
 .lb-img { background: #000; display: flex; align-items: center; justify-content: center; }
-.lb-img img { max-width: 100%; max-height: 90vh; object-fit: contain; }
+.lb-img img, .lb-img video { max-width: 100%; max-height: 90vh; object-fit: contain; }
 .lb-side { padding: 18px; overflow-y: auto; }
 .lb-side h2 { font-size: 16px; margin: 0 0 4px; }
 .lb-side .kv { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
