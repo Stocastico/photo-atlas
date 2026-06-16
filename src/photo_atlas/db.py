@@ -56,6 +56,17 @@ CREATE TABLE IF NOT EXISTS persons (
     created_at    TEXT
 );
 
+-- Smart Albums: a saved search is a user-named filter set, stored as the
+-- querystring of filters to re-apply. Independent of the photo tables, so it's
+-- created via CREATE IF NOT EXISTS (no _migrate entry needed) and survives a
+-- re-index untouched.
+CREATE TABLE IF NOT EXISTS saved_searches (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT UNIQUE NOT NULL,
+    query      TEXT NOT NULL,
+    created_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS faces (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     photo_id    INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
@@ -258,6 +269,44 @@ def set_favorite(conn: sqlite3.Connection, photo_id: int, favorite: bool) -> boo
     cur = conn.execute(
         "UPDATE photos SET favorite=? WHERE id=?", (1 if favorite else 0, photo_id)
     )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+# -- saved searches (Smart Albums) ----------------------------------------
+def create_saved_search(conn: sqlite3.Connection, name: str, query: str) -> int:
+    """Create (or overwrite by name) a saved search and return its id.
+
+    Upserts on ``name`` so re-saving an album under the same name updates its
+    stored query in place — no duplicate row, no ``IntegrityError``.
+    """
+
+    from datetime import datetime, timezone
+
+    name = name.strip()
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT INTO saved_searches (name, query, created_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(name) DO UPDATE SET query=excluded.query",
+        (name, query, now),
+    )
+    conn.commit()
+    row = conn.execute("SELECT id FROM saved_searches WHERE name=?", (name,)).fetchone()
+    return int(row["id"])
+
+
+def list_saved_searches(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, name, query, created_at FROM saved_searches "
+        "ORDER BY name COLLATE NOCASE"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_saved_search(conn: sqlite3.Connection, search_id: int) -> bool:
+    """Delete a saved search. Returns ``True`` if a row was removed."""
+
+    cur = conn.execute("DELETE FROM saved_searches WHERE id=?", (search_id,))
     conn.commit()
     return cur.rowcount > 0
 

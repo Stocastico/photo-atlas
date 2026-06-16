@@ -65,6 +65,11 @@ class FavoriteRequest(BaseModel):
     favorite: bool
 
 
+class AlbumRequest(BaseModel):
+    name: str
+    query: str = ""
+
+
 def create_app(config: AtlasConfig | None = None) -> FastAPI:
     config = (config or AtlasConfig()).ensure_dirs()
     app = FastAPI(title="Photo Atlas", version="0.1.0")
@@ -393,6 +398,25 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             if not crop:
                 raise HTTPException(404, "face crop not found")
         return FileResponse(crop)
+
+    # -- smart albums (saved searches) ------------------------------------
+    @app.get("/api/albums")
+    def api_albums(conn: sqlite3.Connection = Depends(get_conn)):
+        return {"albums": db.list_saved_searches(conn)}
+
+    @app.post("/api/albums")
+    def api_create_album(
+        payload: AlbumRequest, conn: sqlite3.Connection = Depends(get_conn)
+    ):
+        if not payload.name.strip():
+            raise HTTPException(400, "name must not be empty")
+        album_id = db.create_saved_search(conn, payload.name, payload.query)
+        return {"ok": True, "id": album_id}
+
+    @app.delete("/api/albums/{album_id}")
+    def api_delete_album(album_id: int, conn: sqlite3.Connection = Depends(get_conn)):
+        db.delete_saved_search(conn, album_id)
+        return {"ok": True}
 
     # -- persons ----------------------------------------------------------
     @app.get("/api/persons")

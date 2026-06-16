@@ -69,6 +69,11 @@ aside h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; co
 .chip.active .n { color: #dce8ff; }
 .clear { font-size: 12px; color: var(--accent); cursor: pointer; background: none; border: none; padding: 0; }
 .show-more { margin-top: 8px; font-size: 12px; color: var(--accent); cursor: pointer; background: none; border: none; padding: 0; }
+/* Smart-album rows: a load chip + a small delete chip, full width. */
+.album-list { flex-direction: column; align-items: stretch; margin-top: 6px; }
+.album-row { display: flex; gap: 6px; }
+.album-row .chip:first-child { flex: 1; justify-content: flex-start; }
+.chip.icon { padding: 4px 8px; }
 .date-range { display: flex; align-items: center; gap: 6px; }
 .date-input {
   flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border);

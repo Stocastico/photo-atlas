@@ -310,8 +310,16 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   star overlay on every grid card, and an inline star in the lightbox; all star
   buttons for a photo stay in sync. URL round-trip + db/search/facet/API tested
   (`tests/test_favorites.py`, `tests/js/url_state_harness.mjs`).
-  - [ ] **Smart Albums (saved searches).** Persist any filter set as a named,
-    shareable album. (Favorites shipped; saved searches still open.)
+  - [x] **Smart Albums (saved searches).** **Done:** any filter set can be saved
+    under a name and restored later. A `saved_searches` table (name UNIQUE + the
+    filter querystring) with `db.create_saved_search` (upsert-by-name, so re-saving
+    overwrites), `list_saved_searches`, `delete_saved_search`, surfaced over
+    `GET/POST /api/albums` and `DELETE /api/albums/{id}` (writes behind the
+    same-origin guard; empty name → 400). The sidebar gains a "Smart albums" section
+    with a "💾 Save current search" button and per-album load/delete chips; loading
+    pushes the saved querystring and restores it through the existing URL-state
+    machinery (`applyQuery`), so filters/view/sort all come back. db + API tested
+    (`tests/test_albums.py`, incl. upsert, unknown-id no-op, table-create migration).
 - [ ] **Multi-select + bulk actions.** Shift/Ctrl-click in the grid → assign a
   person, favorite, export, or hide a whole selection at once.
 - [x] **"More like this."** **Done:** a ✨ **More like this** button in the lightbox

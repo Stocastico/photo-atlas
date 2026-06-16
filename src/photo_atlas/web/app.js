@@ -386,8 +386,76 @@ async function renderSidebar() {
   dateSection(side, f);
   section("Camera", f.cameras, "camera");
 
+  await renderAlbums(side);
+
   // Person names just became available — refresh the pills' labels.
   renderActiveFilters();
+}
+
+// ---- smart albums (saved searches) ----------------------------------------
+// Persist the current filter set under a name and restore it later. The stored
+// "query" is the same querystring the URL uses (buildQuery), so loading an album
+// reuses the URL-state machinery (applyQuery) to repopulate filters/view/sort.
+async function renderAlbums(side) {
+  const h = document.createElement("h3");
+  h.textContent = "Smart albums";
+  side.appendChild(h);
+
+  const save = document.createElement("button");
+  save.className = "show-more";
+  save.textContent = "💾 Save current search";
+  save.onclick = saveCurrentSearch;
+  side.appendChild(save);
+
+  let data;
+  try { data = await api("/api/albums"); } catch (e) { return; }
+  const albums = (data && data.albums) || [];
+  if (!albums.length) return;
+  const wrap = document.createElement("div");
+  wrap.className = "facet album-list";
+  for (const al of albums) {
+    const row = document.createElement("div");
+    row.className = "album-row";
+    const open = document.createElement("button");
+    open.className = "chip";
+    open.textContent = al.name;
+    open.title = "Load this saved search";
+    open.onclick = () => loadAlbum(al);
+    const del = document.createElement("button");
+    del.className = "chip icon";
+    del.textContent = "✕";
+    del.title = "Delete album";
+    del.setAttribute("aria-label", `Delete album ${al.name}`);
+    del.onclick = (e) => { e.stopPropagation(); deleteAlbum(al.id); };
+    row.appendChild(open);
+    row.appendChild(del);
+    wrap.appendChild(row);
+  }
+  side.appendChild(wrap);
+}
+
+async function saveCurrentSearch() {
+  const query = buildQuery(); // filters + non-default view/sort, same as the URL
+  const name = (window.prompt("Name this album:", "") || "").trim();
+  if (!name) return;
+  await api("/api/albums", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, query }),
+  });
+  toast(`Saved album “${name}”.`, "info");
+  renderSidebar();
+}
+
+function loadAlbum(al) {
+  // Push the saved querystring and restore it through the URL-state machinery.
+  history.pushState(null, "", al.query ? "?" + al.query : location.pathname);
+  applyQuery();
+  setView(state.view); // updates the tab highlight and re-renders the view
+}
+
+async function deleteAlbum(id) {
+  await api(`/api/albums/${id}`, { method: "DELETE" });
+  renderSidebar();
 }
 
 // Two date-taken bounds (inclusive). Inputs read/write state.filters directly.
