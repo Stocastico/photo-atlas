@@ -259,6 +259,18 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   the exact model/space we already ship; the label matrix is just a 9-row special
   case of this. Store embeddings as a BLOB (or a small Annoy/FAISS-free numpy memmap)
   and add a `/api/search?text=` endpoint.
+  - **Hybrid person + semantic queries** ("Stefano eating food", "Stefano with
+    other people"). SigLIP can't match a personal *name* (it has no notion of your
+    identities — that's the face pipeline's job), so don't feed names to the model:
+    **decompose** the query instead. A small planner peels off known person-names
+    (`persons` table) → a person filter; maps "with other people / alone" → the
+    existing **number-of-people buckets**; handles multiple names via the existing
+    **People AND-mode**; and sends the residual text ("eating food", "at the beach")
+    to SigLIP. AND everything together. The structured legs already exist from the
+    people-filter work — this just adds the visual leg. Caveat: the visual score is
+    whole-image, so it means "a photo *containing* Stefano that *looks like* eating
+    food", not "Stefano is the one eating"; true per-person grounding (run SigLIP on
+    the crop around that person) is a heavier follow-up.
 - [ ] **Near-duplicate & burst grouping.** Only exact SHA-1 dedup exists today; real
   libraries have 5–20-frame bursts. Add a perceptual hash (dHash/pHash) column,
   group near-identical shots, collapse them in the grid behind a "best of N" cover,
