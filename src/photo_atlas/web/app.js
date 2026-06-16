@@ -743,9 +743,88 @@ window.addEventListener("scroll", onViewportChange, { passive: true });
 window.addEventListener("resize", onViewportChange);
 
 // ---- lightbox / detail ----------------------------------------------------
+// Power tools: scroll/drag zoom + pan, a slideshow, an EXIF info panel and a
+// "?" shortcut legend.
+
+const LB_MAX_ZOOM = 6;
+// Pure zoom model (centre-anchored): given the image's current {scale, tx, ty}
+// and a multiplicative `factor`, return the next transform. Scale is clamped to
+// [1, max]; at 1× the image snaps back to centred, and the pan is rescaled with
+// the zoom so the focused point stays put. Unit-tested via a Node harness.
+function nextZoom(view, factor, max = LB_MAX_ZOOM) {
+  const scale = Math.min(max, Math.max(1, view.scale * factor));
+  if (scale === 1) return { scale: 1, tx: 0, ty: 0 };
+  const ratio = scale / view.scale;
+  return { scale, tx: view.tx * ratio, ty: view.ty * ratio };
+}
+
+let lbZoom = { scale: 1, tx: 0, ty: 0 };
+function applyLbZoom() {
+  const img = $("#lb-img");
+  if (!img) return;
+  img.style.transform = `translate(${lbZoom.tx}px, ${lbZoom.ty}px) scale(${lbZoom.scale})`;
+  img.style.cursor = lbZoom.scale > 1 ? "grab" : "zoom-in";
+  const stage = $(".lb-img");
+  if (stage) stage.classList.toggle("zoomed", lbZoom.scale > 1);
+}
+function resetLbZoom() { lbZoom = { scale: 1, tx: 0, ty: 0 }; applyLbZoom(); }
+function zoomBy(factor) { lbZoom = nextZoom(lbZoom, factor); applyLbZoom(); }
+
+// Slideshow: auto-advance through the loaded result set (pulling further pages
+// via lightboxStep), stopping at the end of the library or when the lightbox
+// closes. Only meaningful for the grid path (an index-addressed list).
+let slideTimer = null;
+function stopSlideshow() {
+  if (slideTimer) { clearInterval(slideTimer); slideTimer = null; }
+  const b = $("#lb-play");
+  if (b) { b.textContent = "▶"; b.setAttribute("aria-pressed", "false"); b.title = "Start slideshow (Space)"; }
+}
+function toggleSlideshow() {
+  if (slideTimer) { stopSlideshow(); return; }
+  if (state.lightboxIndex == null) return; // single-photo (map) view: nothing to advance
+  slideTimer = setInterval(async () => {
+    const before = state.lightboxIndex;
+    await lightboxStep(1);
+    if (state.lightboxIndex === before) stopSlideshow(); // reached the end
+  }, 3500);
+  const b = $("#lb-play");
+  if (b) { b.textContent = "⏸"; b.setAttribute("aria-pressed", "true"); b.title = "Pause slideshow (Space)"; }
+}
+
+// Keyboard-shortcut legend, built lazily and toggled with "?".
+function helpPanel() {
+  let el = $("#lb-help-panel");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "lb-help-panel";
+    el.className = "lb-help";
+    el.hidden = true;
+    el.innerHTML = `<div class="lb-help-card" role="dialog" aria-label="Keyboard shortcuts">
+      <h3>Keyboard shortcuts</h3>
+      <dl>
+        <dt>← / →</dt><dd>Previous / next photo</dd>
+        <dt>Space</dt><dd>Play / pause slideshow</dd>
+        <dt>+ / − / 0</dt><dd>Zoom in / out / reset</dd>
+        <dt>Double-click</dt><dd>Toggle zoom</dd>
+        <dt>Drag</dt><dd>Pan when zoomed in</dd>
+        <dt>?</dt><dd>Toggle this help</dd>
+        <dt>Esc</dt><dd>Close</dd>
+      </dl></div>`;
+    el.onclick = () => { el.hidden = true; };
+    $("#lightbox").appendChild(el);
+  }
+  return el;
+}
+function helpOpen() { const el = $("#lb-help-panel"); return !!el && !el.hidden; }
+function toggleHelp() { const el = helpPanel(); el.hidden = !el.hidden; }
+function closeHelp() { const el = $("#lb-help-panel"); if (el) el.hidden = true; }
+
 function closeLightbox() {
   $("#lightbox").classList.remove("open");
   state.lightboxIndex = null;
+  stopSlideshow();
+  closeHelp();
+  resetLbZoom();
   // Restore focus to whatever opened the lightbox (the photo card).
   if (state.lastFocus && state.lastFocus.focus) state.lastFocus.focus();
   state.lastFocus = null;
@@ -775,6 +854,7 @@ async function lightboxStep(delta) {
 // for grid (index-based) vs map (id-based) entry points.
 function renderLightboxSide(p, id, reopen) {
   $("#lb-img").src = `/api/preview/${id}`;
+  resetLbZoom(); // a fresh image starts un-zoomed
   const side = $("#lb-side");
   const kv = (k, v) => (v ? `<div class="kv"><span>${k}</span><span>${esc(v)}</span></div>` : "");
   side.innerHTML = `
@@ -791,6 +871,35 @@ function renderLightboxSide(p, id, reopen) {
 
   // A favourite toggle for the open photo; shares paint/sync logic with the grid.
   $("#lb-actions").prepend(makeStar(p, { inline: true }));
+
+  // EXIF info panel: capture settings are read on demand (not in the grid
+  // payload), so fetch them the first time the panel is opened.
+  const info = document.createElement("button");
+  info.className = "ghost";
+  info.type = "button";
+  info.textContent = "ℹ︎ Info";
+  info.title = "Camera settings (EXIF)";
+  info.setAttribute("aria-pressed", "false");
+  const exifBox = document.createElement("div");
+  exifBox.className = "lb-exif";
+  exifBox.hidden = true;
+  let exifLoaded = false;
+  info.onclick = async () => {
+    exifBox.hidden = !exifBox.hidden;
+    info.setAttribute("aria-pressed", exifBox.hidden ? "false" : "true");
+    if (exifLoaded || exifBox.hidden) return;
+    exifLoaded = true;
+    const s = await api(`/api/exif/${id}`).catch(() => ({}));
+    const rows = [
+      ["Aperture", s.aperture], ["Shutter", s.shutter], ["ISO", s.iso],
+      ["Focal length", s.focal_length], ["Lens", s.lens],
+    ].filter(([, v]) => v);
+    exifBox.innerHTML = rows.length
+      ? rows.map(([k, v]) => `<div class="kv"><span>${k}</span><span>${esc(v)}</span></div>`).join("")
+      : `<span class="tagline">No camera settings in EXIF.</span>`;
+  };
+  $("#lb-actions").appendChild(info);
+  $("#lb-actions").after(exifBox);
 
   // "More like this" reuses the stored SigLIP embeddings, so only offer it when
   // the library is embedded (same signal the Smart-search toggle uses).
@@ -1193,14 +1302,53 @@ $("#lb-close").onclick = closeLightbox;
 $("#lb-prev").onclick = () => lightboxStep(-1);
 $("#lb-next").onclick = () => lightboxStep(1);
 $("#lightbox").onclick = (e) => { if (e.target.id === "lightbox") closeLightbox(); };
+if ($("#lb-play")) $("#lb-play").onclick = toggleSlideshow;
+if ($("#lb-help")) $("#lb-help").onclick = toggleHelp;
+
+// Scroll/drag zoom + pan on the image stage. Wired once; the handlers no-op
+// unless the lightbox is open. Drag panning only kicks in past 1× zoom.
+(function setupLbZoom() {
+  const stage = $(".lb-img");
+  if (!stage || !stage.addEventListener) return;
+  stage.addEventListener("wheel", (e) => {
+    if (!$("#lightbox").classList.contains("open")) return;
+    e.preventDefault();
+    zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15);
+  }, { passive: false });
+  stage.addEventListener("dblclick", () => zoomBy(lbZoom.scale > 1 ? 0.001 : 2.5));
+  let dragging = false, lastX = 0, lastY = 0;
+  stage.addEventListener("pointerdown", (e) => {
+    if (lbZoom.scale <= 1) return;
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+    stage.setPointerCapture?.(e.pointerId);
+    const img = $("#lb-img"); if (img) img.style.cursor = "grabbing";
+  });
+  stage.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    lbZoom.tx += e.clientX - lastX; lbZoom.ty += e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+    applyLbZoom();
+  });
+  const endDrag = () => {
+    dragging = false;
+    const img = $("#lb-img"); if (img) img.style.cursor = lbZoom.scale > 1 ? "grab" : "zoom-in";
+  };
+  stage.addEventListener("pointerup", endDrag);
+  stage.addEventListener("pointercancel", endDrag);
+})();
 $("#sort").onchange = (e) => { state.sort = e.target.value; syncURL(); renderPhotos(true); };
 
 document.addEventListener("keydown", (e) => {
   if (!$("#lightbox").classList.contains("open")) return;
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
-  if (e.key === "Escape") closeLightbox();
+  if (e.key === "Escape") { if (helpOpen()) closeHelp(); else closeLightbox(); }
   else if (e.key === "ArrowLeft" && !typing) lightboxStep(-1);
   else if (e.key === "ArrowRight" && !typing) lightboxStep(1);
+  else if ((e.key === "?" || (e.key === "/" && e.shiftKey)) && !typing) { e.preventDefault(); toggleHelp(); }
+  else if (e.key === " " && !typing) { e.preventDefault(); toggleSlideshow(); }
+  else if ((e.key === "+" || e.key === "=") && !typing) { e.preventDefault(); zoomBy(1.25); }
+  else if (e.key === "-" && !typing) { e.preventDefault(); zoomBy(1 / 1.25); }
+  else if (e.key === "0" && !typing) { e.preventDefault(); resetLbZoom(); }
   else if (e.key === "Tab") {
     // Focus trap: keep Tab cycling within the dialog.
     const f = focusableInLightbox();

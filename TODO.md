@@ -351,8 +351,18 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
 - [ ] **Face active-learning (negative feedback).** Reassigning/unassigning an
   auto-tag is thrown away today. Record "not this person" negatives and feed them
   into the k-NN vote (penalise), and surface low-confidence auto-tags for review.
-- [ ] **Lightbox power tools.** Scroll/drag zoom + pan, an EXIF panel (ƒ/ISO/shutter/
-  lens), a slideshow auto-advance, and a `?` keyboard-shortcut legend.
+- [x] **Lightbox power tools.** **Done:** the lightbox gained scroll-wheel / `+`/`-`/`0`
+  **zoom** with drag-to-**pan** past 1× (double-click toggles; the centre-anchored
+  transform `nextZoom` is pure + Node-harness tested), a **slideshow** auto-advance
+  (▶/⏸ button or Space, pulling further pages via `lightboxStep` and stopping at the
+  end of the library), an **EXIF info panel** (ℹ︎) showing ƒ/ISO/shutter/focal-length/
+  lens read **on demand** from a new `GET /api/exif/{id}` (`metadata.exif_settings`,
+  formatted server-side — no schema change, no re-index; a moved file or EXIF-free
+  image just yields `{}`), and a `?` **keyboard-shortcut legend** overlay. Zoom resets
+  per photo and on close; Esc closes the legend before the lightbox. Backend
+  (formatting + endpoint 404/missing-file/empty) unit + API tested
+  (`tests/test_exif.py`, `tests/test_api_errors.py`); zoom math via
+  `tests/js/lightbox_harness.mjs`.
 - [ ] ~~**RAW ingest.**~~ **Won't do** (2026-06-16). A photographer's 15-year library
   has `.CR2/.NEF/.ARW`; pulling the embedded preview + EXIF via an optional `rawpy`
   extra was considered but is out of scope for now — the library targets
