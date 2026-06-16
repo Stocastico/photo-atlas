@@ -15,6 +15,8 @@ const state = {
   layout: null,        // last computed grid layout
   searchMode: "filter", // "filter" (substring q) or "semantic" (natural-language text)
   semanticAvailable: false,
+  similarTo: null,    // photo id when the grid is in "more like this" mode
+  similarLabel: "",   // its filename, for the banner pill
 };
 
 // Grid windowing constants — GAP/MIN must match the CSS .grid/.card rules.
@@ -100,6 +102,7 @@ function isActive(key, value) {
 }
 
 function toggleFilter(key, value) {
+  state.similarTo = null; // picking a filter exits "more like this" mode
   const arr = Array.isArray(state.filters[key])
     ? state.filters[key].slice()
     : (state.filters[key] != null ? [state.filters[key]] : []);
@@ -125,12 +128,14 @@ function removeFilterValue(key, value) {
 }
 
 function toggleHasFaces() {
+  state.similarTo = null;
   if (state.filters.has_faces) delete state.filters.has_faces;
   else state.filters.has_faces = true;
   refresh();
 }
 
 function toggleFavoriteFilter() {
+  state.similarTo = null;
   if (state.filters.favorite) delete state.filters.favorite;
   else state.filters.favorite = true;
   refresh();
@@ -202,6 +207,52 @@ function filterParams() {
   return params;
 }
 
+// Build the /api/photos request URL for one page of the grid. In "more like
+// this" mode (state.similarTo set) it pages the similarity endpoint and ignores
+// the structured filters/sort; otherwise the normal filtered+sorted query.
+function photosRequestURL(offset) {
+  if (state.similarTo != null) {
+    const p = new URLSearchParams();
+    p.set("limit", String(PAGE));
+    p.set("offset", String(offset));
+    return `/api/photos/${state.similarTo}/similar?` + p.toString();
+  }
+  const params = filterParams();
+  if (state.sort && state.sort !== "newest") params.set("sort", state.sort);
+  params.set("limit", String(PAGE));
+  params.set("offset", String(offset));
+  return "/api/photos?" + params.toString();
+}
+
+// Enter "more like this": page the similarity endpoint for ``id`` in the grid.
+// Similar is its own mode (the endpoint ignores filters), so the filter set is
+// cleared; exitSimilar restores the normal filtered grid.
+function moreLikeThis(id, label) {
+  state.similarTo = id;
+  state.similarLabel = label || "";
+  state.filters = {};
+  state.searchMode = "filter";
+  const search = $("#search"); if (search) search.value = "";
+  closeLightbox();
+  state.view = "photos";
+  document.querySelectorAll(".tab").forEach((t) => {
+    const on = t.dataset.view === "photos";
+    t.classList.toggle("active", on);
+    t.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  $("#view-photos").style.display = "block";
+  $("#view-map").style.display = "none";
+  $("#view-people").style.display = "none";
+  $("#view-clusters").style.display = "none";
+  refresh();
+}
+
+function exitSimilar() {
+  state.similarTo = null;
+  state.similarLabel = "";
+  refresh();
+}
+
 // ---- URL / history state --------------------------------------------------
 // Reflect filters + view + sort in the querystring so the back button undoes a
 // filter and a filtered view is shareable/bookmarkable.
@@ -233,6 +284,10 @@ function applyQuery() {
     else (filters[k] = filters[k] || []).push(v);
   }
   state.filters = filters;
+  // Similar mode isn't part of the URL state, so any history navigation (or a
+  // fresh load) returns to the normal filtered grid.
+  state.similarTo = null;
+  state.similarLabel = "";
   state.view = params.get("view") || "photos";
   state.sort = params.get("sort") || "newest";
   // A `text` filter implies the semantic search mode; otherwise plain substring.
@@ -388,6 +443,7 @@ function renderPeopleModeToggle(side) {
 
 function clearAllFilters() {
   state.filters = {};
+  state.similarTo = null;
   $("#search").value = "";
   refresh();
 }
@@ -408,7 +464,18 @@ function renderActiveFilters() {
   if (!bar) return;
   bar.innerHTML = "";
   const pairs = activeFilterPairs();
-  bar.style.display = pairs.length ? "flex" : "none";
+  const similar = state.similarTo != null;
+  bar.style.display = pairs.length || similar ? "flex" : "none";
+  if (similar) {
+    const text = `✨ Similar to ${state.similarLabel || "#" + state.similarTo}`;
+    const pill = document.createElement("button");
+    pill.className = "filter-pill";
+    pill.innerHTML = `<span>${esc(text)}</span><span class="x">✕</span>`;
+    pill.title = "Exit similar photos";
+    pill.setAttribute("aria-label", "Exit similar photos");
+    pill.onclick = exitSimilar;
+    bar.appendChild(pill);
+  }
   for (const [k, v] of pairs) {
     const pill = document.createElement("button");
     pill.className = "filter-pill";
@@ -533,14 +600,9 @@ async function renderPhotos(reset = true) {
   }
   $("#grid-loading").style.display = "block";
 
-  const params = filterParams();
-  if (state.sort && state.sort !== "newest") params.set("sort", state.sort);
-  params.set("limit", String(PAGE));
-  params.set("offset", String(state.offset));
-
   let data;
   try {
-    data = await api("/api/photos?" + params.toString());
+    data = await api(photosRequestURL(state.offset));
   } catch (e) {
     $("#grid-loading").textContent = "Could not load photos.";
     state.loading = false;
@@ -558,7 +620,8 @@ async function renderPhotos(reset = true) {
   // Distinguish a genuinely empty library (first-run onboarding) from a filter
   // that simply matched nothing.
   const empty = state.photos.length === 0;
-  const libraryEmpty = empty && activeFilterPairs().length === 0;
+  const libraryEmpty =
+    empty && activeFilterPairs().length === 0 && state.similarTo == null;
   $("#onboarding").style.display = libraryEmpty ? "block" : "none";
   $("#grid-empty").style.display = empty && !libraryEmpty ? "block" : "none";
 
@@ -663,6 +726,18 @@ function renderLightboxSide(p, id, reopen) {
 
   // A favourite toggle for the open photo; shares paint/sync logic with the grid.
   $("#lb-actions").prepend(makeStar(p, { inline: true }));
+
+  // "More like this" reuses the stored SigLIP embeddings, so only offer it when
+  // the library is embedded (same signal the Smart-search toggle uses).
+  if (state.semanticAvailable) {
+    const sim = document.createElement("button");
+    sim.className = "ghost";
+    sim.type = "button";
+    sim.textContent = "✨ More like this";
+    sim.title = "Find visually similar photos";
+    sim.onclick = () => moreLikeThis(id, p.filename);
+    $("#lb-actions").appendChild(sim);
+  }
 
   const list = $("#lb-faces");
   if (!p.faces.length) list.innerHTML = `<span class="tagline">No faces detected.</span>`;
@@ -1053,6 +1128,7 @@ $("#search").oninput = (e) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
     const v = e.target.value.trim();
+    state.similarTo = null; // a new search exits "more like this" mode
     const key = state.searchMode === "semantic" ? "text" : "q";
     const other = key === "text" ? "q" : "text";
     delete state.filters[other];

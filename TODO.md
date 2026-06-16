@@ -314,8 +314,18 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
     shareable album. (Favorites shipped; saved searches still open.)
 - [ ] **Multi-select + bulk actions.** Shift/Ctrl-click in the grid → assign a
   person, favorite, export, or hide a whole selection at once.
-- [ ] **"More like this."** Reuse the embeddings we already compute: SFace for
-  "same person", SigLIP for "same vibe/scene" — a similarity button in the lightbox.
+- [x] **"More like this."** **Done:** a ✨ **More like this** button in the lightbox
+  pages the new `GET /api/photos/{id}/similar` endpoint, which cosine-ranks the
+  library by the photo's own stored SigLIP image embedding (`search.similar_photos`
+  + `SemanticIndex.vector_for`, the target always excluded). No text encoder/model
+  download — it reuses the embeddings `embed`/`index --embed` already wrote, so it
+  works offline whenever the library is embedded. The grid enters a dedicated
+  "similar" mode (filters cleared, a removable "✨ Similar to …" banner pill,
+  infinite-scroll paging preserved); picking any filter/search exits it. Backend
+  (ranking, self-exclusion, paging, 404/409 edge cases) is unit + API tested
+  (`tests/test_similar.py`) and the request-URL switch via a Node harness
+  (`tests/js/similar_harness.mjs`). Follow-up: SFace "same person" similarity is
+  still open (the person filter already covers exact-match).
 - [ ] **Face active-learning (negative feedback).** Reassigning/unassigning an
   auto-tag is thrown away today. Record "not this person" negatives and feed them
   into the k-NN vote (penalise), and surface low-confidence auto-tags for review.

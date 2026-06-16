@@ -292,6 +292,30 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             raise HTTPException(404, "photo not found")
         return photo
 
+    @app.get("/api/photos/{photo_id}/similar")
+    def api_similar(
+        photo_id: int,
+        limit: int = Query(60, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+        conn: sqlite3.Connection = Depends(get_conn),
+    ):
+        # "More like this": rank the library by SigLIP image-embedding similarity to
+        # this photo. No text encoder/model download needed — it reuses the stored
+        # embeddings directly — so it works whenever `embed`/`index --embed` has run.
+        if conn.execute("SELECT 1 FROM photos WHERE id=?", (photo_id,)).fetchone() is None:
+            raise HTTPException(404, "photo not found")
+        index = _semantic_index(conn)
+        if index.size == 0:
+            raise HTTPException(
+                409,
+                "No photo embeddings yet — run `photo-atlas embed` (or "
+                "`index --embed`) to enable similarity search.",
+            )
+        rows, total = search.similar_photos(
+            conn, photo_id, index, top_k=config.semantic_top_k, limit=limit, offset=offset
+        )
+        return {"total": total, "count": len(rows), "offset": offset, "photos": rows}
+
     @app.put("/api/photos/{photo_id}/favorite")
     def api_set_favorite(
         photo_id: int,
