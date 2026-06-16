@@ -56,16 +56,16 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 
 | Module | Role |
 | --- | --- |
-| `cli.py` | argparse entry point (`index`, `embed`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `export-labels`, `demo`) |
+| `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `export-labels`, `demo`) |
 | `config.py` | `AtlasConfig` — library paths + tunables (`~/.photo_atlas`, `PHOTO_ATLAS_HOME`) |
 | `db.py` | SQLite schema, additive migrations (`_migrate`), embedding (de)serialisation. `PHOTO_COLUMNS` is the single source of truth for writable photo columns |
-| `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Also `embed_library`, `retag_scenes`, `prune_library`, `cluster_library` |
+| `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Also `embed_library`, `backfill_phashes`, `retag_scenes`, `prune_library`, `delete_photos` (hard delete: rows + files + derivatives), `cluster_library` |
 | `metadata.py` | EXIF/dimensions/thumbnails, `cached_resized` derivatives (atomic temp+replace), HEIF opener |
 | `video.py` | optional ffmpeg/ffprobe poster-frame + capture-date/GPS extraction for videos (`index_video`); pure `_parse_probe` is the offline-testable seam |
 | `faces.py` | YuNet detect + SFace embed backends, DBSCAN clustering, negative-aware k-NN recognition (`Enrollment` carries positives + "not this person" negatives) |
 | `classify.py` | scene tagging: SigLIP-only `ZeroShotSceneTagger` (shares the vision encoder with embeddings) |
 | `embed.py` | `SigLipImageEncoder` / `SigLipTextEncoder` for semantic search |
-| `search.py` | filter dict → SQL (`_where`), facets, plus `SemanticIndex` + `semantic_search` (cosine ranking ANDed with filters) |
+| `search.py` | filter dict → SQL (`_where`), facets, plus `SemanticIndex` + `semantic_search` (cosine ranking ANDed with filters), trip/memory grouping, and `find_burst_groups` (perceptual+temporal near-duplicate detection) |
 | `planner.py` | model-free decomposition of NL queries → person/people filters + residual visual text |
 | `geocode.py` / `folder_meta.py` | GPS→city/country; year/place mined from folder names |
 | `library.py` | person/cluster management (rename/merge/cover/assign) |
@@ -82,6 +82,12 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 - **Photo embeddings live in `photos.embedding`/`embed_dim` but are deliberately
   NOT in `PHOTO_COLUMNS`** — they'd bloat the grid/list payload. They're written
   separately (`db.set_photo_embedding`) and loaded by `SemanticIndex`.
+- **The perceptual hash (`photos.phash`, dHash hex) is also out of `PHOTO_COLUMNS`**
+  (written via `db.set_phash`, kept off `_LIST_COLUMNS`), but unlike embeddings it's
+  *always* computed at index time (it's cheap) — `_commit_prepared` refreshes it on
+  every re-index, and `indexer.backfill_phashes` (CLI `dedup`) fills it for older
+  catalogs. `search.find_burst_groups` reads it for the Duplicates tab; videos carry
+  no phash so they fall out naturally.
 - **`favorite`, `is_video` and `hidden` are also kept out of `PHOTO_COLUMNS`** so a
   re-index (an `ON CONFLICT DO UPDATE` over only those columns) never resets them; all
   are appended to `_LIST_COLUMNS` by hand and written via their own UPDATEs (bulk via
