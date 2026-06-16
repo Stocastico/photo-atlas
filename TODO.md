@@ -200,3 +200,94 @@ A full-app review at ~27k images + ~600 videos drove a round of hardening.
 - [ ] **Video thumbnails/metadata.** Videos are only counted today; extracting a
   poster frame + capture date (ffmpeg) would make them browsable on the timeline
   and map.
+
+## Deep review (2026-06-16): bugs, scale & bold ideas
+
+A full-codebase audit (backend correctness/security, frontend/UX, data model at
+scale). Items below were verified against the code; claims that turned out to be
+non-issues (int-id file endpoints aren't path-traversable; `known_facet` has no
+KeyError; `delete_person` detaching faces is intentional) were dropped.
+
+### Bugs / correctness (verified)
+- [ ] **EXIF-orientation face crops are sideways.** Thumbnails/previews are
+  upright (`metadata.resize_image_to` applies `ImageOps.exif_transpose`), but face
+  detection and crops use the **raw, un-transposed** image on purpose
+  (`faces.pil_to_bgr`, `indexer._encode_face_crop`). So for portrait photos that
+  carry an EXIF orientation flag — most phone photos — the face crops in the People
+  page and lightbox render rotated 90°/180°. Fix: transpose once at decode and run
+  metadata/detect/thumb/crop off that single upright image (keeps geometry
+  self-consistent). High impact, M effort; needs a re-index of affected crops.
+- [ ] **Renaming a person to an existing name 500s.** `persons.name` is `UNIQUE`
+  but `library.rename_person` doesn't catch `sqlite3.IntegrityError`, so the API
+  returns 500 instead of a clean 409/400. Same gap on any create-by-name path.
+- [ ] **Stale person cover → broken avatar.** `persons.cover_face_id` has no FK; if
+  the pinned face's photo is deleted (faces cascade), the id dangles and
+  `list_persons`' `COALESCE(cover_face_id, …)` only falls back when it's *NULL*, so
+  it serves a now-404 crop. Fix: FK `ON DELETE SET NULL`, or validate in the query.
+- [ ] **Silent face-crop save failure is unrecoverable.** `indexer` swallows a
+  crop write error and stores `crop_path=NULL`; the face still exists (embedding +
+  bbox) but `/api/face/{id}` 404s forever with no retry path. Track + offer re-save.
+- [ ] **Thin input validation.** `offset` has no `ge=0`; `date_from`/`date_to` are
+  unvalidated free text fed into the SQL date compare. Add bounds + an ISO-date
+  pattern so bad params 422 instead of silently mis-filtering.
+- [ ] **`cached_resized` TOCTTOU.** Concurrent first-requests for the same preview
+  can both pass `if not dest.exists()` and double-write. Write to a temp file and
+  atomically `replace()` (the pattern `models._resolve` already uses).
+- [ ] **Local API is unauthenticated + CORS-open.** Fine while bound to loopback,
+  but a malicious web page can still POST to `127.0.0.1:8000` and rename/merge/
+  delete. Add an Origin/Host check (or a one-time token) — cheap defense-in-depth,
+  and a prerequisite before ever allowing a non-loopback `--host`.
+
+### Scale & efficiency
+- [ ] **Re-tag scenes without a full re-index.** Switching heuristic↔zero-shot (or
+  tuning temperature) currently means re-decoding + re-detecting all 27k photos.
+  Scenes are independent of faces/thumbs — add an `index --scene-only` second pass
+  that decodes once and upserts just `scene_type`/`scene_scores`.
+- [ ] **Resumable / crash-safe indexing.** An interrupted run leaves a mixed state
+  and orphans; `prune` is a separate manual step. Checkpoint progress and
+  auto-prune orphaned rows + derivative files.
+- [ ] **Hot-path denormalisation & composite indexes.** Backfill a
+  `named_face_count` column (already flagged) to kill the per-row subquery, and add
+  composite indexes for the real access patterns: `(scene_type, taken_at)`,
+  `(folder_place, taken_at)`, `(person_id, taken_at)`.
+
+### Bold features
+- [ ] ⭐ **Natural-language semantic search** — the headline opportunity now that a
+  SigLIP encoder is in the pipeline. Persist each photo's image embedding at index
+  time; at query time embed the user's text ("kids on the beach at sunset", "my red
+  car") and rank by cosine — zero tagging, finds things facets never could. Reuses
+  the exact model/space we already ship; the label matrix is just a 9-row special
+  case of this. Store embeddings as a BLOB (or a small Annoy/FAISS-free numpy memmap)
+  and add a `/api/search?text=` endpoint.
+  - **Hybrid person + semantic queries** ("Stefano eating food", "Stefano with
+    other people"). SigLIP can't match a personal *name* (it has no notion of your
+    identities — that's the face pipeline's job), so don't feed names to the model:
+    **decompose** the query instead. A small planner peels off known person-names
+    (`persons` table) → a person filter; maps "with other people / alone" → the
+    existing **number-of-people buckets**; handles multiple names via the existing
+    **People AND-mode**; and sends the residual text ("eating food", "at the beach")
+    to SigLIP. AND everything together. The structured legs already exist from the
+    people-filter work — this just adds the visual leg. Caveat: the visual score is
+    whole-image, so it means "a photo *containing* Stefano that *looks like* eating
+    food", not "Stefano is the one eating"; true per-person grounding (run SigLIP on
+    the crop around that person) is a heavier follow-up.
+- [ ] **Near-duplicate & burst grouping.** Only exact SHA-1 dedup exists today; real
+  libraries have 5–20-frame bursts. Add a perceptual hash (dHash/pHash) column,
+  group near-identical shots, collapse them in the grid behind a "best of N" cover,
+  and offer bulk-delete of the rest. Huge real-world decluttering win.
+- [ ] **"On this day" / Memories + trip auto-detection.** A 15-year archive is made
+  for "this week, 8 years ago". Add day/week-of-year endpoints and auto-group trips
+  from date gaps + place/GPS proximity (folders already hint at it).
+- [ ] **Favorites + Smart Albums (saved searches).** Star shots (`favorite` column +
+  facet) and persist any filter set as a named, shareable album.
+- [ ] **Multi-select + bulk actions.** Shift/Ctrl-click in the grid → assign a
+  person, favorite, export, or hide a whole selection at once.
+- [ ] **"More like this."** Reuse the embeddings we already compute: SFace for
+  "same person", SigLIP for "same vibe/scene" — a similarity button in the lightbox.
+- [ ] **Face active-learning (negative feedback).** Reassigning/unassigning an
+  auto-tag is thrown away today. Record "not this person" negatives and feed them
+  into the k-NN vote (penalise), and surface low-confidence auto-tags for review.
+- [ ] **Lightbox power tools.** Scroll/drag zoom + pan, an EXIF panel (ƒ/ISO/shutter/
+  lens), a slideshow auto-advance, and a `?` keyboard-shortcut legend.
+- [ ] **RAW ingest.** A photographer's 15-year library has `.CR2/.NEF/.ARW`; add an
+  optional `rawpy` extra to pull the embedded preview + EXIF (currently dropped).
