@@ -465,10 +465,20 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
             if counts.get(tok)
         ]
 
-    drow = conn.execute(
-        "SELECT MIN(substr(taken_at,1,10)), MAX(substr(taken_at,1,10)) "
-        "FROM photos WHERE taken_at IS NOT NULL"
-    ).fetchone()
+    def date_bounds() -> tuple:
+        # The date slider's bounds are a facet too: filter-aware against every
+        # other dimension, but not its own (date_from/date_to), so the handles
+        # span exactly the dates reachable under the current selection.
+        sub = {k: v for k, v in filters.items() if k not in ("date_from", "date_to")}
+        where, params = _where(sub)
+        glue = " AND " if where else " WHERE "
+        sql = (
+            "SELECT MIN(substr(p.taken_at,1,10)), MAX(substr(p.taken_at,1,10)) "
+            f"FROM photos p{where}{glue}p.taken_at IS NOT NULL"
+        )
+        return conn.execute(sql, params).fetchone()
+
+    drow = date_bounds()
 
     total = conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
     return {

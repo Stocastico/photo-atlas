@@ -216,6 +216,30 @@ def test_camera_filter_is_exact_not_substring(tmp_path):
         conn.close()
 
 
+def test_facet_date_bounds_are_filter_aware(tmp_path):
+    """The date slider's min/max are a facet too: they reflect the other active
+    filters but not the date filter itself (honouring the filter-aware docstring)."""
+
+    conn = db.connect(tmp_path / "s.db")
+    try:
+        _insert(conn, path="/a.jpg", scene_type="food", taken_at="2018-05-01T00:00:00")
+        _insert(conn, path="/b.jpg", scene_type="food", taken_at="2020-07-01T00:00:00")
+        _insert(conn, path="/c.jpg", scene_type="landscape", taken_at="2010-01-01T00:00:00")
+
+        f = search.facets(conn)
+        assert f["date_min"] == "2010-01-01" and f["date_max"] == "2020-07-01"
+
+        # Filtering to food narrows the bounds to just the food photos.
+        ff = search.facets(conn, {"scene": "food"})
+        assert ff["date_min"] == "2018-05-01" and ff["date_max"] == "2020-07-01"
+
+        # The date filter must NOT shrink its own bounds (own-dimension rule).
+        fd = search.facets(conn, {"date_from": "2019-01-01"})
+        assert fd["date_min"] == "2010-01-01" and fd["date_max"] == "2020-07-01"
+    finally:
+        conn.close()
+
+
 def test_map_points_only_returns_geotagged_and_respects_filters(tmp_path):
     conn = db.connect(tmp_path / "s.db")
     try:

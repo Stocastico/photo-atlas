@@ -41,6 +41,26 @@ def test_retag_scenes_rewrites_only_scene(indexed):
         assert (fc, thumb) == (before[pid][1], before[pid][2])
 
 
+def test_retag_scenes_warns_on_unreadable_file(tmp_path, capsys):
+    """A corrupt/unreadable source is skipped (not counted) but reported on stderr
+    instead of failing silently."""
+    from photo_atlas import db as _db
+    from photo_atlas.config import AtlasConfig
+
+    cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    conn = _db.connect(cfg.db_path)
+    # A row whose "image" is actually garbage bytes -> Image.open/load raises.
+    bad = tmp_path / "broken.jpg"
+    bad.write_bytes(b"not an image")
+    _db.upsert_photo(conn, {"path": str(bad), "filename": "broken.jpg", "face_count": 0})
+    conn.commit()
+    conn.close()
+
+    n = indexer.retag_scenes(cfg, tagger=_FixedTagger())
+    assert n == 0  # the unreadable photo was skipped
+    assert "could not retag" in capsys.readouterr().err
+
+
 def test_retag_scenes_cli_runs(tmp_path, capsys):
     photos = tmp_path / "pics"
     demo.generate(photos, count=5, seed=4)

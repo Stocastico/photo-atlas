@@ -45,6 +45,40 @@ def test_demo_then_stats_and_cluster(tmp_path, capsys):
     assert "Clustered" in capsys.readouterr().out
 
 
+def test_is_loopback_classification():
+    assert cli._is_loopback("127.0.0.1")
+    assert cli._is_loopback("localhost")
+    assert cli._is_loopback("::1")
+    assert not cli._is_loopback("0.0.0.0")
+    assert not cli._is_loopback("192.168.1.5")
+    assert not cli._is_loopback("")  # binds all interfaces
+
+
+def test_serve_warns_when_bound_off_loopback(tmp_path, capsys, monkeypatch):
+    """Binding off-loopback exposes the unauthenticated API; serve must warn.
+    ``uvicorn.run`` is stubbed so the test never actually starts a server."""
+    started = {}
+    monkeypatch.setitem(
+        __import__("sys").modules, "uvicorn",
+        type("U", (), {"run": staticmethod(lambda app, host, port: started.update(host=host))}),
+    )
+    home = tmp_path / "lib"
+    cli.main(["--home", str(home), "serve", "--host", "0.0.0.0", "--port", "9123"])
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "0.0.0.0" in err
+    assert started["host"] == "0.0.0.0"
+
+
+def test_serve_no_warning_on_loopback(tmp_path, capsys, monkeypatch):
+    monkeypatch.setitem(
+        __import__("sys").modules, "uvicorn",
+        type("U", (), {"run": staticmethod(lambda app, host, port: None)}),
+    )
+    home = tmp_path / "lib"
+    cli.main(["--home", str(home), "serve"])  # default 127.0.0.1
+    assert "WARNING" not in capsys.readouterr().err
+
+
 def test_index_real_directory(tmp_path, capsys):
     """`index` on a folder of demo JPEGs, with faces disabled for speed."""
     from photo_atlas import demo
