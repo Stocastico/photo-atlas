@@ -25,8 +25,13 @@
         aria-controls="view-clusters" data-view="clusters">Name faces</button>
     </div>
     <div class="spacer"></div>
-    <input id="search" aria-label="Search photos by name, place or camera"
-      placeholder="Search name, place, camera…" />
+    <div class="search-wrap">
+      <button id="search-mode" class="search-mode" type="button" aria-pressed="false"
+        hidden title="Smart search: describe a photo in words (e.g. “kids on the beach”)">
+        ✨ Smart</button>
+      <input id="search" aria-label="Search photos by name, place or camera"
+        placeholder="Search name, place, camera…" />
+    </div>
   </header>
 
   <div class="layout">

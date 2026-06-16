@@ -65,6 +65,12 @@ class AtlasConfig:
     #: tagged ``other``. Raise it to send more borderline frames to ``other``.
     scene_other_bias: float = -0.02
 
+    #: Max number of photos returned by a natural-language semantic search,
+    #: ranked by relevance. Semantic search ranks the whole (filtered) library, so
+    #: this caps the result to the most relevant matches instead of trailing off
+    #: into thousands of irrelevant photos.
+    semantic_top_k: int = 200
+
     #: DBSCAN epsilon (cosine distance) used when clustering unknown faces.
     cluster_eps: float = 0.5
 

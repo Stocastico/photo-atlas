@@ -30,8 +30,9 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from . import db
-from .classify import Tagger, get_tagger
+from .classify import Tagger, ZeroShotSceneTagger, get_tagger
 from .config import AtlasConfig
+from .embed import SigLipImageEncoder
 from .faces import (
     Enrollment,
     FaceBackend,
@@ -72,6 +73,10 @@ class IndexStats:
 
 
 _MAX_ERRORS = 50
+
+#: Builtin ``bytes`` under an alias, so ``_PreparedPhoto``'s ``bytes`` field (the
+#: file size) doesn't shadow the type in that dataclass's annotations.
+_Bytes = bytes
 
 
 def _load_enrollment(conn: sqlite3.Connection) -> Enrollment:
@@ -148,6 +153,12 @@ class _PreparedPhoto:
     scene_scores: dict
     thumb_path: str
     faces: list[_PreparedFace]
+    #: SigLIP image embedding bytes for semantic search (``None`` unless embeddings
+    #: were requested). Carried as raw float32 bytes so it crosses a process boundary.
+    #: ``_Bytes`` is the builtin ``bytes`` aliased so the ``bytes`` field above
+    #: doesn't shadow it as a type within this class body.
+    embedding_blob: _Bytes | None = None
+    embed_dim: int | None = None
 
 
 def _encode_face_crop(img: Image.Image, bbox: tuple[int, int, int, int]) -> bytes | None:
@@ -164,6 +175,38 @@ def _encode_face_crop(img: Image.Image, bbox: tuple[int, int, int, int]) -> byte
         return None
 
 
+def _build_encoders(
+    config: AtlasConfig, *, embed: bool
+) -> tuple[SigLipImageEncoder | None, Tagger]:
+    """Return ``(image_encoder, tagger)`` for one index/embed run.
+
+    ``image_encoder`` is non-``None`` only when semantic embeddings were requested.
+    When the scene tagger is the SigLIP zero-shot one, its vision encoder is reused
+    for embeddings — one ONNX session, one inference per photo, both jobs done. With
+    the heuristic tagger a standalone encoder is loaded (and, if that fails, semantic
+    embeddings are skipped with a warning rather than aborting the whole index).
+    """
+
+    tagger = get_tagger(config)
+    image_encoder: SigLipImageEncoder | None = None
+    if embed:
+        if isinstance(tagger, ZeroShotSceneTagger):
+            image_encoder = tagger.encoder
+        else:
+            try:
+                image_encoder = SigLipImageEncoder.from_config(config)
+            except Exception as exc:  # noqa: BLE001 - missing extra/model -> skip embeddings
+                import sys  # noqa: PLC0415
+
+                print(
+                    "warning: semantic-search embeddings unavailable "
+                    f"({type(exc).__name__}: {exc}); install the 'scene' extra "
+                    "(`uv sync --extra scene`). Indexing without embeddings.",
+                    file=sys.stderr,
+                )
+    return image_encoder, tagger
+
+
 def _prepare_photo(
     config: AtlasConfig,
     path: Path,
@@ -172,6 +215,7 @@ def _prepare_photo(
     tagger: Tagger,
     enrollment: Enrollment | None,
     sha1: str,
+    image_encoder: SigLipImageEncoder | None = None,
 ) -> _PreparedPhoto:
     """Decode one image exactly once and derive everything but the DB write.
 
@@ -215,7 +259,15 @@ def _prepare_photo(
         thumb_path = thumb_path_for(config, sha1)
         make_thumbnail_from_image(img, thumb_path, size=config.thumb_size)
 
-        scene_label, scene_scores = tagger.tag_image(img, face_count=len(observations))
+        # Compute the SigLIP image embedding once (if requested) and reuse it for
+        # the zero-shot scene tag, so the vision tower runs a single time per photo.
+        embedding = image_encoder.embed_image(img) if image_encoder is not None else None
+        if embedding is not None and isinstance(tagger, ZeroShotSceneTagger):
+            scene_label, scene_scores = tagger.tag_embedding(
+                embedding, face_count=len(observations)
+            )
+        else:
+            scene_label, scene_scores = tagger.tag_image(img, face_count=len(observations))
 
         faces: list[_PreparedFace] = []
         for obs in observations:
@@ -256,6 +308,8 @@ def _prepare_photo(
         scene_scores=scene_scores,
         thumb_path=str(thumb_path),
         faces=faces,
+        embedding_blob=db.embedding_to_blob(embedding),
+        embed_dim=None if embedding is None else int(embedding.shape[0]),
     )
 
 
@@ -296,6 +350,11 @@ def _commit_prepared(
         "indexed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     photo_id = db.upsert_photo(conn, record)
+    if prepared.embedding_blob is not None:
+        conn.execute(
+            "UPDATE photos SET embedding=?, embed_dim=? WHERE id=?",
+            (prepared.embedding_blob, prepared.embed_dim, photo_id),
+        )
 
     face_rows = []
     for i, face in enumerate(prepared.faces):
@@ -340,6 +399,7 @@ def index_file(
     enrollment: Enrollment | None = None,
     stats: IndexStats | None = None,
     sha1: str | None = None,
+    image_encoder: SigLipImageEncoder | None = None,
 ) -> int:
     """Index a single image file and return its photo id."""
 
@@ -347,7 +407,8 @@ def index_file(
     if sha1 is None:
         sha1 = sha1_of(path)
     prepared = _prepare_photo(
-        config, path, backend=backend, tagger=tagger, enrollment=enrollment, sha1=sha1
+        config, path, backend=backend, tagger=tagger, enrollment=enrollment, sha1=sha1,
+        image_encoder=image_encoder,
     )
     place = geocoder.lookup(prepared.lat, prepared.lon) if geocoder is not None else None
     return _commit_prepared(conn, config, prepared, place, stats)
@@ -392,13 +453,16 @@ def _worker_init(
     model_dir: Path,
     config: AtlasConfig,
     enrollment: Enrollment | None,
+    embed: bool,
 ) -> None:
     """Initialise a pool worker with its own backend / tagger (called once)."""
 
+    image_encoder, tagger = _build_encoders(config, embed=embed)
     _WORKER_STATE["backend"] = (
         get_backend(backend_name, model_dir=model_dir) if backend_name != "none" else None
     )
-    _WORKER_STATE["tagger"] = get_tagger(config)
+    _WORKER_STATE["tagger"] = tagger
+    _WORKER_STATE["image_encoder"] = image_encoder
     _WORKER_STATE["config"] = config
     _WORKER_STATE["enrollment"] = enrollment
 
@@ -412,6 +476,7 @@ def _worker_prepare(task: tuple[str, str]) -> tuple[bool, object]:
             _WORKER_STATE["config"], Path(path_str),
             backend=_WORKER_STATE["backend"], tagger=_WORKER_STATE["tagger"],
             enrollment=_WORKER_STATE["enrollment"], sha1=sha1,
+            image_encoder=_WORKER_STATE["image_encoder"],
         )
         return True, prepared
     except Exception as exc:  # pragma: no cover - hit via the broken-file test
@@ -428,6 +493,7 @@ def _index_parallel(
     geocoder: Geocoder | None,
     stats: IndexStats,
     workers: int,
+    embed: bool,
     progress: Callable[[Path, IndexStats], None] | None,
 ) -> None:
     """Fan the per-file decode/detect/thumbnail work out over a process pool.
@@ -450,6 +516,15 @@ def _index_parallel(
             ensure_models(config.models_dir, download=True)
         except Exception:  # pragma: no cover - worker surfaces a clearer error
             pass
+    # Likewise pre-fetch the SigLIP vision model so N workers don't race to
+    # download it (needed for the zero-shot scene tagger and/or embeddings).
+    if embed or config.scene_backend in ("zeroshot", "auto"):
+        try:
+            from .models import ensure_scene_model
+
+            ensure_scene_model(config.models_dir, download=True)
+        except Exception:  # pragma: no cover - worker surfaces a clearer error
+            pass
 
     ctx = mp.get_context("spawn")  # clean workers; safe for OpenCV/ONNX native libs
     max_inflight = workers * 4
@@ -459,7 +534,7 @@ def _index_parallel(
     with ProcessPoolExecutor(
         max_workers=workers, mp_context=ctx,
         initializer=_worker_init,
-        initargs=(backend_name, config.models_dir, config, enrollment),
+        initargs=(backend_name, config.models_dir, config, enrollment, embed),
     ) as pool:
         inflight: dict = {}
 
@@ -507,13 +582,15 @@ def index_path(
     geocode: bool = True,
     recompute: bool = False,
     workers: int | None = None,
+    embed: bool = False,
     progress: Callable[[Path, IndexStats], None] | None = None,
 ) -> IndexStats:
     """Index every supported image under ``root`` into the library.
 
     ``workers`` controls fan-out: ``None``/``1`` keeps the in-process path; a
     larger value decodes and detects across that many worker processes (DB writes
-    still funnel through the single main connection).
+    still funnel through the single main connection). ``embed`` additionally stores
+    a SigLIP image embedding per photo for natural-language semantic search.
     """
 
     config.ensure_dirs()
@@ -541,7 +618,6 @@ def index_path(
             "high-resolution backend with `uv sync --extra geo` (reverse_geocoder).",
             file=sys.stderr,
         )
-    tagger = get_tagger(config)
     stats = IndexStats()
 
     try:
@@ -598,12 +674,15 @@ def index_path(
                 yield str(path), sha1
 
         if workers is not None and workers > 1:
+            # Workers build their own encoders/tagger (the ONNX sessions aren't
+            # picklable), so the main process doesn't load them here.
             _index_parallel(
                 conn, config, iter_tasks(),
                 backend_name=backend_name, enrollment=enrollment, geocoder=geocoder,
-                stats=stats, workers=workers, progress=progress,
+                stats=stats, workers=workers, embed=embed, progress=progress,
             )
         else:
+            image_encoder, tagger = _build_encoders(config, embed=embed)
             for path_str, sha1 in iter_tasks():
                 path = Path(path_str)
                 try:
@@ -611,6 +690,7 @@ def index_path(
                         conn, config, path,
                         backend=backend, geocoder=geocoder, tagger=tagger,
                         enrollment=enrollment, stats=stats, sha1=sha1,
+                        image_encoder=image_encoder,
                     )
                     stats.indexed += 1
                     conn.commit()
@@ -702,6 +782,50 @@ def retag_scenes(
     finally:
         conn.close()
     return retagged
+
+
+def embed_library(
+    config: AtlasConfig,
+    *,
+    image_encoder: SigLipImageEncoder | None = None,
+    recompute: bool = False,
+    progress: Callable[[int, int], None] | None = None,
+) -> int:
+    """Backfill SigLIP image embeddings for semantic search, without a re-index.
+
+    Embeddings are independent of faces/thumbnails, so an already-indexed library
+    can gain semantic search by decoding each still-present photo once and storing
+    only its image embedding — no face re-detection. By default only photos that
+    don't already have an embedding are processed (``recompute`` re-embeds all).
+    Returns the number of photos embedded.
+    """
+
+    encoder = image_encoder or SigLipImageEncoder.from_config(config)
+    conn = db.connect(config.db_path)
+    embedded = 0
+    try:
+        where = "" if recompute else " WHERE embedding IS NULL"
+        rows = conn.execute(f"SELECT id, path FROM photos{where}").fetchall()
+        total = len(rows)
+        for i, row in enumerate(rows):
+            path = Path(row["path"])
+            if not path.exists():
+                continue
+            try:
+                with Image.open(path) as raw:
+                    raw.load()
+                    img = ImageOps.exif_transpose(raw) or raw
+                    vector = encoder.embed_image(img)
+            except Exception:
+                continue
+            db.set_photo_embedding(conn, int(row["id"]), vector)
+            embedded += 1
+            if progress is not None:
+                progress(i + 1, total)
+        conn.commit()
+    finally:
+        conn.close()
+    return embedded
 
 
 def cluster_library(config: AtlasConfig) -> dict[str, int]:

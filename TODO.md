@@ -252,14 +252,19 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   `(folder_place, taken_at)`, `(person_id, taken_at)`.
 
 ### Bold features
-- [ ] ⭐ **Natural-language semantic search** — the headline opportunity now that a
-  SigLIP encoder is in the pipeline. Persist each photo's image embedding at index
-  time; at query time embed the user's text ("kids on the beach at sunset", "my red
-  car") and rank by cosine — zero tagging, finds things facets never could. Reuses
-  the exact model/space we already ship; the label matrix is just a 9-row special
-  case of this. Store embeddings as a BLOB (or a small Annoy/FAISS-free numpy memmap)
-  and add a `/api/search?text=` endpoint.
-  - **Hybrid person + semantic queries** ("Stefano eating food", "Stefano with
+- [x] ⭐ **Natural-language semantic search** — the headline opportunity now that a
+  SigLIP encoder is in the pipeline. **Done (core):** each photo's SigLIP image
+  embedding is persisted (new `photos.embedding`/`embed_dim` BLOB columns) at index
+  time (`index --embed`) or via a decode-once backfill (`photo-atlas embed`, no face
+  re-detect) — and reused for free from the zero-shot scene pass when both run (one
+  vision inference per photo). A free-text query is embedded into the same space by a
+  new `embed.SigLipTextEncoder` (text tower + tokenizer, downloaded on demand; the
+  `scene` extra now also pulls `tokenizers`); `search.SemanticIndex` caches the matrix
+  and ranks by cosine, ANDed with the structured filters and capped at
+  `config.semantic_top_k`. Exposed as `GET /api/photos?text=` (+ `/api/capabilities`),
+  with a ✨ **Smart** toggle on the search bar. Unit + DB + API tested (stub encoders,
+  no model download); an optional live round-trip is still gated on the model env vars.
+  - [ ] **Hybrid person + semantic queries** ("Stefano eating food", "Stefano with
     other people"). SigLIP can't match a personal *name* (it has no notion of your
     identities — that's the face pipeline's job), so don't feed names to the model:
     **decompose** the query instead. A small planner peels off known person-names

@@ -33,6 +33,20 @@ SCENE_URL = (
     "onnx/vision_model_quantized.onnx"
 )
 
+# Semantic search additionally needs the matching SigLIP *text* tower + tokenizer
+# to embed a free-text query at runtime (the scene-label text embeddings are
+# pre-baked, but an arbitrary query can't be). Same model/space as the vision
+# tower above so image and text embeddings are comparable.
+SCENE_TEXT_NAME = "siglip_base_patch16_224_text_quantized.onnx"
+SCENE_TEXT_URL = (
+    "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/main/"
+    "onnx/text_model_quantized.onnx"
+)
+SCENE_TOKENIZER_NAME = "siglip_base_patch16_224_tokenizer.json"
+SCENE_TOKENIZER_URL = (
+    "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/main/tokenizer.json"
+)
+
 # A sanity floor: the face weights are far larger (YuNet ~230 KB, SFace ~37 MB)
 # and the scene vision tower ~95 MB, so anything tiny is a truncated download or
 # an error page, not a model.
@@ -91,3 +105,30 @@ def ensure_scene_model(model_dir: Path, download: bool = True) -> Path:
     """
 
     return _resolve(SCENE_NAME, SCENE_URL, Path(model_dir), "PHOTO_ATLAS_SCENE_MODEL", download)
+
+
+def ensure_scene_text_model(model_dir: Path, download: bool = True) -> Path:
+    """Return the SigLIP *text*-encoder ONNX path, downloading it if needed.
+
+    Used only by semantic search (to embed a free-text query). Override with
+    ``PHOTO_ATLAS_SCENE_TEXT_MODEL`` for an offline / swapped-in model.
+    """
+
+    return _resolve(
+        SCENE_TEXT_NAME, SCENE_TEXT_URL, Path(model_dir), "PHOTO_ATLAS_SCENE_TEXT_MODEL", download
+    )
+
+
+def ensure_scene_tokenizer(model_dir: Path, download: bool = True) -> Path:
+    """Return the SigLIP tokenizer (``tokenizer.json``) path, downloading if needed.
+
+    Override with ``PHOTO_ATLAS_SCENE_TOKENIZER`` for an offline / swapped model.
+    """
+
+    return _resolve(
+        SCENE_TOKENIZER_NAME,
+        SCENE_TOKENIZER_URL,
+        Path(model_dir),
+        "PHOTO_ATLAS_SCENE_TOKENIZER",
+        download,
+    )

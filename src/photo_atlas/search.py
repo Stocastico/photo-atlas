@@ -25,6 +25,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+import numpy as np
+
 from . import db
 
 # Columns returned for grid/list rows: every photo column except the
@@ -191,6 +193,121 @@ SORTS: dict[str, str] = {
 
 def _order_by(sort: Any) -> str:
     return SORTS.get(sort or "newest", SORTS["newest"])
+
+
+# -- natural-language semantic search -------------------------------------
+class SemanticIndex:
+    """In-memory matrix of photo image embeddings for cosine ranking.
+
+    Loaded once from the catalog and cached by the web layer (see
+    ``api._get_semantic_index``); ranking a free-text query against it is a single
+    matrix-vector product. ``matrix`` is ``(N, D)`` of L2-normalised embeddings and
+    ``ids`` the parallel ``(N,)`` photo ids.
+    """
+
+    def __init__(self, ids: np.ndarray, matrix: np.ndarray):
+        self.ids = ids
+        self.matrix = matrix
+
+    @classmethod
+    def load(cls, conn: sqlite3.Connection) -> SemanticIndex:
+        rows = conn.execute(
+            "SELECT id, embedding FROM photos WHERE embedding IS NOT NULL ORDER BY id"
+        ).fetchall()
+        ids = np.array([int(r["id"]) for r in rows], dtype=np.int64)
+        vectors = [db.blob_to_embedding(r["embedding"]) for r in rows]
+        if not vectors:
+            return cls(ids, np.empty((0, 0), dtype=np.float32))
+        matrix = np.vstack([_normalize(v) for v in vectors]).astype(np.float32)
+        return cls(ids, matrix)
+
+    @property
+    def size(self) -> int:
+        return int(self.ids.shape[0])
+
+    def rank(
+        self,
+        query_vec: np.ndarray,
+        allowed_ids: set[int] | None = None,
+        *,
+        top_k: int | None = None,
+    ) -> list[tuple[int, float]]:
+        """Return ``(photo_id, score)`` sorted by descending cosine similarity.
+
+        ``allowed_ids`` (when given) restricts the result to that set — the photos
+        that also pass the structured filters — so semantic ranking ANDs cleanly
+        with people/place/date filters. ``top_k`` caps the number returned.
+        """
+
+        if self.size == 0:
+            return []
+        scores = self.matrix @ _normalize(query_vec)
+        order = np.argsort(-scores, kind="stable")
+        out: list[tuple[int, float]] = []
+        for idx in order:
+            pid = int(self.ids[idx])
+            if allowed_ids is not None and pid not in allowed_ids:
+                continue
+            out.append((pid, float(scores[idx])))
+            if top_k is not None and len(out) >= top_k:
+                break
+        return out
+
+
+def _normalize(vec: np.ndarray | None) -> np.ndarray:
+    arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+    norm = float(np.linalg.norm(arr))
+    return arr / norm if norm > 1e-8 else arr
+
+
+def semantic_search(
+    conn: sqlite3.Connection,
+    filters: dict[str, Any],
+    query_vec: np.ndarray,
+    index: SemanticIndex,
+    *,
+    top_k: int = 200,
+    limit: int = 60,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    """Rank embedded photos by relevance to ``query_vec``, ANDed with ``filters``.
+
+    Returns ``(rows, total)`` where ``rows`` is one page (in ranked order, each with
+    a ``score``) and ``total`` is the number of matches up to ``top_k``. The
+    structured filters (people, place, date, …) are applied first as a hard mask;
+    the visual query then orders what remains.
+    """
+
+    sub = {k: v for k, v in filters.items() if k != "text"}
+    where, params = _where(sub)
+    glue = " AND " if where else " WHERE "
+    allowed = {
+        int(r[0])
+        for r in conn.execute(
+            f"SELECT p.id FROM photos p{where}{glue}p.embedding IS NOT NULL", params
+        ).fetchall()
+    }
+    ranked = index.rank(query_vec, allowed_ids=allowed, top_k=top_k)
+    total = len(ranked)
+    page = ranked[offset : offset + limit]
+    if not page:
+        return [], total
+
+    ids = [pid for pid, _ in page]
+    placeholders = ", ".join(["?"] * len(ids))
+    by_id = {
+        r["id"]: dict(r)
+        for r in conn.execute(
+            f"SELECT {_LIST_COLUMNS} FROM photos p WHERE p.id IN ({placeholders})", ids
+        ).fetchall()
+    }
+    rows: list[dict] = []
+    for pid, score in page:
+        row = by_id.get(pid)
+        if row is not None:
+            row["score"] = score
+            rows.append(row)
+    return rows, total
 
 
 def search_photos(
