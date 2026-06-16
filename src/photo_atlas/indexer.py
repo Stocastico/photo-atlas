@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -814,7 +815,10 @@ def retag_scenes(
                     raw.load()
                     img = ImageOps.exif_transpose(raw) or raw
                     label, scores = tagger.tag_image(img, face_count=row["face_count"] or 0)
-            except Exception:
+            except Exception as exc:
+                # Skip an unreadable/corrupt file but don't fail silently — report
+                # which photo so a partial result is explainable.
+                print(f"warning: could not retag {path}: {exc}", file=sys.stderr)
                 continue
             conn.execute(
                 "UPDATE photos SET scene_type=?, scene_scores=? WHERE id=?",
@@ -861,7 +865,8 @@ def embed_library(
                     raw.load()
                     img = ImageOps.exif_transpose(raw) or raw
                     vector = encoder.embed_image(img)
-            except Exception:
+            except Exception as exc:
+                print(f"warning: could not embed {path}: {exc}", file=sys.stderr)
                 continue
             db.set_photo_embedding(conn, int(row["id"]), vector)
             embedded += 1
