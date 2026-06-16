@@ -48,6 +48,24 @@ def test_thumb_size_out_of_range_is_422(client):
     assert client.get(f"/api/thumb/{pid}?size=4096").status_code == 422
 
 
+# -- query-param validation ------------------------------------------------
+def test_negative_offset_is_422(client):
+    assert client.get("/api/photos?offset=-5").status_code == 422
+
+
+def test_zero_limit_is_422(client):
+    assert client.get("/api/photos?limit=0").status_code == 422
+
+
+def test_malformed_date_is_422(client):
+    assert client.get("/api/photos?date_from=not-a-date").status_code == 422
+    assert client.get("/api/facets?date_to=garbage").status_code == 422
+
+
+def test_wellformed_date_is_accepted(client):
+    assert client.get("/api/photos?date_from=2020-01-01&date_to=2026-12-31").status_code == 200
+
+
 # -- map -------------------------------------------------------------------
 def test_map_endpoint_returns_geotagged_points(client):
     data = client.get("/api/map").json()

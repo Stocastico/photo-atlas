@@ -25,6 +25,11 @@ from .config import AtlasConfig
 
 WEB_DIR = Path(__file__).parent / "web"
 
+# Inclusive ``date_taken`` range bounds are compared on the YYYY-MM-DD prefix, so
+# reject anything that isn't that shape (a malformed value would otherwise compare
+# lexically and silently mis-filter). Applied to date_from/date_to everywhere.
+_DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
+
 
 class AssignRequest(BaseModel):
     name: str | None = None
@@ -69,8 +74,8 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         city: list[str] | None = Query(None),
         place: list[str] | None = Query(None),
         year: list[str] | None = Query(None),
-        date_from: str | None = None,
-        date_to: str | None = None,
+        date_from: str | None = Query(None, pattern=_DATE_PATTERN),
+        date_to: str | None = Query(None, pattern=_DATE_PATTERN),
         camera: list[str] | None = Query(None),
         people: list[str] | None = Query(None),
         known: list[str] | None = Query(None),
@@ -96,16 +101,16 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         city: list[str] | None = Query(None),
         place: list[str] | None = Query(None),
         year: list[str] | None = Query(None),
-        date_from: str | None = None,
-        date_to: str | None = None,
+        date_from: str | None = Query(None, pattern=_DATE_PATTERN),
+        date_to: str | None = Query(None, pattern=_DATE_PATTERN),
         camera: list[str] | None = Query(None),
         people: list[str] | None = Query(None),
         known: list[str] | None = Query(None),
         has_faces: bool | None = None,
         q: str | None = None,
         sort: str | None = None,
-        limit: int = Query(60, le=500),
-        offset: int = 0,
+        limit: int = Query(60, ge=1, le=500),
+        offset: int = Query(0, ge=0),
     ):
         filters = {
             "person_id": person_id, "person_mode": person_mode,
@@ -134,8 +139,8 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         city: list[str] | None = Query(None),
         place: list[str] | None = Query(None),
         year: list[str] | None = Query(None),
-        date_from: str | None = None,
-        date_to: str | None = None,
+        date_from: str | None = Query(None, pattern=_DATE_PATTERN),
+        date_to: str | None = Query(None, pattern=_DATE_PATTERN),
         camera: list[str] | None = Query(None),
         people: list[str] | None = Query(None),
         known: list[str] | None = Query(None),
