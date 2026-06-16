@@ -364,10 +364,13 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   `index_path(..., tagger=...)` for the parallel/spawn path (a monkeypatch can't
   cross processes). Docs (README/CLAUDE.md) updated; full suite + ruff + mypy green
   at 94% coverage.
-- [ ] **Investigate newer / better models everywhere a deep-learning net is used.**
-  Survey the face stack (YuNet detect, SFace embed) and the SigLIP vision/text towers
-  for stronger, current replacements. Constraints: **keep ONNX Runtime** and **do not
-  introduce a PyTorch dependency**. Candidates to evaluate: SigLIP 2 / MobileCLIP2
-  exports for scene+semantic, newer ONNX face detectors/recognisers. Deliver a
-  written comparison (accuracy/size/speed/licensing) before any swap; the architecture
-  is already model-agnostic via `PHOTO_ATLAS_*` env overrides + `models._resolve`.
+- [x] **Investigate newer / better models everywhere a deep-learning net is used.**
+  **Done (investigation):** written comparison in [`MODELS.md`](MODELS.md) covering all
+  three nets — face detection (YuNet → latest Zoo / SCRFD / RetinaFace), face
+  recognition (SFace → ArcFace R100 / AdaFace), and scene+semantic (SigLIP →
+  **SigLIP 2** / MobileCLIP2) — each with the ONNX/no-PyTorch path, size/speed,
+  licensing risk and migration mechanics (env overrides + rebuild `scene_labels.npz`
+  + re-embed on a dim change). Recommended order: SigLIP 2 first (biggest quality/effort
+  win, no architecture change), then a YuNet Zoo bump, then ArcFace (highest ceiling but
+  most invasive). No swap made yet — each needs a local A/B eval first. Implementation of
+  any actual swap remains open as a follow-up.
