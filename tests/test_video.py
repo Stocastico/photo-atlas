@@ -8,8 +8,10 @@ round-trip is gated on ffmpeg actually being installed.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -58,6 +60,10 @@ def test_parse_probe_empty():
     assert meta.taken_at is None and meta.width is None and meta.duration is None
 
 
+def test_parse_probe_bad_duration_is_none():
+    assert video._parse_probe({"format": {"duration": "not-a-number"}}).duration is None
+
+
 def test_parse_creation_time_variants():
     assert video._parse_creation_time("2019-06-01T12:30:00Z") == "2019-06-01T12:30:00"
     assert video._parse_creation_time("2019-06-01T12:30:00.123456Z") == "2019-06-01T12:30:00"
@@ -70,6 +76,67 @@ def test_parse_iso6709():
     assert video._parse_iso6709("+40.7128-074.0060/")[1] == pytest.approx(-74.0060)
     assert video._parse_iso6709("+95.0-074.0/") == (None, None)  # latitude out of range
     assert video._parse_iso6709("garbage") == (None, None)
+
+
+# -- ffmpeg wrappers (subprocess stubbed, no real ffmpeg) -------------------
+def test_extract_poster_writes_atomically(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        Path(cmd[-1]).write_bytes(b"jpegdata")  # ffmpeg writes the .part target
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(video.subprocess, "run", fake_run)
+    dest = tmp_path / "sub" / "poster.jpg"
+    out = video.extract_poster(tmp_path / "v.mp4", dest, at=1.0)
+    assert out == dest and dest.read_bytes() == b"jpegdata"
+    assert len(calls) == 1 and "-ss" in calls[0]  # seeked, no fallback needed
+
+
+def test_extract_poster_falls_back_to_first_frame(tmp_path, monkeypatch):
+    n = {"i": 0}
+
+    def fake_run(cmd, **kw):
+        n["i"] += 1
+        if n["i"] == 1:
+            raise subprocess.CalledProcessError(1, cmd)  # no frame at `at`
+        Path(cmd[-1]).write_bytes(b"frame0")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(video.subprocess, "run", fake_run)
+    dest = tmp_path / "poster.jpg"
+    video.extract_poster(tmp_path / "v.mp4", dest, at=2.0)
+    assert dest.read_bytes() == b"frame0" and n["i"] == 2  # retried from the start
+
+
+def test_extract_poster_treats_empty_output_as_failure(tmp_path, monkeypatch):
+    n = {"i": 0}
+
+    def fake_run(cmd, **kw):
+        n["i"] += 1
+        # First call leaves a 0-byte file (a frameless seek); fallback writes a real one.
+        Path(cmd[-1]).write_bytes(b"" if n["i"] == 1 else b"ok")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(video.subprocess, "run", fake_run)
+    dest = tmp_path / "poster.jpg"
+    video.extract_poster(tmp_path / "v.mp4", dest)
+    assert dest.read_bytes() == b"ok" and n["i"] == 2
+
+
+def test_probe_metadata_parses_subprocess_json(tmp_path, monkeypatch):
+    payload = json.dumps({
+        "format": {"duration": "3.0", "tags": {"creation_time": "2020-05-05T05:05:05Z"}},
+        "streams": [{"codec_type": "video", "width": 100, "height": 50}],
+    })
+    monkeypatch.setattr(
+        video.subprocess, "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, payload, ""),
+    )
+    meta = video.probe_metadata(tmp_path / "v.mp4")
+    assert meta.width == 100 and meta.height == 50
+    assert meta.taken_at == "2020-05-05T05:05:05" and meta.duration == 3.0
 
 
 # -- indexing a video (stubbed poster + probe) ------------------------------
@@ -157,6 +224,30 @@ def test_index_path_indexes_videos_when_ffmpeg_present(tmp_path, monkeypatch):
         photos = conn.execute("SELECT filename FROM photos WHERE is_video=0").fetchall()
         assert [r["filename"] for r in videos] == ["movie.mp4"]
         assert [r["filename"] for r in photos] == ["photo.jpg"]
+    finally:
+        conn.close()
+
+
+def test_index_path_records_video_failures(tmp_path, monkeypatch):
+    """A poster-extraction error during the walk is caught and reported."""
+
+    def boom(path, dest):
+        raise RuntimeError("ffmpeg exploded")
+
+    monkeypatch.setattr(indexer.video, "ffmpeg_available", lambda: True)
+    monkeypatch.setattr(indexer.video, "extract_poster", boom)
+    config = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    seen: list = []
+    stats = indexer.index_path(
+        config, _seed_tree(tmp_path), backend_name="none",
+        progress=lambda path, st: seen.append(path.name),
+    )
+    assert stats.videos == 1 and stats.failed == 1
+    assert any("RuntimeError" in e for e in stats.errors)
+    assert "movie.mp4" in seen  # the progress callback still fired for the video
+    conn = db.connect(config.db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM photos WHERE is_video=1").fetchone()[0] == 0
     finally:
         conn.close()
 

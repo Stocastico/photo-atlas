@@ -17,6 +17,9 @@ const state = {
   semanticAvailable: false,
   similarTo: null,    // photo id when the grid is in "more like this" mode
   similarLabel: "",   // its filename, for the banner pill
+  selectMode: false,  // multi-select: clicks toggle selection instead of opening
+  selected: new Set(),// selected photo ids (survives grid windowing/recycling)
+  selectAnchor: null, // last-clicked index, for shift-click range selection
 };
 
 // Grid windowing constants — GAP/MIN must match the CSS .grid/.card rules.
@@ -138,6 +141,15 @@ function toggleFavoriteFilter() {
   state.similarTo = null;
   if (state.filters.favorite) delete state.filters.favorite;
   else state.filters.favorite = true;
+  refresh();
+}
+
+function toggleHiddenFilter() {
+  // The 🙈 chip flips the grid into "show only hidden" so the user can review and
+  // unhide; off, hidden photos are excluded everywhere (the API default).
+  state.similarTo = null;
+  if (state.filters.hidden) delete state.filters.hidden;
+  else state.filters.hidden = true;
   refresh();
 }
 
@@ -276,7 +288,7 @@ function applyQuery() {
   const filters = {};
   for (const [k, v] of params.entries()) {
     if (k === "view" || k === "sort") continue;
-    if (k === "has_faces" || k === "favorite") filters[k] = true;
+    if (k === "has_faces" || k === "favorite" || k === "hidden") filters[k] = true;
     else if (SCALAR_FILTERS.has(k)) filters[k] = v;
     else (filters[k] = filters[k] || []).push(v);
   }
@@ -369,6 +381,8 @@ async function renderSidebar() {
   quick.className = "facet";
   quick.appendChild(chip("★ Favorites", f.favorites, !!state.filters.favorite, toggleFavoriteFilter));
   quick.appendChild(chip("👤 Has people", f.with_faces, !!state.filters.has_faces, toggleHasFaces));
+  if (f.hidden || state.filters.hidden)
+    quick.appendChild(chip("🙈 Hidden", f.hidden, !!state.filters.hidden, toggleHiddenFilter));
   side.appendChild(quick);
 
   section("People", f.persons, "person_id", (i) => `${i.name}`, (i) => i.id);
@@ -546,6 +560,7 @@ function renderActiveFilters() {
     pill.className = "filter-pill";
     const text = k === "has_faces" ? "Has people"
       : k === "favorite" ? "★ Favorites"
+      : k === "hidden" ? "🙈 Hidden"
       : `${FILTER_NAMES[k] || k}: ${filterValueLabel(k, v)}`;
     pill.innerHTML = `<span>${esc(text)}</span><span class="x">✕</span>`;
     pill.title = "Remove filter";
@@ -565,7 +580,7 @@ function renderActiveFilters() {
 // ---- photos grid (infinite scroll) ----------------------------------------
 function photoCard(p, index) {
   const card = document.createElement("div");
-  card.className = "card";
+  card.className = "card" + (state.selected.has(p.id) ? " selected" : "");
   const placeText = p.place_label ? p.place_label.split(",")[0] : p.folder_place;
   const place = placeText ? `<span>${esc(placeText)}</span>` : "<span></span>";
   // srcset lets the browser pull the 2x (retina) thumb only on hi-DPI screens;
@@ -576,18 +591,81 @@ function photoCard(p, index) {
       srcset="/api/thumb/${p.id} 320w, /api/thumb/${p.id}?size=640 640w"
       sizes="220px"
       alt="${esc(p.filename)}" />
+    <span class="select-check" aria-hidden="true">✓</span>
     ${p.face_count ? `<span class="badge">👤 ${p.face_count}</span>` : ""}
     ${p.is_video ? `<span class="badge video-badge" aria-label="Video">▶</span>` : ""}
     <div class="meta">${place}<span>${(p.taken_at || "").slice(0, 4)}</span></div>`;
   card.setAttribute("role", "button");
   card.setAttribute("tabindex", "0");
   card.setAttribute("aria-label", `Open ${p.filename}`);
-  card.onclick = () => openLightbox(index);
+  const activate = (e) => state.selectMode ? toggleSelect(index, e.shiftKey) : openLightbox(index);
+  card.onclick = activate;
   card.onkeydown = (e) => {
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openLightbox(index); }
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activate(e); }
   };
   card.appendChild(makeStar(p)); // favourite toggle overlay
   return card;
+}
+
+// ---- multi-select + bulk actions ------------------------------------------
+function setSelectMode(on) {
+  state.selectMode = on;
+  if (!on) { state.selected.clear(); state.selectAnchor = null; }
+  const btn = $("#select-toggle");
+  if (btn) { btn.classList.toggle("active", on); btn.setAttribute("aria-pressed", on ? "true" : "false"); }
+  $("#selection-bar").hidden = !on;
+  $("#grid").classList.toggle("selecting", on);
+  repaintSelection();
+  updateSelectionBar();
+}
+
+// Toggle one card, or extend a shift-click range from the anchor. Selection is
+// keyed by photo id so it survives the grid's window recycling.
+function toggleSelect(index, shift) {
+  if (shift && state.selectAnchor != null) {
+    const [a, b] = [state.selectAnchor, index].sort((x, y) => x - y);
+    for (let i = a; i <= b; i++) state.selected.add(state.photos[i].id);
+  } else {
+    const id = state.photos[index].id;
+    if (state.selected.has(id)) state.selected.delete(id);
+    else state.selected.add(id);
+    state.selectAnchor = index;
+  }
+  repaintSelection();
+  updateSelectionBar();
+}
+
+function repaintSelection() {
+  for (const [i, el] of state.rendered) {
+    const p = state.photos[i];
+    if (p) el.classList.toggle("selected", state.selected.has(p.id));
+  }
+}
+
+function updateSelectionBar() {
+  const n = state.selected.size;
+  const label = $("#selection-count");
+  if (label) label.textContent = `${n} selected`;
+  document.querySelectorAll("#selection-bar [data-bulk]").forEach((b) => (b.disabled = n === 0));
+}
+
+async function bulkAction(action) {
+  const ids = [...state.selected];
+  if (!ids.length) return;
+  try {
+    const res = await api("/api/photos/bulk", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, action }),
+    });
+    toast(`${res.updated} photo${res.updated === 1 ? "" : "s"} updated`, "info");
+  } catch (e) { return; }
+  state.selected.clear();
+  state.selectAnchor = null;
+  // Hidden photos leave the default grid and favorites/hidden counts change, so
+  // reload the grid + sidebar to reflect the new state.
+  renderSidebar();
+  renderPhotos(true);
+  updateSelectionBar();
 }
 
 // -- pure windowing math (unit-tested via tests/js/grid_window_harness.mjs) --
@@ -1458,6 +1536,18 @@ if ($("#lb-help")) $("#lb-help").onclick = toggleHelp;
   stage.addEventListener("pointercancel", endDrag);
 })();
 $("#sort").onchange = (e) => { state.sort = e.target.value; syncURL(); renderPhotos(true); };
+
+// Multi-select wiring.
+if ($("#select-toggle")) $("#select-toggle").onclick = () => setSelectMode(!state.selectMode);
+if ($("#select-clear")) $("#select-clear").onclick = () => {
+  state.selected.clear(); state.selectAnchor = null; repaintSelection(); updateSelectionBar();
+};
+if ($("#select-all")) $("#select-all").onclick = () => {
+  for (const p of state.photos) state.selected.add(p.id);
+  repaintSelection(); updateSelectionBar();
+};
+document.querySelectorAll("#selection-bar [data-bulk]").forEach((b) =>
+  (b.onclick = () => bulkAction(b.dataset.bulk)));
 
 document.addEventListener("keydown", (e) => {
   if (!$("#lightbox").classList.contains("open")) return;
