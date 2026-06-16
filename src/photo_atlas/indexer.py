@@ -30,7 +30,7 @@ import numpy as np
 from PIL import Image
 
 from . import db
-from .classify import SceneTagger
+from .classify import Tagger, get_tagger
 from .config import AtlasConfig
 from .faces import (
     Enrollment,
@@ -169,7 +169,7 @@ def _prepare_photo(
     path: Path,
     *,
     backend: FaceBackend | None,
-    tagger: SceneTagger,
+    tagger: Tagger,
     enrollment: Enrollment | None,
     sha1: str,
 ) -> _PreparedPhoto:
@@ -325,7 +325,7 @@ def index_file(
     *,
     backend: FaceBackend | None,
     geocoder: Geocoder | None,
-    tagger: SceneTagger,
+    tagger: Tagger,
     enrollment: Enrollment | None = None,
     stats: IndexStats | None = None,
     sha1: str | None = None,
@@ -387,7 +387,7 @@ def _worker_init(
     _WORKER_STATE["backend"] = (
         get_backend(backend_name, model_dir=model_dir) if backend_name != "none" else None
     )
-    _WORKER_STATE["tagger"] = SceneTagger()
+    _WORKER_STATE["tagger"] = get_tagger(config)
     _WORKER_STATE["config"] = config
     _WORKER_STATE["enrollment"] = enrollment
 
@@ -530,7 +530,7 @@ def index_path(
             "high-resolution backend with `uv sync --extra geo` (reverse_geocoder).",
             file=sys.stderr,
         )
-    tagger = SceneTagger()
+    tagger = get_tagger(config)
     stats = IndexStats()
 
     try:

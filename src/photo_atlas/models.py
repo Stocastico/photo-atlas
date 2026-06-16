@@ -23,8 +23,19 @@ SFACE_NAME = "face_recognition_sface_2021dec.onnx"
 YUNET_URL = f"{ZOO}/face_detection_yunet/{YUNET_NAME}"
 SFACE_URL = f"{ZOO}/face_recognition_sface/{SFACE_NAME}"
 
-# A sanity floor: both real weights are far larger (YuNet ~230 KB, SFace ~37 MB),
-# so anything tiny is a truncated download or an error page, not a model.
+# Zero-shot scene tagging (opt-in): the SigLIP *vision* encoder, exported to
+# ONNX and quantised (~95 MB) by the transformers.js project. Only the vision
+# tower runs at index time; the matching text (label) embeddings are pre-baked
+# into the bundled ``data/scene_labels.npz`` (see scripts/build_scene_embeddings.py).
+SCENE_NAME = "siglip_base_patch16_224_vision_quantized.onnx"
+SCENE_URL = (
+    "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/main/"
+    "onnx/vision_model_quantized.onnx"
+)
+
+# A sanity floor: the face weights are far larger (YuNet ~230 KB, SFace ~37 MB)
+# and the scene vision tower ~95 MB, so anything tiny is a truncated download or
+# an error page, not a model.
 _MIN_MODEL_BYTES = 50_000
 
 
@@ -69,3 +80,14 @@ def ensure_models(model_dir: Path, download: bool = True) -> tuple[Path, Path]:
     yunet = _resolve(YUNET_NAME, YUNET_URL, model_dir, "PHOTO_ATLAS_YUNET", download)
     sface = _resolve(SFACE_NAME, SFACE_URL, model_dir, "PHOTO_ATLAS_SFACE", download)
     return yunet, sface
+
+
+def ensure_scene_model(model_dir: Path, download: bool = True) -> Path:
+    """Return the SigLIP vision-encoder ONNX path, downloading it if needed.
+
+    Set ``PHOTO_ATLAS_SCENE_MODEL`` to a local file to skip the download
+    (offline / air-gapped, or to swap in a different vision encoder whose label
+    matrix you have rebuilt with ``scripts/build_scene_embeddings.py``).
+    """
+
+    return _resolve(SCENE_NAME, SCENE_URL, Path(model_dir), "PHOTO_ATLAS_SCENE_MODEL", download)
