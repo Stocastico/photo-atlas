@@ -97,7 +97,8 @@ def _load_enrollment(conn: sqlite3.Connection) -> Enrollment:
         vec = db.blob_to_embedding(row["embedding"])
         if vec is not None:
             pairs.append((int(row["person_id"]), vec))
-    return Enrollment.from_pairs(pairs)
+    # "Not this person" negatives from active learning penalise the k-NN vote.
+    return Enrollment.from_pairs(pairs, db.load_negatives(conn))
 
 
 def thumb_path_for(config: AtlasConfig, sha1: str) -> Path:

@@ -84,6 +84,19 @@ CREATE TABLE IF NOT EXISTS faces (
     confidence  REAL
 );
 
+-- Face active-learning: a "not this person" negative recorded when the user
+-- corrects an auto-tag (un/reassigns a face away from a person). Fed into the
+-- k-NN vote to penalise that identity for similar future faces. Both FKs cascade
+-- (the negative is meaningless once the face or person is gone); UNIQUE keeps a
+-- repeated correction idempotent. CREATE IF NOT EXISTS, so no _migrate entry.
+CREATE TABLE IF NOT EXISTS face_negatives (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    face_id    INTEGER NOT NULL REFERENCES faces(id) ON DELETE CASCADE,
+    person_id  INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    created_at TEXT,
+    UNIQUE(face_id, person_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_photos_taken   ON photos(taken_at);
 CREATE INDEX IF NOT EXISTS idx_photos_indexed ON photos(indexed_at);
 CREATE INDEX IF NOT EXISTS idx_photos_country ON photos(place_country);
@@ -277,6 +290,42 @@ def set_favorite(conn: sqlite3.Connection, photo_id: int, favorite: bool) -> boo
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+# -- face active-learning negatives ----------------------------------------
+def add_face_negative(conn: sqlite3.Connection, face_id: int, person_id: int) -> None:
+    """Record that ``face_id`` is *not* ``person_id`` (idempotent)."""
+
+    from datetime import datetime
+
+    conn.execute(
+        "INSERT OR IGNORE INTO face_negatives (face_id, person_id, created_at) "
+        "VALUES (?, ?, ?)",
+        (face_id, person_id, datetime.now(UTC).isoformat(timespec="seconds")),
+    )
+
+
+def remove_face_negative(conn: sqlite3.Connection, face_id: int, person_id: int) -> None:
+    """Drop a negative — e.g. the user just confirmed this face *is* that person."""
+
+    conn.execute(
+        "DELETE FROM face_negatives WHERE face_id=? AND person_id=?", (face_id, person_id)
+    )
+
+
+def load_negatives(conn: sqlite3.Connection) -> list[tuple[int, np.ndarray]]:
+    """Every ``(person_id, embedding)`` negative, for negative-aware recognition."""
+
+    rows = conn.execute(
+        "SELECT n.person_id, f.embedding FROM face_negatives n "
+        "JOIN faces f ON f.id = n.face_id WHERE f.embedding IS NOT NULL"
+    ).fetchall()
+    out: list[tuple[int, np.ndarray]] = []
+    for r in rows:
+        vec = blob_to_embedding(r["embedding"])
+        if vec is not None:
+            out.append((int(r["person_id"]), vec))
+    return out
 
 
 # -- saved searches (Smart Albums) ----------------------------------------

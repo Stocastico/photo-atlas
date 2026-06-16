@@ -147,6 +147,14 @@ button.primary { background: var(--accent); color: #fff; border: none; padding: 
 button.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; cursor: pointer; }
 button.ghost.danger:hover { border-color: #c93c3c; color: #ff8585; }
 button.icon { padding: 6px 9px; line-height: 1; }
+/* active-learning review queue */
+#review-section { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.review-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.review-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; text-align: center; }
+.review-card img { width: 84px; height: 84px; border-radius: 10px; object-fit: cover; background: var(--panel-2); }
+.review-card .sub { color: var(--muted); font-size: 12px; margin: 6px 0; }
+.review-card .row { justify-content: center; flex-wrap: wrap; }
+.review-card button { font-size: 12px; padding: 5px 9px; }
 /* person card management panel */
 .person-card .row { justify-content: center; flex-wrap: wrap; }
 .rename-box { margin-top: 8px; }

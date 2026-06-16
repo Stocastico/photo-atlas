@@ -93,6 +93,12 @@ photo-atlas serve              # browse, filter, and name people</code></pre>
       </div>
 
       <div id="view-clusters" role="tabpanel" aria-labelledby="tab-clusters" style="display:none">
+        <section id="review-section" style="display:none">
+          <h3 style="margin:0 0 4px">Review guesses</h3>
+          <p class="tagline">Low-confidence auto-tags. Confirm the right ones; reject the rest to teach
+            recognition not to repeat the mistake.</p>
+          <div id="review" class="review-grid"></div>
+        </section>
         <p class="tagline">Groups of unrecognised faces. Give a group a name and every photo with that
           person becomes filterable — new imports are recognised automatically.</p>
         <div id="clusters" class="cluster-grid"></div>

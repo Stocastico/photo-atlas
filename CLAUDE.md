@@ -62,7 +62,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 | `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Also `embed_library`, `retag_scenes`, `prune_library`, `cluster_library` |
 | `metadata.py` | EXIF/dimensions/thumbnails, `cached_resized` derivatives (atomic temp+replace), HEIF opener |
 | `video.py` | optional ffmpeg/ffprobe poster-frame + capture-date/GPS extraction for videos (`index_video`); pure `_parse_probe` is the offline-testable seam |
-| `faces.py` | YuNet detect + SFace embed backends, DBSCAN clustering, k-NN recognition (`Enrollment`) |
+| `faces.py` | YuNet detect + SFace embed backends, DBSCAN clustering, negative-aware k-NN recognition (`Enrollment` carries positives + "not this person" negatives) |
 | `classify.py` | scene tagging: SigLIP-only `ZeroShotSceneTagger` (shares the vision encoder with embeddings) |
 | `embed.py` | `SigLipImageEncoder` / `SigLipTextEncoder` for semantic search |
 | `search.py` | filter dict → SQL (`_where`), facets, plus `SemanticIndex` + `semantic_search` (cosine ranking ANDed with filters) |
@@ -90,6 +90,11 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   `video.ffmpeg_available()` — no ffmpeg means videos are counted but not indexed.
 - **Facet filters accept a scalar or a list** (OR within a facet, AND across facets).
   Semantic search is a *ranking* layered on top, via the `text` query param.
+- **Face active learning:** correcting an auto-tag (un/reassign) records a
+  `face_negatives` row; `_load_enrollment` feeds those into `Enrollment` so
+  `knn_person_match` penalises a rejected identity. A human `assign_face` sets
+  `confidence=1.0`; the "Review guesses" list (`/api/faces/review`) shows auto-tags
+  below `config.review_confidence`.
 - **Frontend has no test runner**; pure JS helpers (grid windowing, URL state) are
   exercised by Node harnesses in `tests/js/` via `tests/test_web_js.py`, which skips
   when Node isn't installed.

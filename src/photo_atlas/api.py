@@ -574,6 +574,16 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         library.unassign_face(conn, face_id)
         return {"ok": True}
 
+    @app.get("/api/faces/review")
+    def api_review_faces(conn: sqlite3.Connection = Depends(get_conn)):
+        # Active-learning review queue: low-confidence auto-tags for the user to
+        # confirm (assign → confidence 1.0) or reject (unassign → records a
+        # negative that penalises that identity in future recognition).
+        faces = library.low_confidence_faces(
+            conn, max_confidence=config.review_confidence
+        )
+        return {"threshold": config.review_confidence, "count": len(faces), "faces": faces}
+
     # -- web UI -----------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
     def index():

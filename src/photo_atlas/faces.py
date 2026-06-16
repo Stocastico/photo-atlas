@@ -16,7 +16,7 @@ Alternative backends share the same :class:`FaceBackend` contract:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -355,20 +355,44 @@ class Enrollment:
 
     embeddings: np.ndarray
     person_ids: np.ndarray
+    #: "Not this person" negatives from active learning: a parallel ``(m, d)``
+    #: matrix + ``(m,)`` person ids. A probe near one of a person's negatives has
+    #: that person's vote penalised in :func:`knn_person_match`.
+    neg_embeddings: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 0), dtype=np.float32)
+    )
+    neg_person_ids: np.ndarray = field(
+        default_factory=lambda: np.empty((0,), dtype=np.int64)
+    )
 
     @property
     def is_empty(self) -> bool:
         return int(self.person_ids.size) == 0
 
     @classmethod
-    def from_pairs(cls, pairs: list[tuple[int, np.ndarray]]) -> Enrollment:
-        """Build an enrollment from ``(person_id, embedding)`` pairs."""
+    def from_pairs(
+        cls,
+        pairs: list[tuple[int, np.ndarray]],
+        negatives: list[tuple[int, np.ndarray]] | None = None,
+    ) -> Enrollment:
+        """Build an enrollment from ``(person_id, embedding)`` positive pairs.
 
-        if not pairs:
-            return cls(np.empty((0, 0), dtype=np.float32), np.empty((0,), dtype=np.int64))
-        ids = np.array([pid for pid, _ in pairs], dtype=np.int64)
-        matrix = np.vstack([l2_normalize(vec) for _, vec in pairs]).astype(np.float32)
-        return cls(matrix, ids)
+        ``negatives`` carries the same shape of "not this person" examples.
+        """
+
+        def _stack(items: list[tuple[int, np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
+            if not items:
+                return (
+                    np.empty((0, 0), dtype=np.float32),
+                    np.empty((0,), dtype=np.int64),
+                )
+            ids = np.array([pid for pid, _ in items], dtype=np.int64)
+            mat = np.vstack([l2_normalize(vec) for _, vec in items]).astype(np.float32)
+            return mat, ids
+
+        pos_mat, pos_ids = _stack(pairs)
+        neg_mat, neg_ids = _stack(negatives or [])
+        return cls(pos_mat, pos_ids, neg_mat, neg_ids)
 
 
 def knn_person_match(
@@ -389,6 +413,12 @@ def knn_person_match(
     the person with the most votes among the ``k`` nearest, ties broken by the
     smaller mean distance. Returns ``(person_id | None, confidence)`` where
     confidence is ``1 - mean distance`` to the winning person's voting neighbours.
+
+    **Active learning:** a person's "not this person" negatives (recorded when the
+    user corrects an auto-tag) cast *negative* votes here. Each person's net vote is
+    its positive neighbours minus its near negatives, so a probe that looks like a
+    rejected example is penalised — or vetoed when the negatives outweigh the
+    positives. With no negatives the result is identical to plain k-NN.
     """
 
     if enrollment.is_empty:
@@ -405,12 +435,25 @@ def knn_person_match(
     nn_ids = enrollment.person_ids[nn]
     nn_dists = dists[nn]
 
+    # Negative votes: the k nearest negatives within the threshold, tallied per
+    # person, are subtracted from that person's positive votes below.
+    neg_votes: dict[int, int] = {}
+    if enrollment.neg_person_ids.size:
+        ndists = 1.0 - (enrollment.neg_embeddings @ probe)
+        nwithin = np.where(ndists <= threshold)[0]
+        if nwithin.size:
+            nnn = nwithin[np.argsort(ndists[nwithin], kind="stable")][:k]
+            for pid in enrollment.neg_person_ids[nnn]:
+                neg_votes[int(pid)] = neg_votes.get(int(pid), 0) + 1
+
     best_id: int | None = None
     best_votes = 0
     best_mean = float("inf")
     for pid in np.unique(nn_ids):
         mask = nn_ids == pid
-        votes = int(mask.sum())
+        votes = int(mask.sum()) - neg_votes.get(int(pid), 0)
+        if votes <= 0:
+            continue  # negatives cancelled this identity out
         mean_d = float(nn_dists[mask].mean())
         if votes > best_votes or (votes == best_votes and mean_d < best_mean):
             best_votes, best_mean, best_id = votes, mean_d, int(pid)
