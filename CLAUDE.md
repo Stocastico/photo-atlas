@@ -65,7 +65,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 | `faces.py` | YuNet detect + SFace embed backends, DBSCAN clustering, negative-aware k-NN recognition (`Enrollment` carries positives + "not this person" negatives) |
 | `classify.py` | scene tagging: SigLIP-only `ZeroShotSceneTagger` (shares the vision encoder with embeddings) |
 | `embed.py` | `SigLipImageEncoder` / `SigLipTextEncoder` for semantic search |
-| `search.py` | filter dict → SQL (`_where`), facets, plus `SemanticIndex` + `semantic_search` (cosine ranking ANDed with filters), trip/memory grouping, and `find_burst_groups` (perceptual+temporal near-duplicate detection) |
+| `search.py` | filter dict → SQL (`_where`), facets, plus `SemanticIndex`/`semantic_search` (cosine ranking ANDed with filters), `FaceIndex`/`similar_faces` ("more like this person" over SFace embeddings), trip/memory grouping, and `find_burst_groups` (perceptual+temporal near-duplicate detection) |
 | `planner.py` | model-free decomposition of NL queries → person/people filters + residual visual text |
 | `geocode.py` / `folder_meta.py` | GPS→city/country; year/place mined from folder names |
 | `library.py` | person/cluster management (rename/merge/cover/assign) |

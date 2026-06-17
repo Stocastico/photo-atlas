@@ -395,8 +395,8 @@ KeyError; `delete_person` detaching faces is intentional) were dropped.
   infinite-scroll paging preserved); picking any filter/search exits it. Backend
   (ranking, self-exclusion, paging, 404/409 edge cases) is unit + API tested
   (`tests/test_similar.py`) and the request-URL switch via a Node harness
-  (`tests/js/similar_harness.mjs`). Follow-up: SFace "same person" similarity is
-  still open (the person filter already covers exact-match).
+  (`tests/js/similar_harness.mjs`). Follow-up **done**: SFace "same person" similarity
+  ("more like this person") now ships too — see the Optional-follow-ups section.
 - [x] **Face active-learning (negative feedback).** **Done:** correcting an auto-tag
   now teaches recognition. Unassigning a face — or reassigning it to someone else —
   records a "not this person" **negative** (new `face_negatives` table, both FKs
@@ -490,9 +490,15 @@ the next slice is easy to pick. Ordered by value-per-effort.
   photo grid* (badge + expand) instead of only the dedicated Duplicates tab. **Upside:
   medium** (nicer browsing). **Effort: high** — reworks the virtualised windowing grid
   (variable-height rows / group headers). **Risk: medium** (grid perf regressions).
-- [ ] **"More like this person" (SFace similarity).** A face-embedding "same person"
-  ranking alongside the existing whole-image "more like this". **Upside: low–medium**
-  (the exact person filter already covers named people). **Effort: medium.** **Risk: low.**
+- [x] **"More like this person" (SFace similarity).** **Done:** `search.FaceIndex` +
+  `search.similar_faces` cosine-rank the stored SFace face embeddings against a chosen
+  face and collapse the result to photos (best face per photo, the source photo always
+  excluded), over `GET /api/faces/{id}/similar` (cached face index, 404/409 edges). A 🧑
+  per-face button in the lightbox enters a face-similar grid mode (reuses the
+  "similar" banner/exit plumbing, generalised to photo|face). Especially useful for an
+  *unnamed* face, which the named-person filter can't gather. No model download — it
+  reuses detection embeddings. Backend/API unit-tested (`tests/test_similar_faces.py`)
+  + the request-URL switch via `tests/js/similar_harness.mjs`.
 - [ ] **Unified "type of picture" facet.** Fold scene tags + people-count buckets into one
   facet. **Upside: low** (UX tidy-up). **Effort: low–medium.** **Risk: low.**
 - [ ] **Bulk assign-a-person / bulk export.** Dropped from the multi-select slice.
