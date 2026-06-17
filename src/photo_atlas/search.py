@@ -384,6 +384,96 @@ def similar_photos(
     return _rows_for_ranked(conn, ranked[offset : offset + limit]), total
 
 
+class FaceIndex:
+    """In-memory matrix of face (SFace) embeddings for cosine ranking.
+
+    Parallel to :class:`SemanticIndex` but over the ``faces`` table: ``matrix`` is
+    ``(N, D)`` of L2-normalised face embeddings, with ``face_ids`` and the owning
+    ``photo_ids`` as parallel ``(N,)`` arrays. Powers "more like this person" —
+    ranking a chosen face against every other face — without any model download
+    (it reuses the embeddings detection already stored). Cached by the web layer.
+    """
+
+    def __init__(self, face_ids: np.ndarray, photo_ids: np.ndarray, matrix: np.ndarray):
+        self.face_ids = face_ids
+        self.photo_ids = photo_ids
+        self.matrix = matrix
+
+    @classmethod
+    def load(cls, conn: sqlite3.Connection) -> FaceIndex:
+        rows = conn.execute(
+            "SELECT id, photo_id, embedding FROM faces "
+            "WHERE embedding IS NOT NULL ORDER BY id"
+        ).fetchall()
+        face_ids = np.array([int(r["id"]) for r in rows], dtype=np.int64)
+        photo_ids = np.array([int(r["photo_id"]) for r in rows], dtype=np.int64)
+        vectors = [db.blob_to_embedding(r["embedding"]) for r in rows]
+        if not vectors:
+            return cls(face_ids, photo_ids, np.empty((0, 0), dtype=np.float32))
+        matrix = np.vstack([_normalize(v) for v in vectors]).astype(np.float32)
+        return cls(face_ids, photo_ids, matrix)
+
+    @property
+    def size(self) -> int:
+        return int(self.face_ids.shape[0])
+
+    def _row_for(self, face_id: int) -> int | None:
+        if self.size == 0:
+            return None
+        matches = np.nonzero(self.face_ids == int(face_id))[0]
+        return int(matches[0]) if matches.size else None
+
+    def vector_for(self, face_id: int) -> np.ndarray | None:
+        row = self._row_for(face_id)
+        return None if row is None else self.matrix[row]
+
+    def photo_for(self, face_id: int) -> int | None:
+        row = self._row_for(face_id)
+        return None if row is None else int(self.photo_ids[row])
+
+
+def similar_faces(
+    conn: sqlite3.Connection,
+    face_id: int,
+    index: FaceIndex,
+    *,
+    top_k: int = 200,
+    limit: int = 60,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    """Rank photos by SFace similarity to ``face_id`` ("more like this person").
+
+    Cosine-ranks every other face against the chosen one and collapses the result
+    to photos, keeping each photo's best (nearest) face score. The source face's
+    own photo is always excluded (a photo is never "similar" to itself, even when
+    it holds another near-identical face). Returns ``(rows, total)`` with the target
+    excluded and ``total`` capped at ``top_k`` distinct photos; ``([], 0)`` when the
+    face has no stored embedding.
+    """
+
+    query_vec = index.vector_for(face_id)
+    if query_vec is None:
+        return [], 0
+    src_photo = index.photo_for(face_id)
+    scores = index.matrix @ _normalize(query_vec)
+    order = np.argsort(-scores, kind="stable")
+    # First time a photo is seen (in descending-score order) is its best score, so
+    # the first ``top_k`` distinct photos are exactly the top_k by best face.
+    best_per_photo: dict[int, float] = {}
+    for idx in order:
+        pid = int(index.photo_ids[idx])
+        if pid == src_photo or pid in best_per_photo:
+            continue
+        if int(index.face_ids[idx]) == int(face_id):
+            continue
+        best_per_photo[pid] = float(scores[idx])
+        if len(best_per_photo) >= top_k:
+            break
+    ranked = list(best_per_photo.items())
+    total = len(ranked)
+    return _rows_for_ranked(conn, ranked[offset : offset + limit]), total
+
+
 def search_photos(
     conn: sqlite3.Connection,
     filters: dict[str, Any],

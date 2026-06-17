@@ -79,10 +79,18 @@ check("similar ignores sort", u.searchParams.get("sort") === null);
 check("similar offset", u.searchParams.get("offset") === "120");
 check("similar limit", u.searchParams.get("limit") === "120");
 
-// exitSimilar clears the similar target (refresh is a no-op in this fake DOM).
-exitSimilar();
-check("exitSimilar clears target", state.similarTo === null);
+// Face-similar mode ("more like this person"): pages /api/faces/{id}/similar.
 state.similarTo = null;
+state.similarFace = 7;
+u = new URL("http://x" + photosRequestURL(60));
+check("face-similar path", u.pathname === "/api/faces/7/similar");
+check("face-similar ignores filters", u.searchParams.get("scene") === null);
+check("face-similar offset", u.searchParams.get("offset") === "60");
+
+// exitSimilar clears both similar targets (refresh is a no-op in this fake DOM).
+exitSimilar();
+check("exitSimilar clears photo target", state.similarTo === null);
+check("exitSimilar clears face target", state.similarFace === null);
 u = new URL("http://x" + photosRequestURL(0));
 check("back to filter path", u.pathname === "/api/photos");
 

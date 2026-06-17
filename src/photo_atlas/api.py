@@ -128,6 +128,23 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             _semantic["sig"] = sig
         return _semantic["index"]
 
+    # Face-embedding index for "more like this person" (SFace cosine over faces),
+    # cached and rebuilt only when the set of embedded faces changes.
+    _faces: dict = {"index": None, "sig": None}
+
+    def _face_signature(conn: sqlite3.Connection) -> tuple[int, int]:
+        row = conn.execute(
+            "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM faces WHERE embedding IS NOT NULL"
+        ).fetchone()
+        return int(row[0]), int(row[1])
+
+    def _face_index(conn: sqlite3.Connection):
+        sig = _face_signature(conn)
+        if _faces["sig"] != sig:
+            _faces["index"] = search.FaceIndex.load(conn)
+            _faces["sig"] = sig
+        return _faces["index"]
+
     def _text_encoder():
         if _semantic["encoder"] is None and not _semantic["encoder_tried"]:
             _semantic["encoder_tried"] = True
@@ -390,6 +407,31 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             )
         rows, total = search.similar_photos(
             conn, photo_id, index, top_k=config.semantic_top_k, limit=limit, offset=offset
+        )
+        return {"total": total, "count": len(rows), "offset": offset, "photos": rows}
+
+    @app.get("/api/faces/{face_id}/similar")
+    def api_similar_faces(
+        face_id: int,
+        limit: int = Query(60, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+        conn: sqlite3.Connection = Depends(get_conn),
+    ):
+        # "More like this person": rank photos by SFace face-embedding similarity to
+        # this face. Reuses the stored detection embeddings (no model download), so
+        # it works whenever a library has been indexed with faces. Especially useful
+        # for an *unnamed* face, which the named-person filter can't gather.
+        if conn.execute("SELECT 1 FROM faces WHERE id=?", (face_id,)).fetchone() is None:
+            raise HTTPException(404, "face not found")
+        index = _face_index(conn)
+        if index.size == 0:
+            raise HTTPException(
+                409,
+                "No face embeddings yet — index a library with faces "
+                "(`photo-atlas index`) to enable similar-face search.",
+            )
+        rows, total = search.similar_faces(
+            conn, face_id, index, top_k=config.semantic_top_k, limit=limit, offset=offset
         )
         return {"total": total, "count": len(rows), "offset": offset, "photos": rows}
 

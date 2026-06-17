@@ -16,7 +16,8 @@ const state = {
   searchMode: "filter", // "filter" (substring q) or "semantic" (natural-language text)
   semanticAvailable: false,
   similarTo: null,    // photo id when the grid is in "more like this" mode
-  similarLabel: "",   // its filename, for the banner pill
+  similarFace: null,  // face id when in "more like this person" mode
+  similarLabel: "",   // its filename / face label, for the banner pill
   selectMode: false,  // multi-select: clicks toggle selection instead of opening
   selected: new Set(),// selected photo ids (survives grid windowing/recycling)
   selectAnchor: null, // last-clicked index, for shift-click range selection
@@ -105,7 +106,7 @@ function isActive(key, value) {
 }
 
 function toggleFilter(key, value) {
-  state.similarTo = null; // picking a filter exits "more like this" mode
+  state.similarTo = state.similarFace = null; // picking a filter exits "more like this" mode
   const arr = Array.isArray(state.filters[key])
     ? state.filters[key].slice()
     : (state.filters[key] != null ? [state.filters[key]] : []);
@@ -131,14 +132,14 @@ function removeFilterValue(key, value) {
 }
 
 function toggleHasFaces() {
-  state.similarTo = null;
+  state.similarTo = state.similarFace = null;
   if (state.filters.has_faces) delete state.filters.has_faces;
   else state.filters.has_faces = true;
   refresh();
 }
 
 function toggleFavoriteFilter() {
-  state.similarTo = null;
+  state.similarTo = state.similarFace = null;
   if (state.filters.favorite) delete state.filters.favorite;
   else state.filters.favorite = true;
   refresh();
@@ -147,7 +148,7 @@ function toggleFavoriteFilter() {
 function toggleHiddenFilter() {
   // The 🙈 chip flips the grid into "show only hidden" so the user can review and
   // unhide; off, hidden photos are excluded everywhere (the API default).
-  state.similarTo = null;
+  state.similarTo = state.similarFace = null;
   if (state.filters.hidden) delete state.filters.hidden;
   else state.filters.hidden = true;
   refresh();
@@ -223,11 +224,14 @@ function filterParams() {
 // this" mode (state.similarTo set) it pages the similarity endpoint and ignores
 // the structured filters/sort; otherwise the normal filtered+sorted query.
 function photosRequestURL(offset) {
-  if (state.similarTo != null) {
+  if (state.similarFace != null || state.similarTo != null) {
     const p = new URLSearchParams();
     p.set("limit", String(PAGE));
     p.set("offset", String(offset));
-    return `/api/photos/${state.similarTo}/similar?` + p.toString();
+    const base = state.similarFace != null
+      ? `/api/faces/${state.similarFace}/similar`
+      : `/api/photos/${state.similarTo}/similar`;
+    return base + "?" + p.toString();
   }
   const params = filterParams();
   if (state.sort && state.sort !== "newest") params.set("sort", state.sort);
@@ -236,11 +240,12 @@ function photosRequestURL(offset) {
   return "/api/photos?" + params.toString();
 }
 
-// Enter "more like this": page the similarity endpoint for ``id`` in the grid.
-// Similar is its own mode (the endpoint ignores filters), so the filter set is
-// cleared; exitSimilar restores the normal filtered grid.
-function moreLikeThis(id, label) {
-  state.similarTo = id;
+// Enter a "similar" mode (the endpoint ignores filters), so the filter set is
+// cleared; exitSimilar restores the normal filtered grid. ``kind`` is "photo"
+// (visual SigLIP) or "face" (SFace "same person").
+function enterSimilar(kind, id, label) {
+  state.similarTo = kind === "photo" ? id : null;
+  state.similarFace = kind === "face" ? id : null;
   state.similarLabel = label || "";
   state.filters = {};
   state.searchMode = "filter";
@@ -256,8 +261,15 @@ function moreLikeThis(id, label) {
   refresh();
 }
 
+function moreLikeThis(id, label) { enterSimilar("photo", id, label); }
+function moreLikeThisFace(faceId, label) { enterSimilar("face", faceId, label); }
+
+function inSimilarMode() {
+  return state.similarTo != null || state.similarFace != null;
+}
+
 function exitSimilar() {
-  state.similarTo = null;
+  state.similarTo = state.similarFace = null;
   state.similarLabel = "";
   refresh();
 }
@@ -295,7 +307,7 @@ function applyQuery() {
   state.filters = filters;
   // Similar mode isn't part of the URL state, so any history navigation (or a
   // fresh load) returns to the normal filtered grid.
-  state.similarTo = null;
+  state.similarTo = state.similarFace = null;
   state.similarLabel = "";
   state.view = params.get("view") || "photos";
   state.sort = params.get("sort") || "newest";
@@ -522,7 +534,7 @@ function renderPeopleModeToggle(side) {
 
 function clearAllFilters() {
   state.filters = {};
-  state.similarTo = null;
+  state.similarTo = state.similarFace = null;
   $("#search").value = "";
   refresh();
 }
@@ -543,10 +555,12 @@ function renderActiveFilters() {
   if (!bar) return;
   bar.innerHTML = "";
   const pairs = activeFilterPairs();
-  const similar = state.similarTo != null;
+  const similar = inSimilarMode();
   bar.style.display = pairs.length || similar ? "flex" : "none";
   if (similar) {
-    const text = `✨ Similar to ${state.similarLabel || "#" + state.similarTo}`;
+    const icon = state.similarFace != null ? "🧑" : "✨";
+    const fallback = "#" + (state.similarFace ?? state.similarTo);
+    const text = `${icon} Similar to ${state.similarLabel || fallback}`;
     const pill = document.createElement("button");
     pill.className = "filter-pill";
     pill.innerHTML = `<span>${esc(text)}</span><span class="x">✕</span>`;
@@ -765,7 +779,7 @@ async function renderPhotos(reset = true) {
   // that simply matched nothing.
   const empty = state.photos.length === 0;
   const libraryEmpty =
-    empty && activeFilterPairs().length === 0 && state.similarTo == null;
+    empty && activeFilterPairs().length === 0 && !inSimilarMode();
   $("#onboarding").style.display = libraryEmpty ? "block" : "none";
   $("#grid-empty").style.display = empty && !libraryEmpty ? "block" : "none";
 
@@ -1015,9 +1029,14 @@ function renderLightboxSide(p, id, reopen) {
       <img src="/api/face/${face.id}" onerror="this.style.visibility='hidden'" />
       <input placeholder="name…" value="${esc(face.person_name || "")}" aria-label="Assign face to a person" />
       <button class="primary">Save</button>
-      ${face.person_id ? `<button class="ghost icon" data-act="clear" title="Reassign to unknown" aria-label="Reassign face to unknown">✕</button>` : ""}`;
+      ${face.person_id ? `<button class="ghost icon" data-act="clear" title="Reassign to unknown" aria-label="Reassign face to unknown">✕</button>` : ""}
+      <button class="ghost icon" data-act="similar" title="Find more photos of this person" aria-label="Find more photos of this person">🧑</button>`;
     const input = item.querySelector("input");
     const refresh = () => { renderSidebar(); reopen(); };
+    // "More like this person": SFace similarity gathers other shots of the same
+    // face — the only way to collect an *unnamed* person (the filter needs a name).
+    item.querySelector('[data-act="similar"]').onclick = () =>
+      moreLikeThisFace(face.id, face.person_name || "this face");
     item.querySelector('.primary').onclick = async () => {
       if (!input.value.trim()) return;
       await api(`/api/faces/${face.id}/assign`, {
@@ -1159,7 +1178,7 @@ async function renderTrips() {
     browse.type = "button";
     browse.textContent = "Browse all →";
     browse.onclick = () => {
-      state.similarTo = null;
+      state.similarTo = state.similarFace = null;
       state.filters = { date_from: t.start, date_to: t.end };
       setView("photos");
     };
@@ -1703,7 +1722,7 @@ $("#search").oninput = (e) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
     const v = e.target.value.trim();
-    state.similarTo = null; // a new search exits "more like this" mode
+    state.similarTo = state.similarFace = null; // a new search exits "more like this" mode
     const key = state.searchMode === "semantic" ? "text" : "q";
     const other = key === "text" ? "q" : "text";
     delete state.filters[other];
