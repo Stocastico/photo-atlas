@@ -80,6 +80,11 @@ class DeleteRequest(BaseModel):
     ids: list[int]
 
 
+class ExportRequest(BaseModel):
+    ids: list[int]
+    dest: str
+
+
 def create_app(config: AtlasConfig | None = None) -> FastAPI:
     config = (config or AtlasConfig()).ensure_dirs()
     app = FastAPI(title="Photo Atlas", version="0.1.0")
@@ -115,11 +120,13 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
     # once on first use (it downloads the SigLIP text model + tokenizer).
     _semantic: dict = {"index": None, "sig": None, "encoder": None, "encoder_tried": False}
 
-    def _embed_signature(conn: sqlite3.Connection) -> tuple[int, int]:
+    def _embed_signature(conn: sqlite3.Connection) -> tuple[int, int, str]:
         row = conn.execute(
             "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM photos WHERE embedding IS NOT NULL"
         ).fetchone()
-        return int(row[0]), int(row[1])
+        # Include the embeddings version so an in-place re-embed (`embed --recompute`,
+        # unchanged count/max id) still invalidates the cached index.
+        return int(row[0]), int(row[1]), str(db.get_meta(conn, "embeddings_version"))
 
     def _semantic_index(conn: sqlite3.Connection):
         sig = _embed_signature(conn)
@@ -348,6 +355,20 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         from . import indexer
 
         result = indexer.delete_photos(config, payload.ids)
+        return {"ok": True, **result}
+
+    @app.post("/api/photos/export")
+    def api_export_photos(payload: ExportRequest):
+        # Copy a selection's original files into a server-side folder (the catalog is
+        # untouched). Behind the same-origin write guard; like export-labels --dest it
+        # writes to a path the local user chooses. ``indexer.export_photos`` opens its
+        # own connection.
+        from . import indexer
+
+        dest = payload.dest.strip()
+        if not dest:
+            raise HTTPException(400, "dest must not be empty")
+        result = indexer.export_photos(config, payload.ids, dest)
         return {"ok": True, **result}
 
     @app.get("/api/map")

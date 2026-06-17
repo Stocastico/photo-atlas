@@ -1175,6 +1175,57 @@ def delete_photos(config: AtlasConfig, ids: list[int]) -> dict[str, int]:
     return {"rows": removed, "files": files_removed, "orphans": orphans}
 
 
+def export_photos(config: AtlasConfig, ids: list[int], dest: Path | str) -> dict[str, int]:
+    """Copy the chosen photos' original files into ``dest``; never moves them.
+
+    A multi-select bulk action: pull a filtered/selected set out of the library as
+    plain files. Originals are copied (with metadata, ``copy2``), so the catalog is
+    untouched. A row whose source file is gone — or an unknown id — counts toward
+    ``missing``. Basename collisions (two photos sharing a filename from different
+    folders) are disambiguated with an id suffix rather than clobbering. Returns
+    ``{requested, copied, missing}``.
+    """
+
+    import shutil
+
+    dest = Path(dest).expanduser()
+    clean = [int(i) for i in ids]
+    copied = missing = 0
+    if clean:
+        dest.mkdir(parents=True, exist_ok=True)
+        conn = db.connect(config.db_path, ensure_schema=False)
+        try:
+            placeholders = ", ".join(["?"] * len(clean))
+            found = {
+                int(r["id"]): r
+                for r in conn.execute(
+                    f"SELECT id, path, filename FROM photos WHERE id IN ({placeholders})",
+                    clean,
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+        for i in clean:
+            row = found.get(i)
+            if row is None:
+                missing += 1
+                continue
+            src = Path(row["path"]) if row["path"] else None
+            if src is None or not src.exists():
+                missing += 1
+                continue
+            target = dest / (row["filename"] or src.name)
+            if target.exists():  # don't clobber a same-named file from another folder
+                target = dest / f"{src.stem}_{i}{src.suffix}"
+            try:
+                shutil.copy2(src, target)
+                copied += 1
+            except OSError as exc:
+                print(f"warning: could not export {src}: {exc}", file=sys.stderr)
+                missing += 1
+    return {"requested": len(clean), "copied": copied, "missing": missing}
+
+
 def cluster_library(config: AtlasConfig) -> dict[str, int]:
     """Cluster all unnamed faces so groups can be labelled in one go."""
 
