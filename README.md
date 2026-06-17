@@ -36,6 +36,17 @@ recognised automatically once a person has been named.
   shots taken moments apart (camera bursts, re-saved copies). Each set keeps a
   best-of-N cover (favorite → highest resolution → earliest) and lets you **hide**
   the rest (reversible) or **delete** them from disk (irreversible) in one click.
+- **Find more like this** — from the lightbox, page **visually similar** photos
+  (cosine over the stored SigLIP image embeddings) or, per face, **other shots of
+  the same person** (cosine over the SFace face embeddings) — the latter works even
+  for an *unnamed* face the person filter can't reach. Neither needs a model download.
+- **Memories, Trips & Favorites** — an "On this day" **Memories** tab, auto-detected
+  **Trips** (split on capture-time gaps + GPS jumps), and a ★ **Favorites** star with
+  its own quick filter. Plus **Smart albums** — save any filter set by name and reload
+  it later.
+- **Multi-select & bulk actions** — a Select mode turns the grid into a multi-select;
+  apply **favorite / hide** to a whole set, **export** the originals to a folder, or
+  (from the Duplicates tab) delete redundant shots.
 - **Offline reverse geocoding** — GPS EXIF → city + country using a bundled
   dataset (no network). Install `reverse_geocoder` for ~150k-city resolution.
 - **Rich metadata** — capture date (EXIF, with file-mtime fallback), camera,
@@ -45,8 +56,9 @@ recognised automatically once a person has been named.
   used to fill in dates EXIF lacks (synthesised as `YYYY-MM-01`,
   `taken_source='folder'`) and to add a filterable **Place** facet. EXIF always
   wins; only dated folders (with a 4-digit year) are trusted.
-- **Web UI** — gallery with lazy thumbnails, a detail lightbox, an interactive
-  **map** of your geotagged photos, a People page and a "Name faces" workflow.
+- **Web UI** — a virtualised gallery with lazy thumbnails and a detail lightbox
+  (zoom/pan, slideshow, EXIF panel), **Memories / Trips / Duplicates / Map** tabs, an
+  interactive map of your geotagged photos, a People page and a "Name faces" workflow.
   No build step (vanilla JS); Leaflet is vendored locally.
 - **Everything local** — a single SQLite catalog plus thumbnails/face crops
   under `~/.photo_atlas`. Your photos never leave your machine. (The map fetches
@@ -232,11 +244,20 @@ api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces · ✨ 
 | `GET /api/photos?text=...` | natural-language semantic search (ranked; ANDs with the filters) |
 | `GET /api/map?...` | geotagged `{id, lat, lon, year}` points for the map (same filters) |
 | `GET /api/photos/{id}` | photo detail + faces |
+| `GET /api/photos/{id}/similar`, `GET /api/faces/{id}/similar` | "more like this" (visual) · "more of this person" (SFace) |
+| `GET /api/memories?month=&day=`, `GET /api/trips`, `GET /api/duplicates` | On-this-day · auto-detected trips · near-duplicate/burst groups |
+| `GET /api/exif/{id}` | on-demand capture settings for the lightbox info panel |
 | `GET /api/image\|preview\|thumb/{id}`, `GET /api/face/{id}` | media (preview = bounded lightbox derivative; `thumb?size=` for retina) |
+| `PUT /api/photos/{id}/favorite`, `POST /api/photos/bulk` | star a photo · bulk favorite/hide a selection |
+| `POST /api/photos/export`, `POST /api/photos/delete` | copy a selection's originals to a folder · hard-delete (rows + files) |
+| `GET/POST /api/albums`, `DELETE /api/albums/{id}` | smart albums (saved searches) |
 | `GET /api/persons`, `PATCH/DELETE /api/persons/{id}` | manage people |
 | `GET /api/persons/{id}/faces`, `PUT .../cover`, `POST .../merge` | cover picker · merge two people |
 | `GET /api/clusters`, `POST /api/clusters/{id}/assign` | name a face group |
-| `POST /api/faces/{id}/assign` | name a single face |
+| `POST /api/faces/{id}/assign\|unassign`, `GET /api/faces/review` | name/unname a face · low-confidence review queue |
+
+State-changing endpoints (POST/PUT/PATCH/DELETE) are guarded against cross-origin
+requests; see `_same_origin_writes` in `api.py`.
 
 ## Tests
 
