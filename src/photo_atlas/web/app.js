@@ -661,6 +661,8 @@ function updateSelectionBar() {
   const label = $("#selection-count");
   if (label) label.textContent = `${n} selected`;
   document.querySelectorAll("#selection-bar [data-bulk]").forEach((b) => (b.disabled = n === 0));
+  const exp = $("#select-export");
+  if (exp) exp.disabled = n === 0;
 }
 
 async function bulkAction(action) {
@@ -680,6 +682,26 @@ async function bulkAction(action) {
   renderSidebar();
   renderPhotos(true);
   updateSelectionBar();
+}
+
+// Bulk export: copy the selection's originals into a server-side folder. Distinct
+// from the flag actions (it needs a destination), so it has its own handler.
+async function bulkExport() {
+  const ids = [...state.selected];
+  if (!ids.length) return;
+  const dest = window.prompt(
+    `Export ${ids.length} photo${ids.length === 1 ? "" : "s"} to which folder on the server?`
+  );
+  if (!dest || !dest.trim()) return;
+  let res;
+  try {
+    res = await api("/api/photos/export", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, dest: dest.trim() }),
+    });
+  } catch (e) { return; }
+  const miss = res.missing ? `, ${res.missing} missing` : "";
+  toast(`Exported ${res.copied} photo${res.copied === 1 ? "" : "s"}${miss}`, "info");
 }
 
 // -- pure windowing math (unit-tested via tests/js/grid_window_harness.mjs) --
@@ -1662,6 +1684,7 @@ if ($("#select-all")) $("#select-all").onclick = () => {
 };
 document.querySelectorAll("#selection-bar [data-bulk]").forEach((b) =>
   (b.onclick = () => bulkAction(b.dataset.bulk)));
+if ($("#select-export")) $("#select-export").onclick = bulkExport;
 
 document.addEventListener("keydown", (e) => {
   if (!$("#lightbox").classList.contains("open")) return;

@@ -501,14 +501,18 @@ the next slice is easy to pick. Ordered by value-per-effort.
   + the request-URL switch via `tests/js/similar_harness.mjs`.
 - [ ] **Unified "type of picture" facet.** Fold scene tags + people-count buckets into one
   facet. **Upside: low** (UX tidy-up). **Effort: low–medium.** **Risk: low.**
-- [ ] **Bulk assign-a-person / bulk export.** Dropped from the multi-select slice.
-  Assign is ambiguous at the photo level (faces are the unit); export is a file copy.
-  **Upside: low–medium.** **Effort: low–medium.** **Risk: low** (export touches the
-  filesystem — confirm + dry-run).
-- [ ] **Semantic-index cache signature.** `api._embed_signature` keys on `(count, max_id)`,
-  so an in-place `embed --recompute` while `serve` is running won't reload the matrix
-  (restart works today). **Upside: low** (only matters for live model swaps). **Effort:
-  low** (hash/model-tag the signature). **Risk: low.** See `SIGLIP2_MIGRATION.md` Gap 5.
+- [x] **Bulk export.** **Done:** `indexer.export_photos` copies a selection's original
+  files into a destination folder (originals preserved, basename collisions
+  id-disambiguated, missing sources counted), over `POST /api/photos/export` (behind the
+  same-origin guard, empty-dest 400). A "⬇ Export…" selection-bar action prompts for the
+  destination. Unit + API tested (`tests/test_bulk_export.py`). *Bulk **assign-a-person**
+  stays dropped — ambiguous at the photo level, since faces are the unit.*
+- [x] **Semantic-index cache freshness.** **Done:** `api._embed_signature` now includes a
+  `meta['embeddings_version']` counter (`db.bump_meta`, bumped by `db.set_photo_embedding`),
+  so an in-place `embed --recompute` — unchanged row count + max id — invalidates the cached
+  `SemanticIndex` and a running `serve` reflects it without a restart. db + API
+  (similar-reflects-recompute) tested (`tests/test_cache_freshness.py`). See
+  `SIGLIP2_MIGRATION.md` Gap 5.
 
 ### Won't do (already decided)
 - ~~Responsive / mobile layout~~ — desktop-browser target (2026-06-16).

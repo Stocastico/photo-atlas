@@ -59,7 +59,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 | `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `export-labels`, `demo`) |
 | `config.py` | `AtlasConfig` — library paths + tunables (`~/.photo_atlas`, `PHOTO_ATLAS_HOME`) |
 | `db.py` | SQLite schema, additive migrations (`_migrate`), embedding (de)serialisation. `PHOTO_COLUMNS` is the single source of truth for writable photo columns |
-| `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Also `embed_library`, `backfill_phashes`, `retag_scenes`, `prune_library`, `delete_photos` (hard delete: rows + files + derivatives), `cluster_library` |
+| `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Also `embed_library`, `backfill_phashes`, `retag_scenes`, `prune_library`, `delete_photos` (hard delete: rows + files + derivatives), `export_photos` (copy a selection's originals to a folder), `cluster_library` |
 | `metadata.py` | EXIF/dimensions/thumbnails, `cached_resized` derivatives (atomic temp+replace), HEIF opener |
 | `video.py` | optional ffmpeg/ffprobe poster-frame + capture-date/GPS extraction for videos (`index_video`); pure `_parse_probe` is the offline-testable seam |
 | `faces.py` | YuNet detect + SFace embed backends, DBSCAN clustering, negative-aware k-NN recognition (`Enrollment` carries positives + "not this person" negatives) |
@@ -81,7 +81,10 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   `_worker_init`.
 - **Photo embeddings live in `photos.embedding`/`embed_dim` but are deliberately
   NOT in `PHOTO_COLUMNS`** — they'd bloat the grid/list payload. They're written
-  separately (`db.set_photo_embedding`) and loaded by `SemanticIndex`.
+  separately (`db.set_photo_embedding`, which also bumps `meta['embeddings_version']`)
+  and loaded by `SemanticIndex`. The API caches that index keyed on
+  `(count, max_id, embeddings_version)`, so an in-place `embed --recompute` (same count
+  + max id) still invalidates the cache and a running `serve` reloads it.
 - **The perceptual hash (`photos.phash`, dHash hex) is also out of `PHOTO_COLUMNS`**
   (written via `db.set_phash`, kept off `_LIST_COLUMNS`), but unlike embeddings it's
   *always* computed at index time (it's cheap) — `_commit_prepared` refreshes it on

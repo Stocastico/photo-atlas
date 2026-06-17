@@ -71,6 +71,16 @@ CREATE TABLE IF NOT EXISTS saved_searches (
     created_at TEXT
 );
 
+-- Small key/value store for catalog-wide counters. Used for an
+-- ``embeddings_version`` that bumps whenever an image embedding is written, so a
+-- running server can detect an *in-place* re-embed (which leaves the row count and
+-- max id unchanged) and reload its cached semantic index. CREATE IF NOT EXISTS, so
+-- no _migrate entry needed.
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
 CREATE TABLE IF NOT EXISTS faces (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     photo_id    INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
@@ -229,6 +239,27 @@ def connect(db_path: Path, *, ensure_schema: bool = True) -> sqlite3.Connection:
     return conn
 
 
+# -- meta key/value counters ----------------------------------------------
+def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
+    """Return the stored ``meta`` value for ``key`` (or ``None`` if unset)."""
+
+    row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return None if row is None else str(row["value"])
+
+
+def bump_meta(conn: sqlite3.Connection, key: str) -> int:
+    """Increment the integer counter at ``key`` (starting from 0) and return it."""
+
+    current = get_meta(conn, key)
+    nxt = (int(current) if current is not None else 0) + 1
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, str(nxt)),
+    )
+    return nxt
+
+
 # -- embedding (de)serialisation ------------------------------------------
 def embedding_to_blob(vector: np.ndarray | None) -> bytes | None:
     if vector is None:
@@ -288,6 +319,9 @@ def set_photo_embedding(
     conn.execute(
         "UPDATE photos SET embedding=?, embed_dim=? WHERE id=?", (blob, dim, photo_id)
     )
+    # Bump the version so a cached semantic index reloads even on an in-place
+    # re-embed (same row count + max id), which the (count, max_id) signature misses.
+    bump_meta(conn, "embeddings_version")
 
 
 def set_phash(conn: sqlite3.Connection, photo_id: int, phash: str | None) -> None:
