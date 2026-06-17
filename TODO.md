@@ -480,10 +480,11 @@ the next slice is easy to pick. Ordered by value-per-effort.
   per-row `faces.dim` (no schema change); no re-embed/re-cluster migration was needed
   (library wasn't indexed yet). SFace stays selectable via `--faces sface`.
   Config thresholds (`cluster_eps`/`face_match_threshold` = 0.5) already suit ArcFace.
-- [ ] **YuNet → SCRFD.** **Upside: medium** but only realised if hard-face *recall* is
-  proven to be the bottleneck. **Effort: medium** (new anchor decode in `faces.py`, not a
-  `FaceDetectorYN` drop-in). **Risk: medium.** Lower priority than ArcFace unless an eval
-  says detection (not embedding) is the limiter.
+- [ ] ~~**YuNet → SCRFD.**~~ **Won't do** (2026-06-17). Medium upside only if hard-face
+  *recall* is proven to be the bottleneck, but it's a non-drop-in swap (new anchor decode
+  in `faces.py`, not a `FaceDetectorYN` replacement) at medium risk; the YuNet 2026may +
+  ArcFace R100 stack already covers detection/recognition well, so this is dropped unless
+  a future eval shows detection is the limiter.
 - [ ] **Per-person semantic grounding.** *(Future)* Run SigLIP on the per-person face
   crop so "Stefano eating food" scores the region containing Stefano, not the whole
   frame. **Upside: medium** (sharper hybrid queries). **Effort: medium–high** (per-crop
@@ -535,3 +536,6 @@ the next slice is easy to pick. Ordered by value-per-effort.
 - ~~RAW ingest~~ (`.CR2/.NEF/.ARW`) — library targets developed JPEG/HEIC/PNG (2026-06-16).
 - ~~Inline duplicate-grid collapse~~ — virtualised-grid rework for medium-only upside;
   the Duplicates tab covers it (2026-06-17).
+- ~~YuNet → SCRFD~~ — non-drop-in detector swap at medium risk; the YuNet 2026may +
+  ArcFace R100 stack suffices unless an eval proves detection recall is the limiter
+  (2026-06-17).
