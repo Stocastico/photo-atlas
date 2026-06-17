@@ -58,8 +58,8 @@ these items are the genuinely new pieces.
   Implemented as `search.PEOPLE_BUCKETS` + a filter-aware `people` facet; the API
   takes repeated `people=` params and the sidebar renders friendly bucket chips with
   removable pills. Unit + DB + API (chip-count == result-count) tested.
-  Possible follow-up: fold the scene tags and these people buckets into one unified
-  "type of picture" facet.
+  Follow-up **done** (2026-06-17): the scene tags and these people buckets are folded
+  into one unified "type of picture" facet — see the Optional-follow-ups section.
 - [x] **Filter by number of *known* (named) people.** A "Known people" facet
   buckets photos by how many faces are assigned to a named person
   (`0` / `1` / `2+`), via a correlated subquery over `faces` (cheap through
@@ -484,14 +484,16 @@ the next slice is easy to pick. Ordered by value-per-effort.
   proven to be the bottleneck. **Effort: medium** (new anchor decode in `faces.py`, not a
   `FaceDetectorYN` drop-in). **Risk: medium.** Lower priority than ArcFace unless an eval
   says detection (not embedding) is the limiter.
-- [ ] **Per-person semantic grounding.** Run SigLIP on the per-person face crop so
-  "Stefano eating food" scores the region containing Stefano, not the whole frame.
-  **Upside: medium** (sharper hybrid queries). **Effort: medium–high** (per-crop
-  embedding store + ranking). **Risk: medium.** Follow-up to the hybrid planner.
-- [ ] **Inline duplicate-grid collapse.** Collapse a burst behind its cover *in the main
-  photo grid* (badge + expand) instead of only the dedicated Duplicates tab. **Upside:
-  medium** (nicer browsing). **Effort: high** — reworks the virtualised windowing grid
-  (variable-height rows / group headers). **Risk: medium** (grid perf regressions).
+- [ ] **Per-person semantic grounding.** *(Future)* Run SigLIP on the per-person face
+  crop so "Stefano eating food" scores the region containing Stefano, not the whole
+  frame. **Upside: medium** (sharper hybrid queries). **Effort: medium–high** (per-crop
+  embedding store + ranking). **Risk: medium.** Follow-up to the hybrid planner —
+  parked as a future item.
+- [ ] ~~**Inline duplicate-grid collapse.**~~ **Won't do** (2026-06-17). Collapsing a
+  burst behind its cover *in the main photo grid* (badge + expand) would rework the
+  virtualised windowing grid (variable-height rows / group headers) for medium-only
+  browsing upside and a real grid-perf-regression risk; the dedicated Duplicates tab
+  already covers the review workflow.
 - [x] **"More like this person" (SFace similarity).** **Done:** `search.FaceIndex` +
   `search.similar_faces` cosine-rank the stored SFace face embeddings against a chosen
   face and collapse the result to photos (best face per photo, the source photo always
@@ -501,8 +503,20 @@ the next slice is easy to pick. Ordered by value-per-effort.
   *unnamed* face, which the named-person filter can't gather. No model download — it
   reuses detection embeddings. Backend/API unit-tested (`tests/test_similar_faces.py`)
   + the request-URL switch via `tests/js/similar_harness.mjs`.
-- [ ] **Unified "type of picture" facet.** Fold scene tags + people-count buckets into one
-  facet. **Upside: low** (UX tidy-up). **Effort: low–medium.** **Risk: low.**
+- [x] **Unified "type of picture" facet.** **Done** (2026-06-17): the sidebar's separate
+  "Number of people" and "Scene" sections are folded into one **"Type of picture"** facet.
+  `search.PICTURE_TYPES` maps friendly tokens → literal SQL predicates — `portrait`
+  (`face_count = 1`) and `group` (`face_count >= 2`) from the people-count buckets, plus
+  every `classify.SCENE_LABELS` value except `people` (folded into portrait/group rather
+  than shown twice). It's an OR-within facet like `people`/`known` (tokens overlap by
+  design — a portrait can also be a "food" shot), wired through `_where` (`kind=`), a
+  filter-aware `kinds` facet (one conditional-aggregate scan, since the overlapping
+  tokens can't share a GROUP BY), the `/api/facets`+`/api/photos`+`/api/map` `kind` query
+  param, and the sidebar's single section. The granular `scene`/`people` *filters* stay
+  first-class (planner, saved searches, back-compat) and their facets remain in the API
+  payload. Unit + DB (chip-count == result-count, filter-aware, scene-people folded) +
+  API round-trip tested (`tests/test_search_unit.py`, `tests/test_search_db.py`,
+  `tests/test_kind_facet.py`).
 - [x] **Bulk export.** **Done:** `indexer.export_photos` copies a selection's original
   files into a destination folder (originals preserved, basename collisions
   id-disambiguated, missing sources counted), over `POST /api/photos/export` (behind the
@@ -519,3 +533,5 @@ the next slice is easy to pick. Ordered by value-per-effort.
 ### Won't do (already decided)
 - ~~Responsive / mobile layout~~ — desktop-browser target (2026-06-16).
 - ~~RAW ingest~~ (`.CR2/.NEF/.ARW`) — library targets developed JPEG/HEIC/PNG (2026-06-16).
+- ~~Inline duplicate-grid collapse~~ — virtualised-grid rework for medium-only upside;
+  the Duplicates tab covers it (2026-06-17).

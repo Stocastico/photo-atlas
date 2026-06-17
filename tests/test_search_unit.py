@@ -118,6 +118,37 @@ def test_where_known_people_buckets_use_named_face_count_column():
     assert params == []  # bucket predicates are literal
 
 
+def test_where_kind_buckets_build_or_of_literal_predicates():
+    # The unified "type of picture" facet folds portrait/group (face_count) and the
+    # scene tags into one OR-within filter, with literal predicates (no bound params).
+    where, params = _where({"kind": ["portrait", "food"]})
+    assert "p.face_count = 1" in where
+    assert "p.scene_type = 'food'" in where
+    assert " OR " in where
+    assert params == []
+
+
+def test_where_kind_group_is_two_or_more_faces():
+    where, params = _where({"kind": ["group"]})
+    assert "p.face_count >= 2" in where and params == []
+
+
+def test_where_kind_ignores_unknown_token():
+    where, params = _where({"kind": ["bogus", ""]})
+    assert where == "" and params == []
+
+
+def test_kind_tokens_fold_scene_labels_minus_people():
+    # portrait/group come from face_count; the rest mirror the scene labels except
+    # "people" (folded into portrait/group), so the facet has no redundant token.
+    from photo_atlas.classify import SCENE_LABELS
+
+    tokens = [tok for tok, _ in search.PICTURE_TYPES]
+    assert tokens[:2] == ["portrait", "group"]
+    assert tokens[2:] == [lab for lab in SCENE_LABELS if lab != "people"]
+    assert "people" not in tokens
+
+
 def test_where_favorite_filter():
     where, params = _where({"favorite": True})
     assert "p.favorite = 1" in where and params == []

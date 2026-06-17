@@ -31,7 +31,7 @@ const BUFFER_ROWS = 4;    // rows rendered above/below the viewport
 const FILTER_NAMES = {
   person_id: "Person", scene: "Scene", country: "Country", city: "City",
   place: "Place", year: "Year", camera: "Camera", q: "Search", text: "Smart",
-  date_from: "From", date_to: "To", people: "People", known: "Known",
+  date_from: "From", date_to: "To", people: "People", known: "Known", kind: "Type",
 };
 // Friendly labels for the number-of-people buckets (tokens come from the API).
 const PEOPLE_LABELS = {
@@ -40,6 +40,14 @@ const PEOPLE_LABELS = {
 // Friendly labels for the number-of-known-(named)-people buckets.
 const KNOWN_LABELS = {
   "0": "None identified", "1": "1 identified", "2+": "2+ identified",
+};
+// Friendly labels for the unified "type of picture" facet (portrait/group from
+// face_count + the scene tags). Tokens come from the API (search.PICTURE_TYPES).
+const KIND_LABELS = {
+  portrait: "👤 Portrait", group: "👥 Group", animals: "🐾 Animals",
+  landscape: "🏞 Landscape", plants: "🌿 Plants", food: "🍽 Food",
+  vehicle: "🚗 Vehicle", building: "🏠 Building", document: "📄 Document",
+  screenshot: "📱 Screenshot", other: "Other",
 };
 const FACET_CAP = 14;
 
@@ -399,9 +407,10 @@ async function renderSidebar() {
 
   section("People", f.persons, "person_id", (i) => `${i.name}`, (i) => i.id);
   renderPeopleModeToggle(side);
-  section("Number of people", f.people, "people", (i) => PEOPLE_LABELS[i.value] || i.value);
+  // Unified "type of picture": folds the old "Number of people" + "Scene" sections
+  // (portrait/group + scene tags) into one facet.
+  section("Type of picture", f.kinds, "kind", (i) => KIND_LABELS[i.value] || i.value);
   section("Known people", f.known, "known", (i) => KNOWN_LABELS[i.value] || i.value);
-  section("Scene", f.scenes, "scene");
   section("Country", f.countries, "country");
   section("City", f.cities, "city");
   section("Place", f.places, "place");
@@ -547,6 +556,7 @@ function filterValueLabel(key, value) {
   }
   if (key === "people") return PEOPLE_LABELS[value] || value;
   if (key === "known") return KNOWN_LABELS[value] || value;
+  if (key === "kind") return KIND_LABELS[value] || value;
   return value;
 }
 

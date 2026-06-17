@@ -123,6 +123,65 @@ def test_known_people_filter_and_facet(tmp_path):
         conn.close()
 
 
+def test_kind_filter_and_facet(tmp_path):
+    """The unified "type of picture" facet folds portrait/group (face_count) and
+    scene tags into one OR-within facet; each chip's count equals the number of
+    results that token returns, even where tokens overlap (a portrait that is also
+    a food shot counts under both)."""
+
+    conn = db.connect(tmp_path / "s.db")
+    try:
+        _insert(conn, path="/a.jpg", face_count=1, scene_type="people")     # portrait
+        _insert(conn, path="/b.jpg", face_count=1, scene_type="food")       # portrait + food
+        _insert(conn, path="/c.jpg", face_count=3, scene_type="people")     # group
+        _insert(conn, path="/d.jpg", face_count=0, scene_type="landscape")  # landscape
+        _insert(conn, path="/e.jpg", face_count=0, scene_type="food")       # food
+
+        _, portraits = search.search_photos(conn, {"kind": ["portrait"]})
+        assert portraits == 2
+        _, groups = search.search_photos(conn, {"kind": ["group"]})
+        assert groups == 1
+        _, food = search.search_photos(conn, {"kind": ["food"]})
+        assert food == 2
+        # OR within the facet: portraits OR landscape shots.
+        _, mix = search.search_photos(conn, {"kind": ["portrait", "landscape"]})
+        assert mix == 3
+
+        kinds = {b["value"]: b["count"] for b in search.facets(conn)["kinds"]}
+        assert kinds["portrait"] == 2
+        assert kinds["group"] == 1
+        assert kinds["food"] == 2
+        assert kinds["landscape"] == 1
+        # The scene "people" label is folded into portrait/group, not its own token.
+        assert "people" not in kinds
+        # Every chip count agrees with the result count for that single token.
+        for tok, count in kinds.items():
+            _, n = search.search_photos(conn, {"kind": [tok]})
+            assert n == count, tok
+    finally:
+        conn.close()
+
+
+def test_kind_facet_is_filter_aware(tmp_path):
+    """The kind facet excludes its own dimension but reflects the other filters."""
+
+    conn = db.connect(tmp_path / "s.db")
+    try:
+        _insert(conn, path="/a.jpg", face_count=1, scene_type="food", place_country="Italy")
+        _insert(conn, path="/b.jpg", face_count=1, scene_type="food", place_country="Spain")
+        _insert(conn, path="/c.jpg", face_count=3, scene_type="food", place_country="Italy")
+
+        kinds = {
+            b["value"]: b["count"]
+            for b in search.facets(conn, {"country": "Italy"})["kinds"]
+        }
+        assert kinds["portrait"] == 1  # only the Italian portrait
+        assert kinds["group"] == 1
+        assert kinds["food"] == 2  # both Italian shots, food unaffected by its own facet
+    finally:
+        conn.close()
+
+
 def test_people_and_or_mode(tmp_path):
     """`person_mode='all'` requires every selected person; the default matches any."""
 

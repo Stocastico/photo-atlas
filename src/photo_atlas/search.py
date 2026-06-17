@@ -34,6 +34,7 @@ from typing import Any
 import numpy as np
 
 from . import db
+from .classify import SCENE_LABELS as _SCENE_LABELS
 
 # Columns returned for grid/list rows: every photo column except the
 # ``scene_scores`` JSON blob, which only the single-photo detail view uses.
@@ -107,6 +108,25 @@ _KNOWN_CASE = (
     f"CASE WHEN {_KNOWN_COL} = 0 THEN '0' "
     f"WHEN {_KNOWN_COL} = 1 THEN '1' ELSE '2+' END"
 )
+
+# Unified "type of picture" facet: token -> SQL predicate. Folds the people-count
+# buckets and the scene tags into one OR-within facet (the UI's single "Type of
+# picture" section), so the sidebar isn't split between "Number of people" and
+# "Scene". ``portrait``/``group`` come from ``face_count`` (a portrait is one
+# detected face, a group is two or more); the rest mirror ``classify.SCENE_LABELS``
+# minus ``people``, which is folded into portrait/group rather than shown twice.
+# Predicates are literal (no bound params), so they splice straight into the WHERE
+# like the other bucket facets; the scene labels are our own controlled constants.
+PICTURE_TYPES: list[tuple[str, str]] = [
+    ("portrait", "p.face_count = 1"),
+    ("group", "p.face_count >= 2"),
+    *(
+        (label, f"p.scene_type = '{label}'")
+        for label in _SCENE_LABELS
+        if label != "people"
+    ),
+]
+_KIND_PREDICATE = dict(PICTURE_TYPES)
 
 
 def _where(filters: dict[str, Any]) -> tuple[str, list[Any]]:
@@ -185,6 +205,16 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any]]:
     ]
     if known:
         clauses.append("(" + " OR ".join(known) + ")")
+    # Unified "type of picture" buckets (OR within the facet); unknown tokens are
+    # ignored. Tokens overlap by design (a portrait can also be a "food" shot), so
+    # OR-ing them matches any selected type.
+    kinds = [
+        _KIND_PREDICATE[t]
+        for t in _as_list(filters.get("kind"))
+        if t in _KIND_PREDICATE
+    ]
+    if kinds:
+        clauses.append("(" + " OR ".join(kinds) + ")")
     if filters.get("q"):
         like = f"%{_like_escape(str(filters['q']))}%"
         clauses.append(
@@ -906,6 +936,23 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
             if counts.get(tok)
         ]
 
+    def kinds_facet() -> list[dict]:
+        # Unified "type of picture": portrait/group (face_count) + the scene tags.
+        # The tokens overlap (a photo can be both a portrait and a "food" shot), so
+        # a single GROUP BY can't bucket them — count each token independently with
+        # one conditional-aggregate scan, filter-aware against the other dimensions.
+        sub = {k: v for k, v in filters.items() if k != "kind"}
+        where, params = _where(sub)
+        parts = ", ".join(
+            f"SUM(CASE WHEN {pred} THEN 1 ELSE 0 END)" for _, pred in PICTURE_TYPES
+        )
+        row = conn.execute(f"SELECT {parts} FROM photos p{where}", params).fetchone()
+        return [
+            {"value": tok, "count": int(c)}
+            for (tok, _), c in zip(PICTURE_TYPES, row, strict=True)
+            if c
+        ]
+
     def date_bounds() -> tuple:
         # The date slider's bounds are a facet too: filter-aware against every
         # other dimension, but not its own (date_from/date_to), so the handles
@@ -933,6 +980,7 @@ def facets(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> d
         "persons": person_facet(),
         "people": people_facet(),
         "known": known_facet(),
+        "kinds": kinds_facet(),
         "with_faces": with_faces_count(),
         "favorites": favorites_count(),
         "hidden": hidden_count(),
