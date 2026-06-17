@@ -17,7 +17,7 @@ from pathlib import Path
 
 ZOO = "https://github.com/opencv/opencv_zoo/raw/main/models"
 
-YUNET_NAME = "face_detection_yunet_2023mar.onnx"
+YUNET_NAME = "face_detection_yunet_2026may.onnx"
 SFACE_NAME = "face_recognition_sface_2021dec.onnx"
 
 YUNET_URL = f"{ZOO}/face_detection_yunet/{YUNET_NAME}"

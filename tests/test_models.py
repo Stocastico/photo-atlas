@@ -5,6 +5,12 @@ from __future__ import annotations
 from photo_atlas import models
 
 
+def test_yunet_default_is_latest_zoo_revision():
+    # Drop-in bump to the newest OpenCV Zoo YuNet (same FaceDetectorYN API).
+    assert models.YUNET_NAME == "face_detection_yunet_2026may.onnx"
+    assert models.YUNET_NAME in models.YUNET_URL
+
+
 def test_scene_defaults_are_siglip2():
     # The shipped default scene/semantic stack is SigLIP 2 (base patch16-256).
     assert "siglip2" in models.SCENE_NAME
