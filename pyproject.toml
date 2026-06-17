@@ -57,6 +57,9 @@ default-groups = ["dev"]
 # and is free to use 4.13+.
 constraint-dependencies = [
   "opencv-python-headless<4.13; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+  # onnxruntime did the same thing at 1.24: pin to the last version that still
+  # ships an Intel-macOS wheel on that one legacy platform.
+  "onnxruntime<1.24; sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
 
 [tool.setuptools]

@@ -92,3 +92,65 @@ def test_select_output_name_raises_when_ambiguous():
     # No preferred name and several outputs → refuse to guess (clear failure).
     with pytest.raises(ValueError, match="output"):
         embed._select_output_name(["a", "b"], ("pooler_output",))
+
+
+# -- text tokenizer padding (Gap 3: SigLIP 1's </s> vs SigLIP 2's Gemma <pad>) --
+
+
+class _FakeTokenizer:
+    """A minimal stand-in for ``tokenizers.Tokenizer`` for padding-config tests."""
+
+    def __init__(self, *, padding=None, vocab):
+        self.padding = padding
+        self._vocab = vocab
+        self.truncation_len = None
+        self.pad_kwargs = None
+
+    def token_to_id(self, token):
+        return self._vocab.get(token)
+
+    def enable_truncation(self, length):
+        self.truncation_len = length
+
+    def enable_padding(self, **kwargs):
+        self.pad_kwargs = kwargs
+
+
+def test_resolve_pad_token_prefers_pad_then_eos():
+    # SigLIP 2's Gemma tokenizer has <pad> (id 0) → prefer it.
+    tok = _FakeTokenizer(vocab={"<pad>": 0, "</s>": 213, "<eos>": 1})
+    assert embed._resolve_pad_token(tok) == ("<pad>", 0)
+    # SigLIP 1's SentencePiece tokenizer has </s> but no <pad>.
+    tok = _FakeTokenizer(vocab={"</s>": 1})
+    assert embed._resolve_pad_token(tok) == ("</s>", 1)
+
+
+def test_resolve_pad_token_defaults_when_none_present():
+    # An exotic tokenizer with none of the known pad tokens → safe default.
+    assert embed._resolve_pad_token(_FakeTokenizer(vocab={})) == ("</s>", 1)
+
+
+def test_configure_text_tokenizer_respects_embedded_padding():
+    # SigLIP 2's tokenizer.json already embeds Fixed:64 / <pad>=0 padding; we must
+    # NOT override it with the wrong </s> token. Just clamp truncation to the window.
+    tok = _FakeTokenizer(
+        padding={"length": 64, "pad_id": 0, "pad_token": "<pad>"},
+        vocab={"<pad>": 0, "<eos>": 1},
+    )
+    assert embed.configure_text_tokenizer(tok) == 64
+    assert tok.truncation_len == 64
+    assert tok.pad_kwargs is None  # left the embedded padding alone
+
+
+def test_configure_text_tokenizer_configures_when_unset():
+    # SigLIP 1's tokenizer ships without an embedded padding config → set it
+    # ourselves, padding right to the window with the resolved pad token.
+    tok = _FakeTokenizer(padding=None, vocab={"</s>": 1})
+    assert embed.configure_text_tokenizer(tok, pad_len=64) == 64
+    assert tok.truncation_len == 64
+    assert tok.pad_kwargs == {
+        "length": 64,
+        "pad_id": 1,
+        "pad_token": "</s>",
+        "direction": "right",
+    }

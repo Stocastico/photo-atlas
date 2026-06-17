@@ -113,25 +113,30 @@ def build(model: str, cache: Path, out: Path, *, text_file: str, pad_len: int) -
     import onnxruntime as ort  # noqa: PLC0415
     from tokenizers import Tokenizer  # noqa: PLC0415
 
+    from photo_atlas.embed import _select_output_name, configure_text_tokenizer  # noqa: PLC0415
+
     tok_path = _download(model, "tokenizer.json", cache)
     text_path = _download(model, f"onnx/{text_file}", cache)
 
     tok = Tokenizer.from_file(str(tok_path))
-    # SigLIP pads/truncates to a fixed 64-token window with the </s> token.
-    pad_id = tok.token_to_id("</s>")
-    pad_id = 1 if pad_id is None else pad_id
-    tok.enable_truncation(pad_len)
-    tok.enable_padding(length=pad_len, pad_id=pad_id, pad_token="</s>", direction="right")
+    # Pad/truncate to SigLIP's fixed window the same way the runtime text encoder
+    # does — honouring SigLIP 2's embedded Gemma <pad> config, configuring SigLIP
+    # 1's </s> ourselves — so the bundled label matrix lives in the same space as
+    # query embeddings. ``--pad-len`` is only a fallback for a config-less tokenizer.
+    configure_text_tokenizer(tok, pad_len)
 
     sess = ort.InferenceSession(str(text_path), providers=["CPUExecutionProvider"])
     in_name = sess.get_inputs()[0].name
+    out_name = _select_output_name(
+        [o.name for o in sess.get_outputs()], ("pooler_output", "text_embeds")
+    )
 
     labels = sorted(LABEL_PROMPTS)
     rows = []
     for label in labels:
         prompts = LABEL_PROMPTS[label]
         ids = np.array([tok.encode(p).ids for p in prompts], dtype=np.int64)
-        (pooled,) = sess.run(["pooler_output"], {in_name: ids})
+        (pooled,) = sess.run([out_name], {in_name: ids})
         vecs = pooled / np.linalg.norm(pooled, axis=1, keepdims=True)
         proto = vecs.mean(axis=0)
         proto = proto / np.linalg.norm(proto)
