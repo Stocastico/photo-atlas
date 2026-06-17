@@ -1,5 +1,13 @@
 # Model survey — upgrade options for the deep-learning stack
 
+> **Update (2026-06-17): three of the recommended swaps shipped as defaults.**
+> Scene+semantic → **SigLIP 2** base-patch16-256 (§3); face detection → **YuNet
+> 2026may** (§1); face recognition → **ArcFace R100** (glint360k, 512-d, §2),
+> aligned from YuNet landmarks. The legacy SFace recogniser stays selectable
+> (`--faces sface`). Remaining open: **SCRFD** detection (only if hard-face recall
+> proves the limiter) and **AdaFace** (low-quality faces). The survey below is kept
+> as the rationale + the evaluation method for any further swap.
+
 Investigation deliverable for the TODO item *"Investigate newer / better models
 everywhere a deep-learning net is used."* This is a **written comparison to inform
 a future swap**, not a code change. It deliberately makes no swap yet — each

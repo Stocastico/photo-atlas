@@ -1,5 +1,14 @@
 # Migration scope — SigLIP base → SigLIP 2 (scene tagging + semantic search)
 
+> **Status: SHIPPED (2026-06-17).** SigLIP 2 (`onnx-community/siglip2-base-patch16-256-ONNX`)
+> is now the default. All gaps resolved: Gap 3's tokenizer is auto-detected
+> (`embed.configure_text_tokenizer` reads the Gemma tokenizer's embedded `<pad>`/64
+> config), Gap 1's 256² input size is configured via `models.ensure_scene_input_size`
+> (the ONNX is dynamic-shaped), `data/scene_labels.npz` was rebuilt in the new space,
+> and the eval ran on a real-library sample. No stored-data migration was required
+> (the library hadn't been indexed). The runbook below is retained for reference /
+> a future variant swap (e.g. base-384 or large).
+
 Implementation-ready scope for the top TODO follow-up: swap the shared SigLIP
 vision/text tower (`classify.py` + `embed.py`) for **SigLIP 2**. SigLIP 2 is a
 drop-in *architecture* (same dual-encoder, same `onnxruntime`/NumPy/Pillow

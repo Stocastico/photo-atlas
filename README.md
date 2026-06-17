@@ -8,16 +8,17 @@ Point it at a folder (or 15 years of folders), let it build a catalog, then
 browse and filter your library and put names to faces. New imports are
 recognised automatically once a person has been named.
 
-![pipeline](https://img.shields.io/badge/faces-YuNet%20%2B%20SFace-4c8dff) ![offline](https://img.shields.io/badge/geocoding-offline-2ea043)
+![pipeline](https://img.shields.io/badge/faces-YuNet%20%2B%20ArcFace-4c8dff) ![offline](https://img.shields.io/badge/geocoding-offline-2ea043)
 
 ---
 
 ## Features
 
 - **Deep face recognition** — OpenCV's [YuNet](https://github.com/opencv/opencv_zoo)
-  detector + [SFace](https://github.com/opencv/opencv_zoo) 128-d embeddings.
-  On real photos same-person pairs sit at ~0.05 cosine distance and different
-  people at ~0.9, so identities separate cleanly.
+  detector + [ArcFace R100](https://github.com/deepinsight/insightface) 512-d
+  embeddings (glint360k). On real photos same-person pairs sit at ~0.03 cosine
+  distance and different people at ~1.0, so identities separate cleanly. (The
+  legacy 128-d SFace recogniser stays selectable with `--faces sface`.)
 - **Name people once** — unrecognised faces are grouped into clusters; name a
   cluster and every matching photo becomes filterable. Future imports are
   auto-recognised against the people you've named.
@@ -27,7 +28,7 @@ recognised automatically once a person has been named.
   filename — combined.
 - **Natural-language semantic search** — describe a photo in words ("kids on the
   beach at sunset", "my red car") and rank the library by visual similarity — no
-  tags, no folders. Each photo's [SigLIP](https://huggingface.co/Xenova/siglip-base-patch16-224)
+  tags, no folders. Each photo's [SigLIP 2](https://huggingface.co/onnx-community/siglip2-base-patch16-256-ONNX)
   image embedding is stored at index time and a free-text query is embedded into
   the same space at search time; the ✨ **Smart** toggle in the search bar switches
   it on, and it ANDs with every other filter.
@@ -38,7 +39,7 @@ recognised automatically once a person has been named.
   the rest (reversible) or **delete** them from disk (irreversible) in one click.
 - **Find more like this** — from the lightbox, page **visually similar** photos
   (cosine over the stored SigLIP image embeddings) or, per face, **other shots of
-  the same person** (cosine over the SFace face embeddings) — the latter works even
+  the same person** (cosine over the ArcFace face embeddings) — the latter works even
   for an *unnamed* face the person filter can't reach. Neither needs a model download.
 - **Memories, Trips & Favorites** — an "On this day" **Memories** tab, auto-detected
   **Trips** (split on capture-time gaps + GPS jumps), and a ★ **Favorites** star with
@@ -83,13 +84,15 @@ uv run pytest               # run the test suite
 versions in `uv.lock`. Plain `pip install -e .` still works for the runtime
 package if you prefer to manage your own environment.
 
-The YuNet + SFace ONNX weights (~38 MB) are downloaded on first use to
+The YuNet + ArcFace R100 ONNX weights (~260 MB) are downloaded on first use to
 `~/.photo_atlas/models`. For offline/air-gapped setups, point
-`PHOTO_ATLAS_YUNET` / `PHOTO_ATLAS_SFACE` at local model files.
+`PHOTO_ATLAS_YUNET` / `PHOTO_ATLAS_ARCFACE` at local model files (or
+`--faces sface` for the lighter ~38 MB YuNet + SFace pair, overridable via
+`PHOTO_ATLAS_SFACE`).
 
 ### Scene tagging
 
-Scenes are tagged **zero-shot** by a small **SigLIP** vision encoder (a modern
+Scenes are tagged **zero-shot** by a small **SigLIP 2** vision encoder (a modern
 CLIP successor that beats CLIP at zero-shot for its size) — no training, no
 PyTorch. It runs on every index automatically:
 
@@ -108,14 +111,15 @@ faces/thumbnails, so re-tag in place:
 photo-atlas retag-scenes   # recompute just the scene column
 ```
 
-Only SigLIP's *vision* tower runs at index time (a ~95 MB quantised ONNX,
-downloaded on first use via [ONNX Runtime](https://onnxruntime.ai/) — **no
-PyTorch**). The per-label *text* embeddings are pre-computed once and shipped as
-a tiny bundled matrix (`data/scene_labels.npz`), so there is no text encoder or
-tokenizer at runtime — just a dot product. To swap in a different / newer
-encoder (e.g. SigLIP 2 or MobileCLIP2), rebuild that matrix with
+Only SigLIP 2's *vision* tower runs at index time (a ~90 MB quantised ONNX at
+256² resolution, downloaded on first use via [ONNX Runtime](https://onnxruntime.ai/)
+— **no PyTorch**). The per-label *text* embeddings are pre-computed once and
+shipped as a tiny bundled matrix (`data/scene_labels.npz`), so there is no text
+encoder or tokenizer at runtime — just a dot product. To swap in a different /
+newer encoder (e.g. a larger SigLIP 2 or MobileCLIP2), rebuild that matrix with
 `scripts/build_scene_embeddings.py --model <hf-repo>` and point
-`PHOTO_ATLAS_SCENE_MODEL` at the matching vision ONNX.
+`PHOTO_ATLAS_SCENE_MODEL` at the matching vision ONNX (and
+`PHOTO_ATLAS_SCENE_INPUT_SIZE` if its resolution differs from 256).
 
 ### Semantic search
 
@@ -181,8 +185,10 @@ photo-atlas export-labels           # write person names to portable XMP sidecar
 `--recompute` to force), so an interrupted run resumes cleanly on the next invocation.
 Add `--prune` to reconcile in one step: drop rows for deleted/moved files and sweep
 orphaned thumbnail/preview/crop files (otherwise `photo-atlas prune` does the same on
-demand). Choose the face backend with `--faces {auto,yunet,dlib,synthetic,none}`
-(default `auto` → YuNet/SFace). Indexing fans out over worker processes
+demand). Choose the face backend with
+`--faces {auto,arcface,yunet,sface,dlib,synthetic,none}`
+(default `auto` → YuNet + ArcFace R100; `sface` for the legacy 128-d recogniser).
+Indexing fans out over worker processes
 (`--workers N`, default = CPU count; `--workers 1` for serial): each file is
 decoded once and face detection runs on a downscaled copy, while the single main
 process performs all database writes. Byte-identical duplicates (same photo in
@@ -213,9 +219,9 @@ Lightroom and Bridge. Originals are never modified.
 indexer ─┬─ metadata.py    EXIF date / camera / GPS  + thumbnails
          ├─ folder_meta.py year / month / place mined from folder names
          ├─ geocode.py     GPS → city, country (offline nearest-city)
-         ├─ faces.py      YuNet detect → SFace embed → DBSCAN cluster
-         ├─ classify.py   scene tag (SigLIP zero-shot)
-         ├─ embed.py      SigLIP image/text embeddings for semantic search
+         ├─ faces.py      YuNet detect → ArcFace embed → DBSCAN cluster
+         ├─ classify.py   scene tag (SigLIP 2 zero-shot)
+         ├─ embed.py      SigLIP 2 image/text embeddings for semantic search
          └─ db.py         SQLite catalog (photos / persons / faces)
 
 api.py (FastAPI)  →  web/  (gallery · filters · people · name-faces · ✨ smart search)
@@ -263,7 +269,7 @@ requests; see `_same_origin_writes` in `api.py`.
 
 ```bash
 uv run pytest                            # offline suite (deterministic, no network)
-uv run pytest tests/test_deep_faces.py   # deep YuNet/SFace test on real faces*
+uv run pytest tests/test_deep_faces.py   # deep YuNet/ArcFace test on real faces*
 ```
 
 The offline suite is deterministic, runs on every push/PR via GitHub Actions
@@ -277,18 +283,19 @@ different people, and that clustering groups repeat photos of one identity.
 ## Notes
 
 - Built and verified against `opencv-python 4.11–4.13`, which ships the DNN face
-  module (`FaceDetectorYN` / `FaceRecognizerSF`). The code targets `opencv>=4.10`
-  and is forward compatible.
+  module (`FaceDetectorYN`; `FaceRecognizerSF` for the legacy `sface` backend).
+  The code targets `opencv>=4.10` and is forward compatible. ArcFace recognition
+  runs on ONNX Runtime, so it needs no OpenCV recognition module.
 - **OpenCV 5 (as of June 2026):** still not released on PyPI — 4.13.0 (Dec 2025)
   is the latest published wheel and the 5.0 milestone is feature-complete but
   unreleased. When 5.0 lands it keeps the same `FaceDetectorYN`/`FaceRecognizerSF`
-  API, so no code change is expected; the YuNet/SFace zoo weights are unchanged.
-  Note: `opencv-python-headless` dropped macOS-13 Intel wheels at 4.13 (see the
-  uv constraint in `pyproject.toml`).
-- **Higher-accuracy embeddings.** SFace is 128-d and fast but modest by 2025
-  standards. The strongest easy-to-use upgrade is [InsightFace](https://github.com/deepinsight/insightface)'s
-  `buffalo_l` pack (ArcFace `w600k_r50`, 512-d, ~99.85 % LFW vs SFace's ~99.6 %),
-  which runs via ONNX Runtime with no dlib/CMake build. It would slot in as a new
-  `FaceBackend` (detection via its SCRFD + 512-d embeddings); `face_match_threshold`
-  / `cluster_eps` would need re-tuning for the new embedding space. Ask if you'd
-  like this wired in as an optional `[insightface]` extra.
+  API, so no code change is expected; the YuNet zoo weights are unchanged.
+  Note: `opencv-python-headless` and `onnxruntime` both dropped macOS-13 Intel
+  wheels (at 4.13 / 1.24 respectively) — see the uv constraints in `pyproject.toml`.
+- **Recognition backbone.** The default is [ArcFace R100](https://github.com/deepinsight/insightface)
+  (glint360k, 512-d) via the InsightFace antelopev2 ONNX, aligned with YuNet's
+  landmarks to ArcFace's 112² template. It separates identities better than the
+  legacy 128-d SFace (~0.03 vs ~0.05 same-person; ~1.0 vs ~0.9 different) and runs
+  on ONNX Runtime with no dlib/CMake build. SFace stays available via
+  `--faces sface`. A still-stronger detector (SCRFD) is the next option if hard-face
+  *recall* ever proves the bottleneck — see [`MODELS.md`](MODELS.md).
