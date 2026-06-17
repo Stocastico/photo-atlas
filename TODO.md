@@ -567,3 +567,58 @@ re-index, decode-once + EXIF-transpose-once, worker picklability/per-file isolat
 model-prefetch race, phash always computed. Deferred low-priority hardening (single-user
 loopback impact): write-guard `Origin`/`Host` port normalisation, cache `threading.Lock`,
 `_text_encoder` retry-after-transient-failure.
+
+## When connected to the real collection (queued 2026-06-17)
+
+Work that needs the actual library in hand (real filenames, real volume, real
+hardware) to design and benchmark. None of it is started.
+
+- [ ] **GPU / hardware-accelerated inference (ONNX Runtime execution providers).**
+  Today the stack is **CPU-only**: the dependency is plain `onnxruntime` (CPU EP only)
+  *and* every `ort.InferenceSession(...)` in `embed.py`/`faces.py`/`classify.py` is built
+  with default providers, so it wouldn't use a GPU even if one were installed. The three
+  nets in the index hot loop (YuNet detect, ArcFace embed, SigLIP vision encode) are
+  exactly what a GPU accelerates and they dominate per-image time, so this is a real win —
+  but decode/EXIF/thumbnail/hash/SQLite stay on CPU, and the current `ProcessPoolExecutor`
+  fan-out means N workers would contend for one GPU. Plan:
+  1. Request providers behind an env flag (e.g. `PHOTO_ATLAS_ORT_PROVIDERS`) with a CPU
+     fallback: `InferenceSession(path, providers=[...])`.
+  2. **macOS (likely the indexing host — see filesystem note below):** CoreML EP
+     (`CoreMLExecutionProvider`, in the standard macOS arm64 wheel) routes to the GPU /
+     Apple Neural Engine on Apple Silicon. This is probably the highest-value target.
+  3. **Windows:** `onnxruntime-directml` (DirectML EP — any vendor GPU, no CUDA toolchain)
+     or `onnxruntime-gpu` (CUDA, NVIDIA only).
+  4. Bigger structural change for real GPU throughput: **batch inference through one
+     session** instead of per-image calls across many processes (GPU launch overhead eats
+     small batches; a single batched session beats ProcessPool GPU contention).
+  - **Effort: medium** (EP wiring is small; batching + benchmarking is the real work).
+    **Risk: medium** (op-coverage fallbacks on CoreML/DirectML; CPU parity must be kept).
+  - ⚠️ **Filesystem caveat:** the collection lives on a **macOS-native volume**
+    (APFS/HFS+). Indexing on Windows would need third-party APFS drivers (Paragon/MacDrive)
+    to even read it, so the realistic host is a Mac → **CoreML, not DirectML**, is the EP
+    to prioritise. (Indexing is also I/O-bound on an external disk; measure disk read
+    throughput before assuming compute is the bottleneck.)
+
+- [ ] **Mine capture dates from filenames (a new `taken_source='filename'`).** Across 15
+  years, phones/cameras stamp the date into the filename in many formats —
+  `IMG_20180704_153012.jpg`, `2018-07-04 15.30.12.jpg`, `PXL_20210101_010101123.jpg`
+  (Pixel), `Screenshot_20200101-...`, `VID_...`, `IMG-20180101-WA0001.jpg` (WhatsApp),
+  `Signal-2019-...`, bare `DSC_0001`/`IMG_1234` (no date) — and EXIF is often missing on
+  edited/exported/messaging-app copies. Today `metadata` resolves `taken_at` as
+  `exif → folder → mtime`; a filename parser slots in as a higher-confidence source than
+  folder/mtime. Plan:
+  1. **Analysis first** (what the user asked for): a CLI/offline tool that samples the
+     library's filenames, clusters them into format families, and reports each pattern's
+     frequency + coverage + a few examples — so the parser set is driven by what's
+     *actually* present, not guesswork.
+  2. Implement a small, ordered registry of dated-filename regexes (pure + unit-testable
+     offline), validate the parsed datetime is sane (range-checked, not a resolution like
+     `1920x1080` or a counter), and wire it into the `taken_at` resolution chain as
+     `taken_source='filename'`, ranked between `exif` and `folder`.
+  - **Effort: low–medium.** **Risk: low** (additive source; guard against false positives
+    like dimensions/IDs masquerading as dates).
+
+- [ ] **Folder-structure / file-naming conventions.** (Previously noted.) Mine
+  organisational patterns from the real tree — date-named folders, event/trip folders,
+  `YYYY/MM` hierarchies, camera-dump dirs — to enrich place/trip/date inference. Needs the
+  real collection to design against.
