@@ -656,7 +656,14 @@ def _index_parallel(
 
     # Make sure the ONNX weights are present before fanning out, so N workers
     # don't race to download the same files into the shared model cache.
-    if backend_name in ("auto", "yunet"):
+    if backend_name in ("auto", "yunet", "arcface"):
+        try:
+            from .models import ensure_arcface_models
+
+            ensure_arcface_models(config.models_dir, download=True)
+        except Exception:  # pragma: no cover - worker surfaces a clearer error
+            pass
+    elif backend_name == "sface":
         try:
             from .models import ensure_models
 

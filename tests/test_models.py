@@ -11,6 +11,19 @@ def test_yunet_default_is_latest_zoo_revision():
     assert models.YUNET_NAME in models.YUNET_URL
 
 
+def test_arcface_default_recognition_model():
+    # Face recognition default is ArcFace R100 (glint360k, 512-d).
+    assert "arcface" in models.ARCFACE_NAME.lower()
+    assert models.ARCFACE_NAME in models.ARCFACE_URL or "recognition" in models.ARCFACE_URL
+
+
+def test_ensure_arcface_env_override(tmp_path, monkeypatch):
+    local = tmp_path / "my_arcface.onnx"
+    local.write_bytes(b"x")
+    monkeypatch.setenv("PHOTO_ATLAS_ARCFACE", str(local))
+    assert models.ensure_arcface(tmp_path, download=False) == local
+
+
 def test_scene_defaults_are_siglip2():
     # The shipped default scene/semantic stack is SigLIP 2 (base patch16-256).
     assert "siglip2" in models.SCENE_NAME

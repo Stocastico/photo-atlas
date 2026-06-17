@@ -1,9 +1,9 @@
-"""Integration test for the deep YuNet + SFace face pipeline.
+"""Integration test for the deep YuNet + ArcFace face pipeline.
 
 This is the "does the real model actually distinguish people" test. It needs:
 
-* OpenCV with the DNN face module (``FaceDetectorYN`` / ``FaceRecognizerSF``),
-* the YuNet + SFace ONNX weights (downloaded to a cache), and
+* OpenCV with the DNN face module (``FaceDetectorYN``) + ``onnxruntime``,
+* the YuNet + ArcFace R100 ONNX weights (downloaded to a cache), and
 * a couple of real face photos (fetched from the public ``face_recognition``
   examples on GitHub).
 
@@ -19,8 +19,9 @@ from pathlib import Path
 import pytest
 
 cv2 = pytest.importorskip("cv2")
+pytest.importorskip("onnxruntime")
 
-if not (hasattr(cv2, "FaceDetectorYN") and hasattr(cv2, "FaceRecognizerSF")):
+if not hasattr(cv2, "FaceDetectorYN"):
     pytest.skip("OpenCV DNN face module unavailable", allow_module_level=True)
 
 FACE_BASE = "https://github.com/ageitgey/face_recognition/raw/master/examples"
@@ -42,8 +43,8 @@ def deep_backend(tmp_path_factory):
 
     cache = tmp_path_factory.mktemp("deep")
     try:
-        models.ensure_models(cache, download=True)
-        backend = faces.YuNetSFaceBackend(model_dir=cache)
+        models.ensure_arcface_models(cache, download=True)
+        backend = faces.YuNetArcFaceBackend(model_dir=cache)
     except Exception as exc:  # network / model issues -> skip, not fail
         pytest.skip(f"deep face models unavailable: {exc}")
     return backend, cache
@@ -67,11 +68,11 @@ def test_yunet_detects_single_face(deep_backend, sample_faces):
     backend, _ = deep_backend
     obs = backend.detect(sample_faces["obama.jpg"])
     assert len(obs) == 1
-    assert obs[0].embedding.shape[0] == 128
+    assert obs[0].embedding.shape[0] == 512  # ArcFace R100
     assert obs[0].confidence > 0.85
 
 
-def test_sface_separates_identities(deep_backend, sample_faces):
+def test_arcface_separates_identities(deep_backend, sample_faces):
     from photo_atlas.faces import cosine_distance
 
     backend, _ = deep_backend

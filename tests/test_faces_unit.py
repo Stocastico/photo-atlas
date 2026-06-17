@@ -157,6 +157,35 @@ def test_get_backend_none_and_synthetic():
     assert isinstance(backend, faces.SyntheticFaceBackend)
 
 
+# -- ArcFace recognition (SFace -> ArcFace R100, 512-d) --------------------
+
+
+def test_arcface_template_scales_with_size():
+    base = faces.arcface_template(112)
+    assert base.shape == (5, 2) and base.dtype == np.float32
+    # The canonical 112² ArcFace 5-point template (eyes/nose/mouth corners).
+    assert np.allclose(base[0], [38.2946, 51.6963], atol=1e-3)
+    # A larger crop scales the template linearly (so alignment stays consistent).
+    assert np.allclose(faces.arcface_template(224), base * 2.0)
+
+
+def test_arcface_preprocess_shape_normalisation_and_channel_swap():
+    # White -> (255-127.5)/127.5 == 1.0; black -> -1.0 (ArcFace's [-1, 1] range).
+    white = faces.arcface_preprocess(np.full((112, 112, 3), 255, dtype=np.uint8))
+    assert white.shape == (1, 3, 112, 112) and white.dtype == np.float32
+    assert np.allclose(white, 1.0, atol=1e-5)
+    black = faces.arcface_preprocess(np.zeros((112, 112, 3), dtype=np.uint8))
+    assert np.allclose(black, -1.0, atol=1e-5)
+
+    # ArcFace expects RGB; the aligned crop arrives BGR (OpenCV), so channels must
+    # be swapped. A pure-red-in-BGR pixel (R in index 2) must land in output ch 0.
+    bgr = np.zeros((112, 112, 3), dtype=np.uint8)
+    bgr[..., 2] = 200  # red in BGR layout
+    out = faces.arcface_preprocess(bgr)
+    assert np.allclose(out[0, 0], (200 - 127.5) / 127.5, atol=1e-5)  # R channel first
+    assert np.allclose(out[0, 2], -1.0, atol=1e-5)  # B channel empty
+
+
 def test_synthetic_backend_detects_demo_faces(tmp_path):
     from photo_atlas import demo
 

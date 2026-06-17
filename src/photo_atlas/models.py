@@ -23,6 +23,16 @@ SFACE_NAME = "face_recognition_sface_2021dec.onnx"
 YUNET_URL = f"{ZOO}/face_detection_yunet/{YUNET_NAME}"
 SFACE_URL = f"{ZOO}/face_recognition_sface/{SFACE_NAME}"
 
+# Face recognition default: **ArcFace R100** (glint360k, 512-d) — the InsightFace
+# antelopev2 recognition tower, mirrored as a standalone ONNX by the immich
+# project. Stronger verification accuracy than SFace (sharper "same person across
+# 15 years"); it pairs with YuNet detection via a 5-point similarity alignment to
+# ArcFace's canonical 112² template (see faces.YuNetArcFaceBackend). The 512-d
+# embedding is stored per-row (faces.dim), so no schema change is needed. Override
+# with ``PHOTO_ATLAS_ARCFACE`` for an offline / swapped-in recogniser.
+ARCFACE_NAME = "arcface_glint360k_r100.onnx"
+ARCFACE_URL = "https://huggingface.co/immich-app/antelopev2/resolve/main/recognition/model.onnx"
+
 # Zero-shot scene tagging: the SigLIP 2 *vision* encoder, exported to ONNX and
 # quantised (~90 MB) by the onnx-community project. Only the vision tower runs at
 # index time; the matching text (label) embeddings are pre-baked into the bundled
@@ -88,13 +98,35 @@ def _resolve(name: str, url: str, model_dir: Path, env: str, download: bool) -> 
     return dest
 
 
+def ensure_yunet(model_dir: Path, download: bool = True) -> Path:
+    """Return the YuNet detector ONNX path, downloading it if needed."""
+
+    return _resolve(YUNET_NAME, YUNET_URL, Path(model_dir), "PHOTO_ATLAS_YUNET", download)
+
+
+def ensure_arcface(model_dir: Path, download: bool = True) -> Path:
+    """Return the ArcFace R100 recognition ONNX path, downloading it if needed.
+
+    Override with ``PHOTO_ATLAS_ARCFACE`` for an offline / swapped-in recogniser.
+    """
+
+    return _resolve(ARCFACE_NAME, ARCFACE_URL, Path(model_dir), "PHOTO_ATLAS_ARCFACE", download)
+
+
 def ensure_models(model_dir: Path, download: bool = True) -> tuple[Path, Path]:
-    """Return ``(yunet_path, sface_path)``, downloading them if needed."""
+    """Return ``(yunet_path, sface_path)`` for the legacy SFace backend."""
 
     model_dir = Path(model_dir)
-    yunet = _resolve(YUNET_NAME, YUNET_URL, model_dir, "PHOTO_ATLAS_YUNET", download)
+    yunet = ensure_yunet(model_dir, download)
     sface = _resolve(SFACE_NAME, SFACE_URL, model_dir, "PHOTO_ATLAS_SFACE", download)
     return yunet, sface
+
+
+def ensure_arcface_models(model_dir: Path, download: bool = True) -> tuple[Path, Path]:
+    """Return ``(yunet_path, arcface_path)`` for the default YuNet+ArcFace backend."""
+
+    model_dir = Path(model_dir)
+    return ensure_yunet(model_dir, download), ensure_arcface(model_dir, download)
 
 
 def ensure_scene_model(model_dir: Path, download: bool = True) -> Path:

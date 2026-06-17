@@ -263,8 +263,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_index = sub.add_parser("index", help="Index a directory of photos")
     p_index.add_argument("path", help="Directory (or file) to index")
     p_index.add_argument("--faces", default="auto",
-                         choices=["auto", "yunet", "dlib", "synthetic", "none"],
-                         help="Face detection backend (yunet = deep YuNet+SFace)")
+                         choices=["auto", "arcface", "yunet", "sface", "dlib", "synthetic", "none"],
+                         help="Face backend (auto/arcface = YuNet+ArcFace R100; sface = legacy)")
     p_index.add_argument("--no-geocode", action="store_true", help="Skip reverse geocoding")
     p_index.add_argument("--recompute", action="store_true", help="Re-index already known photos")
     p_index.add_argument(
