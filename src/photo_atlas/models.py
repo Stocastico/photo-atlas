@@ -23,29 +23,30 @@ SFACE_NAME = "face_recognition_sface_2021dec.onnx"
 YUNET_URL = f"{ZOO}/face_detection_yunet/{YUNET_NAME}"
 SFACE_URL = f"{ZOO}/face_recognition_sface/{SFACE_NAME}"
 
-# Zero-shot scene tagging (opt-in): the SigLIP *vision* encoder, exported to
-# ONNX and quantised (~95 MB) by the transformers.js project. Only the vision
-# tower runs at index time; the matching text (label) embeddings are pre-baked
-# into the bundled ``data/scene_labels.npz`` (see scripts/build_scene_embeddings.py).
-SCENE_NAME = "siglip_base_patch16_224_vision_quantized.onnx"
-SCENE_URL = (
-    "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/main/"
-    "onnx/vision_model_quantized.onnx"
-)
+# Zero-shot scene tagging: the SigLIP 2 *vision* encoder, exported to ONNX and
+# quantised (~90 MB) by the onnx-community project. Only the vision tower runs at
+# index time; the matching text (label) embeddings are pre-baked into the bundled
+# ``data/scene_labels.npz`` (see scripts/build_scene_embeddings.py). SigLIP 2 is a
+# drop-in architecture upgrade over the original SigLIP base — same dual-encoder /
+# 768-dim space, strictly better zero-shot + retrieval (see SIGLIP2_MIGRATION.md).
+SCENE_HF_REPO = "onnx-community/siglip2-base-patch16-256-ONNX"
+SCENE_NAME = "siglip2_base_patch16_256_vision_quantized.onnx"
+SCENE_URL = f"https://huggingface.co/{SCENE_HF_REPO}/resolve/main/onnx/vision_model_quantized.onnx"
+#: SigLIP 2's vision ONNX advertises a fully *dynamic* input shape but is trained
+#: at a fixed resolution (256² for base-patch16-256), so it can't be auto-detected
+#: from the model and must be configured. Override for a 384/512 variant via
+#: ``PHOTO_ATLAS_SCENE_INPUT_SIZE``.
+SCENE_INPUT_SIZE = 256
 
 # Semantic search additionally needs the matching SigLIP *text* tower + tokenizer
 # to embed a free-text query at runtime (the scene-label text embeddings are
 # pre-baked, but an arbitrary query can't be). Same model/space as the vision
-# tower above so image and text embeddings are comparable.
-SCENE_TEXT_NAME = "siglip_base_patch16_224_text_quantized.onnx"
-SCENE_TEXT_URL = (
-    "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/main/"
-    "onnx/text_model_quantized.onnx"
-)
-SCENE_TOKENIZER_NAME = "siglip_base_patch16_224_tokenizer.json"
-SCENE_TOKENIZER_URL = (
-    "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/main/tokenizer.json"
-)
+# tower above so image and text embeddings are comparable. SigLIP 2's text tower
+# uses the Gemma tokenizer (~33 MB) — the encoder reads its embedded pad config.
+SCENE_TEXT_NAME = "siglip2_base_patch16_256_text_quantized.onnx"
+SCENE_TEXT_URL = f"https://huggingface.co/{SCENE_HF_REPO}/resolve/main/onnx/text_model_quantized.onnx"
+SCENE_TOKENIZER_NAME = "siglip2_base_patch16_256_tokenizer.json"
+SCENE_TOKENIZER_URL = f"https://huggingface.co/{SCENE_HF_REPO}/resolve/main/tokenizer.json"
 
 # A sanity floor: the face weights are far larger (YuNet ~230 KB, SFace ~37 MB)
 # and the scene vision tower ~95 MB, so anything tiny is a truncated download or
@@ -105,6 +106,19 @@ def ensure_scene_model(model_dir: Path, download: bool = True) -> Path:
     """
 
     return _resolve(SCENE_NAME, SCENE_URL, Path(model_dir), "PHOTO_ATLAS_SCENE_MODEL", download)
+
+
+def ensure_scene_input_size() -> int:
+    """Return the vision encoder's expected square input resolution.
+
+    Defaults to :data:`SCENE_INPUT_SIZE` (256 for SigLIP 2 base-patch16-256) and is
+    overridable via ``PHOTO_ATLAS_SCENE_INPUT_SIZE`` to match a swapped-in higher-
+    resolution variant (e.g. 384/512), since SigLIP 2's ONNX advertises a dynamic
+    shape that can't be probed for the trained resolution.
+    """
+
+    override = os.environ.get("PHOTO_ATLAS_SCENE_INPUT_SIZE")
+    return int(override) if override else SCENE_INPUT_SIZE
 
 
 def ensure_scene_text_model(model_dir: Path, download: bool = True) -> Path:

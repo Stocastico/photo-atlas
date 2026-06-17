@@ -131,6 +131,20 @@ def _input_size_from_shape(shape: object, default: int = _IMAGE_SIZE) -> int:
     return int(last) if isinstance(last, int) and last > 0 else default
 
 
+def _resolve_image_size(explicit: int | None, shape: object, default: int = _IMAGE_SIZE) -> int:
+    """Pick the vision input resolution: explicit config > static shape > default.
+
+    An explicitly configured size always wins — SigLIP 2's vision ONNX advertises a
+    fully *dynamic* shape yet only accepts its trained resolution (256), which can't
+    be recovered from the model — while a model that *does* report a static spatial
+    dim (base SigLIP's 224) still self-describes when no size is forced.
+    """
+
+    if explicit:
+        return int(explicit)
+    return _input_size_from_shape(shape, default)
+
+
 def preprocess_image(img: Image.Image, size: int = _IMAGE_SIZE) -> np.ndarray:
     """Turn an open image into a SigLIP ``(1, 3, size, size)`` float32 blob.
 
@@ -147,7 +161,13 @@ def preprocess_image(img: Image.Image, size: int = _IMAGE_SIZE) -> np.ndarray:
 class SigLipImageEncoder:
     """SigLIP vision encoder: an open image -> a unit-norm embedding."""
 
-    def __init__(self, model_path: Path | str):
+    def __init__(
+        self,
+        model_path: Path | str,
+        *,
+        image_size: int | None = None,
+        default_size: int = _IMAGE_SIZE,
+    ):
         import onnxruntime as ort  # noqa: PLC0415
 
         self._session = ort.InferenceSession(
@@ -155,18 +175,22 @@ class SigLipImageEncoder:
         )
         inp = self._session.get_inputs()[0]
         self._input = inp.name
-        # Auto-detect the model's input resolution (224 for base SigLIP, 256/384 for
-        # SigLIP 2 variants), so a model swap stays a config change, not a code edit.
-        self._image_size = _input_size_from_shape(inp.shape)
+        # Resolve the input resolution: an explicit/configured size wins, else a
+        # static model shape (base SigLIP's 224), else ``default_size``. SigLIP 2's
+        # ONNX is dynamic-shaped, so its 256 comes from the configured default.
+        self._image_size = _resolve_image_size(image_size, inp.shape, default_size)
         self._output = _select_output_name(
             [o.name for o in self._session.get_outputs()], ("pooler_output", "image_embeds")
         )
 
     @classmethod
     def from_config(cls, config: AtlasConfig) -> SigLipImageEncoder:
-        from .models import ensure_scene_model  # noqa: PLC0415
+        from .models import ensure_scene_input_size, ensure_scene_model  # noqa: PLC0415
 
-        return cls(ensure_scene_model(config.models_dir, download=True))
+        return cls(
+            ensure_scene_model(config.models_dir, download=True),
+            default_size=ensure_scene_input_size(),
+        )
 
     def embed_image(self, img: Image.Image) -> np.ndarray:
         """Embed an already-open image (the indexer's decode-once path)."""

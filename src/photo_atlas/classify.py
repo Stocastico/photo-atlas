@@ -147,7 +147,9 @@ class ZeroShotSceneTagger:
         if encoder is None:
             if model_path is None:
                 raise ValueError("ZeroShotSceneTagger needs a model_path or an encoder")
-            encoder = SigLipImageEncoder(model_path)
+            from .models import ensure_scene_input_size  # noqa: PLC0415
+
+            encoder = SigLipImageEncoder(model_path, default_size=ensure_scene_input_size())
         self.encoder = encoder
         if label_path is None:
             label_path = scene_labels_path()

@@ -68,6 +68,21 @@ def test_input_size_from_shape_falls_back_on_dynamic_or_bad():
     assert embed._input_size_from_shape(None) == 224
 
 
+def test_resolve_image_size_explicit_wins():
+    # An explicit configured size beats anything the model shape reports — needed
+    # because SigLIP 2's vision ONNX advertises a fully dynamic input shape yet
+    # only accepts its trained resolution (256).
+    assert embed._resolve_image_size(256, ["b", 3, "h", "w"], default=224) == 256
+    assert embed._resolve_image_size(256, [1, 3, 384, 384], default=224) == 256
+
+
+def test_resolve_image_size_uses_static_shape_then_default():
+    # No explicit size: a static spatial dim wins; a dynamic one falls to default.
+    assert embed._resolve_image_size(None, [1, 3, 224, 224], default=256) == 224
+    assert embed._resolve_image_size(None, ["b", 3, "h", "w"], default=256) == 256
+    assert embed._resolve_image_size(0, ["b", 3, "h", "w"], default=256) == 256
+
+
 def test_select_output_name_prefers_known_names():
     # The current SigLIP export exposes pooler_output alongside last_hidden_state;
     # a SigLIP 2 export may instead name the pooled output image_embeds/text_embeds.
