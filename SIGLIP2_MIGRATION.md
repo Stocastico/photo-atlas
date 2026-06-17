@@ -46,15 +46,15 @@ re-embedding (because the *space* changed even though the dim didn't).
 dynamic/unknown shapes). The vision-side swap is now genuinely config-only.
 *Covered by `tests/test_embed_unit.py`.*
 
-### Gap 2 — Output tensor name is hardcoded `"pooler_output"`
-Both encoders call `session.run(["pooler_output"], …)`. Other exports (incl. some
+### Gap 2 — Output tensor name was hardcoded `"pooler_output"` → **fixed in this branch**
+Both encoders called `session.run(["pooler_output"], …)`. Other exports (incl. some
 `onnx-community` SigLIP 2 ONNX) name the pooled output differently (e.g.
-`image_embeds` / `text_embeds`). **Action:** resolve the output by trying a small
-preference list (`pooler_output`, `image_embeds`/`text_embeds`) and falling back to
-the session's single output, stored once in `__init__`. Low risk, ~10 lines each in
-`SigLipImageEncoder`/`SigLipTextEncoder`; add a pure helper + unit test (fake
-output-meta list) like Gap 1. **Do this before the first live run** — it's the most
-likely "swap doesn't work out of the box" failure.
+`image_embeds` / `text_embeds`). Now `embed._select_output_name` resolves the output
+from a preference list (`pooler_output` then `image_embeds`/`text_embeds`), falls back
+to a sole output, and raises a clear error rather than guessing among several
+unrecognised outputs; both encoders store the resolved name once in `__init__`.
+Adding a new model's output name is a one-line `prefer`-tuple edit. *Covered by
+`tests/test_embed_unit.py`.*
 
 ### Gap 3 — Text tokenizer assumptions (SentencePiece `</s>`, pad 64)
 `embed.SigLipTextEncoder` and `build_scene_embeddings.py` both hardcode SigLIP 1's
@@ -68,17 +68,21 @@ SigLIP 2 export keeps a SigLIP-style tokenizer, this may be a no-op — **verify
 assume.** This only affects *query-time* text + the offline matrix build, not stored
 data.
 
-### Gap 4 — Silent scene-label / image-embedding space mismatch
-The `.npz` already records `model` and `embed_dim`, but `classify.py` ignores them.
+### Gap 4 — Silent scene-label / image-embedding space mismatch → **partly fixed in this branch**
+The `.npz` already records `model` and `embed_dim`, but `classify.py` ignored them.
 If someone swaps the vision model and forgets to rebuild `scene_labels.npz`:
-- **dim changed** → `matrix @ vec` raises an opaque numpy shape error (loud, but
-  cryptic).
-- **dim unchanged (e.g. base-256, still 768)** → **no error, silently wrong tags**,
-  because the image is in the new space and the labels in the old one.
+- **dim changed** → now caught: `classify_embedding` checks the image-embedding dim
+  against the label-matrix dim and raises an **actionable** error ("rebuild
+  data/scene_labels.npz … with scripts/build_scene_embeddings.py") instead of an
+  opaque numpy matmul error. `ZeroShotSceneTagger` also exposes `label_model` /
+  `label_dim` (read from the `.npz`) so the matrix's provenance is diagnosable.
+- **dim unchanged (e.g. base-256, still 768)** → **still a residual risk**: the dim
+  check can't distinguish two same-dim spaces. Mitigation: the runbook always rebuilds
+  the matrix, and `label_model` records which model the bundled matrix was built for.
+  A fuller guard (persist the active model id alongside embeddings and compare) is a
+  possible follow-up if same-dim swaps become common.
 
-**Action:** on tagger load, compare the `.npz` `embed_dim` to the encoder's output
-dim (known after the first inference) and warn/raise on mismatch; surface the `.npz`
-`model` field in a one-line log so a stale matrix is diagnosable. Cheap insurance.
+*Covered by `tests/test_scene_zeroshot.py`.*
 
 ### Gap 5 — Re-embed migration + cache invalidation
 Semantic search compares within one space, so after the swap **every stored image
@@ -145,9 +149,9 @@ old space. Because everything is env/file driven, rollback is symmetric with the
 | Piece | Effort | Risk |
 | --- | --- | --- |
 | Gap 1 (input size) | **done** | none |
-| Gap 2 (output name) | ~½ day | low |
+| Gap 2 (output name) | **done** | low |
 | Gap 3 (tokenizer verify/param) | ~½–1 day | **medium** (Gemma tokenizer) |
-| Gap 4 (mismatch guard) | ~½ day | low |
+| Gap 4 (dim mismatch guard) | **done** (same-dim case residual) | low |
 | Gap 5 (re-embed + cache note) | runbook only (+~½ day if improving the signature) | low |
 | Eval harness + A/B run | ~1 day | medium (needs a real labelled slice) |
 

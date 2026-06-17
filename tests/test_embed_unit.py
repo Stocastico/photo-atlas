@@ -8,6 +8,7 @@ match the bundled label matrix), so they're tested directly here.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from photo_atlas import embed
@@ -65,3 +66,29 @@ def test_input_size_from_shape_falls_back_on_dynamic_or_bad():
     assert embed._input_size_from_shape([1, 3, 0, 0]) == 224
     assert embed._input_size_from_shape([]) == 224
     assert embed._input_size_from_shape(None) == 224
+
+
+def test_select_output_name_prefers_known_names():
+    # The current SigLIP export exposes pooler_output alongside last_hidden_state;
+    # a SigLIP 2 export may instead name the pooled output image_embeds/text_embeds.
+    assert embed._select_output_name(
+        ["last_hidden_state", "pooler_output"], ("pooler_output", "image_embeds")
+    ) == "pooler_output"
+    assert embed._select_output_name(
+        ["last_hidden_state", "image_embeds"], ("pooler_output", "image_embeds")
+    ) == "image_embeds"
+    # Preference order wins when several preferred names are present.
+    assert embed._select_output_name(
+        ["text_embeds", "pooler_output"], ("pooler_output", "text_embeds")
+    ) == "pooler_output"
+
+
+def test_select_output_name_falls_back_to_sole_output():
+    # No preferred name, but a single output is unambiguous → use it.
+    assert embed._select_output_name(["embeds"], ("pooler_output", "image_embeds")) == "embeds"
+
+
+def test_select_output_name_raises_when_ambiguous():
+    # No preferred name and several outputs → refuse to guess (clear failure).
+    with pytest.raises(ValueError, match="output"):
+        embed._select_output_name(["a", "b"], ("pooler_output",))

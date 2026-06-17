@@ -464,7 +464,10 @@ the next slice is easy to pick. Ordered by value-per-effort.
   **Effort: medium** (~2–3 days + a real A/B eval). **Risk: medium** — the SigLIP 2
   text tower may use the Gemma tokenizer (the hardcoded `</s>`/pad-64 assumption needs
   verifying). **Fully scoped in [`SIGLIP2_MIGRATION.md`](SIGLIP2_MIGRATION.md)**; the
-  vision input-size auto-detect enabling refactor is already merged on that branch.
+  offline enabling refactors are already merged — Gap 1 (vision input-size auto-detect),
+  Gap 2 (output-tensor-name resolution) and Gap 4 (dim-mismatch guard). Remaining before
+  a swap: verify the tokenizer (Gap 3), run the A/B eval, rebuild `scene_labels.npz` +
+  re-embed.
 - [ ] **YuNet → latest Zoo revision.** **Upside: low–medium** (possibly-free face-recall
   gain). **Effort: trivial** (bump the `.onnx` name/URL in `models.py`, same
   `FaceDetectorYN` API). **Risk: very low.** Gate on a quick recall A/B. See

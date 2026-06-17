@@ -163,6 +163,25 @@ def test_zeroshot_requires_model_or_encoder():
         ZeroShotSceneTagger()
 
 
+# -- Gap 4: scene-label / image-embedding space-mismatch guard -----------------
+def test_classify_embedding_rejects_dim_mismatch():
+    # A label matrix of width 5 vs a 4-d image embedding means the bundled
+    # scene_labels.npz wasn't rebuilt after a model/dim change. That must fail
+    # loudly (with an actionable message), not silently mis-tag every photo.
+    wrong_dim = np.zeros(4, dtype=np.float32)
+    with pytest.raises(ValueError, match="rebuild"):
+        classify_embedding(wrong_dim, MATRIX, LABELS, temperature=50.0, other_bias=-0.02)
+
+
+def test_tagger_exposes_label_space_metadata():
+    # The tagger surfaces which model/space the bundled matrix was built for, so a
+    # stale matrix is diagnosable.
+    labels, matrix = _bundled_matrix()
+    tagger = ZeroShotSceneTagger(encoder=_StubEncoder(matrix[0]))
+    assert tagger.label_dim == matrix.shape[1]
+    assert isinstance(tagger.label_model, str) and tagger.label_model
+
+
 # -- optional live round trip (needs onnxruntime + a local SigLIP vision ONNX) --
 _MODEL = os.environ.get("PHOTO_ATLAS_SCENE_MODEL")
 
