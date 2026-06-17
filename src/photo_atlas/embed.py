@@ -51,6 +51,29 @@ def l2_normalize(vec: np.ndarray) -> np.ndarray:
     return vec / norm
 
 
+def _select_output_name(available: list[str], prefer: tuple[str, ...]) -> str:
+    """Pick which ONNX output holds the pooled embedding.
+
+    The current SigLIP export names it ``pooler_output``; other exports (incl. some
+    SigLIP 2 ONNX) use ``image_embeds`` / ``text_embeds``. Try the preferred names
+    in order, then fall back to a single unambiguous output. Refuse to guess among
+    several unrecognised outputs (a clear failure beats silently embedding the wrong
+    tensor), so swapping in such a model is a one-line ``prefer`` update, not a
+    debugging session.
+    """
+
+    for name in prefer:
+        if name in available:
+            return name
+    if len(available) == 1:
+        return available[0]
+    raise ValueError(
+        f"could not pick the embedding output among {available}; "
+        f"expected one of {prefer}. Add the new model's output name to the "
+        "preference list in embed.py."
+    )
+
+
 def _input_size_from_shape(shape: object, default: int = _IMAGE_SIZE) -> int:
     """Derive the square input resolution from an ONNX input shape (NCHW).
 
@@ -94,6 +117,9 @@ class SigLipImageEncoder:
         # Auto-detect the model's input resolution (224 for base SigLIP, 256/384 for
         # SigLIP 2 variants), so a model swap stays a config change, not a code edit.
         self._image_size = _input_size_from_shape(inp.shape)
+        self._output = _select_output_name(
+            [o.name for o in self._session.get_outputs()], ("pooler_output", "image_embeds")
+        )
 
     @classmethod
     def from_config(cls, config: AtlasConfig) -> SigLipImageEncoder:
@@ -105,7 +131,7 @@ class SigLipImageEncoder:
         """Embed an already-open image (the indexer's decode-once path)."""
 
         blob = preprocess_image(img, self._image_size)
-        (pooled,) = self._session.run(["pooler_output"], {self._input: blob})
+        (pooled,) = self._session.run([self._output], {self._input: blob})
         return l2_normalize(pooled[0])
 
     def embed_path(self, path: Path | str) -> np.ndarray:
@@ -138,6 +164,9 @@ class SigLipTextEncoder:
             str(model_path), providers=["CPUExecutionProvider"]
         )
         self._input = self._session.get_inputs()[0].name
+        self._output = _select_output_name(
+            [o.name for o in self._session.get_outputs()], ("pooler_output", "text_embeds")
+        )
 
     @classmethod
     def from_config(cls, config: AtlasConfig) -> SigLipTextEncoder:
@@ -150,5 +179,5 @@ class SigLipTextEncoder:
 
     def embed_text(self, text: str) -> np.ndarray:
         ids = np.array([self._tok.encode(text).ids], dtype=np.int64)
-        (pooled,) = self._session.run(["pooler_output"], {self._input: ids})
+        (pooled,) = self._session.run([self._output], {self._input: ids})
         return l2_normalize(pooled[0])

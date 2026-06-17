@@ -91,7 +91,18 @@ def classify_embedding(
     :data:`SCENE_LABELS`.
     """
 
-    vec = embedding.astype(np.float32)
+    vec = embedding.astype(np.float32).reshape(-1)
+    # Guard the space mismatch: if the image embedding's dimension doesn't match the
+    # label matrix, the bundled scene_labels.npz was built for a different model and
+    # wasn't rebuilt after the swap. Fail with an actionable message rather than a
+    # cryptic numpy matmul error (or, worse, silently-wrong tags when dims happen to
+    # line up — see SIGLIP2_MIGRATION.md Gap 4).
+    if vec.shape[0] != matrix.shape[1]:
+        raise ValueError(
+            f"scene-label matrix dim ({matrix.shape[1]}) != image embedding dim "
+            f"({vec.shape[0]}); rebuild data/scene_labels.npz for the current model "
+            "with scripts/build_scene_embeddings.py."
+        )
     norm = np.linalg.norm(vec)
     if norm > 1e-8:
         vec = vec / norm
@@ -143,6 +154,11 @@ class ZeroShotSceneTagger:
         data = np.load(label_path, allow_pickle=True)
         self._labels = [str(x) for x in data["labels"]]
         self._matrix = np.asarray(data["matrix"], dtype=np.float32)
+        # Which model/space the bundled label matrix was built for, surfaced so a
+        # stale matrix (forgotten rebuild after a model swap) is diagnosable. The
+        # actual enforcement is the dim check in ``classify_embedding``.
+        self.label_dim = int(self._matrix.shape[1])
+        self.label_model = str(data["model"]) if "model" in data else None
         self._temperature = temperature
         self._other_bias = other_bias
 
