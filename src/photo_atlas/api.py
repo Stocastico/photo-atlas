@@ -190,6 +190,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         camera: list[str] | None = Query(None),
         people: list[str] | None = Query(None),
         known: list[str] | None = Query(None),
+        kind: list[str] | None = Query(None),
         has_faces: bool | None = None,
         favorite: bool | None = None,
         hidden: bool = False,
@@ -200,6 +201,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
             "date_to": date_to, "camera": camera, "people": people, "known": known,
+            "kind": kind,
             "has_faces": has_faces, "favorite": favorite, "hidden": hidden, "q": q,
         }
         return search.facets(conn, filters)
@@ -219,6 +221,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         camera: list[str] | None = Query(None),
         people: list[str] | None = Query(None),
         known: list[str] | None = Query(None),
+        kind: list[str] | None = Query(None),
         has_faces: bool | None = None,
         favorite: bool | None = None,
         hidden: bool = False,
@@ -233,6 +236,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
             "date_to": date_to, "camera": camera, "people": people, "known": known,
+            "kind": kind,
             "has_faces": has_faces, "favorite": favorite, "hidden": hidden,
             "q": q, "text": text, "sort": sort,
         }
@@ -386,6 +390,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         camera: list[str] | None = Query(None),
         people: list[str] | None = Query(None),
         known: list[str] | None = Query(None),
+        kind: list[str] | None = Query(None),
         has_faces: bool | None = None,
         favorite: bool | None = None,
         hidden: bool = False,
@@ -396,6 +401,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             "scene": scene, "country": country,
             "city": city, "place": place, "year": year, "date_from": date_from,
             "date_to": date_to, "camera": camera, "people": people, "known": known,
+            "kind": kind,
             "has_faces": has_faces, "favorite": favorite, "hidden": hidden, "q": q,
         }
         return {"points": search.map_points(conn, filters, limit=config.map_point_limit)}
