@@ -459,25 +459,27 @@ Every feature/bug item above is done; what's left are *optional* enhancements, e
 noted inline on its parent item but consolidated here with upside / effort / risk so
 the next slice is easy to pick. Ordered by value-per-effort.
 
-- [ ] **Adopt SigLIP 2** (scene tags + semantic search). **Upside: high** — strictly
-  better zero-shot tags *and* NL retrieval from one swap, no architecture change.
-  **Effort: medium** (~2–3 days + a real A/B eval). **Risk: medium** — the SigLIP 2
-  text tower may use the Gemma tokenizer (the hardcoded `</s>`/pad-64 assumption needs
-  verifying). **Fully scoped in [`SIGLIP2_MIGRATION.md`](SIGLIP2_MIGRATION.md)**; the
-  offline enabling refactors are already merged — Gap 1 (vision input-size auto-detect),
-  Gap 2 (output-tensor-name resolution) and Gap 4 (dim-mismatch guard). Remaining before
-  a swap: verify the tokenizer (Gap 3), run the A/B eval, rebuild `scene_labels.npz` +
-  re-embed.
-- [ ] **YuNet → latest Zoo revision.** **Upside: low–medium** (possibly-free face-recall
-  gain). **Effort: trivial** (bump the `.onnx` name/URL in `models.py`, same
-  `FaceDetectorYN` API). **Risk: very low.** Gate on a quick recall A/B. See
-  [`MODELS.md`](MODELS.md) §1.
-- [ ] **SFace → ArcFace R100 (or AdaFace for low-quality).** **Upside: high** —
-  recognition is the product's backbone; 512-d raises the "same person across 15 years"
-  ceiling. **Effort: high / most invasive** — embedding dim 128→512 ⇒ re-embed + re-cluster
-  migration, ArcFace-standard 5-pt alignment. **Risk: medium–high.** Do it behind the
-  `PHOTO_ATLAS_SFACE` override with a verification-accuracy A/B first. See
-  [`MODELS.md`](MODELS.md) §2.
+- [x] **Adopt SigLIP 2** (scene tags + semantic search). **Done** (2026-06-17):
+  default scene/semantic stack is now `onnx-community/siglip2-base-patch16-256-ONNX`
+  (same 768-d space, no architecture change). Gap 3 resolved —
+  `embed.configure_text_tokenizer` honours the tokenizer's *embedded* pad config
+  (SigLIP 2's Gemma tokenizer self-pads to 64 with `<pad>`), so the old `</s>`
+  assumption is gone. Vision input size is configured (256) via
+  `models.ensure_scene_input_size` because SigLIP 2's ONNX is dynamic-shaped. Label
+  matrix rebuilt; validated on a 60-photo real-library sample (sensible tags + NL
+  ranking). No data migration needed (library wasn't indexed yet). See
+  [`SIGLIP2_MIGRATION.md`](SIGLIP2_MIGRATION.md).
+- [x] **YuNet → latest Zoo revision.** **Done** (2026-06-17): bumped
+  `2023mar → 2026may`. Drop-in (same `FaceDetectorYN` API); A/B over 250 real photos
+  was identical (224 faces, 0 differing), so zero-regression.
+- [x] **SFace → ArcFace R100.** **Done** (2026-06-17): default recogniser is now
+  ArcFace R100 (glint360k, 512-d) via the InsightFace antelopev2 ONNX, with YuNet's
+  5 landmarks aligned to ArcFace's 112² template (`faces.norm_crop`). On Obama/Biden
+  it separated identities markedly better (same 0.026 / diff 1.040, margin 1.014 vs
+  SFace's 0.049 / 0.901 / 0.852). Embedding dim 128→512 stores via the existing
+  per-row `faces.dim` (no schema change); no re-embed/re-cluster migration was needed
+  (library wasn't indexed yet). SFace stays selectable via `--faces sface`.
+  Config thresholds (`cluster_eps`/`face_match_threshold` = 0.5) already suit ArcFace.
 - [ ] **YuNet → SCRFD.** **Upside: medium** but only realised if hard-face *recall* is
   proven to be the bottleneck. **Effort: medium** (new anchor decode in `faces.py`, not a
   `FaceDetectorYN` drop-in). **Risk: medium.** Lower priority than ArcFace unless an eval

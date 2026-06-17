@@ -1,14 +1,17 @@
 """Face detection, embedding, clustering and identity matching.
 
-The default backend (:class:`YuNetSFaceBackend`) is a modern deep-learning
-pipeline built on OpenCV's DNN face stack: **YuNet** for detection and **SFace**
-for 128-d recognition embeddings (cosine-comparable). The ONNX weights are
-fetched on demand by :mod:`photo_atlas.models`. On real photographs SFace cleanly
-separates identities -- same person ~0.05 cosine distance, different people
-~0.9.
+The default backend (:class:`YuNetArcFaceBackend`) is a modern deep-learning
+pipeline: **YuNet** (OpenCV DNN) for detection and **ArcFace R100** (glint360k,
+512-d, via ``onnxruntime``) for recognition embeddings (cosine-comparable). YuNet's
+5 landmarks drive a similarity alignment to ArcFace's canonical 112² template. The
+ONNX weights are fetched on demand by :mod:`photo_atlas.models`. On real
+photographs ArcFace cleanly separates identities -- same person ~0.03 cosine
+distance, different people ~1.0.
 
 Alternative backends share the same :class:`FaceBackend` contract:
 
+* :class:`YuNetSFaceBackend`   -- legacy YuNet + SFace (128-d) recogniser
+  (``faces=sface``); OpenCV-only, no ``onnxruntime`` recogniser session.
 * :class:`DlibFaceBackend`     -- optional ``face_recognition`` (dlib) embeddings.
 * :class:`SyntheticFaceBackend`-- detects the cartoon faces from the bundled demo
   (and powers the offline test-suite); not for real photographs.
@@ -116,12 +119,65 @@ def cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
     return float(1.0 - np.dot(a, b))
 
 
-class YuNetSFaceBackend:
-    """Deep face detection (YuNet) + recognition embeddings (SFace).
+# -- ArcFace alignment + preprocessing ------------------------------------
+#: The canonical ArcFace 5-point destination template at 112² (eyes, nose,
+#: mouth corners), ordered image-left-eye, image-right-eye, nose, image-left
+#: mouth, image-right mouth — which matches YuNet's landmark order exactly, so the
+#: detector's points map straight onto it with no reordering.
+_ARCFACE_TEMPLATE_112 = np.array(
+    [
+        [38.2946, 51.6963],
+        [73.5318, 51.5014],
+        [56.0252, 71.7366],
+        [41.5493, 92.3655],
+        [70.7299, 92.2041],
+    ],
+    dtype=np.float32,
+)
+#: ArcFace normalises pixels to roughly [-1, 1] with mean/std 127.5.
+_ARCFACE_MEAN = 127.5
+_ARCFACE_STD = 127.5
 
-    Requires OpenCV (>=4.10, with the DNN face module) and the YuNet / SFace
-    ONNX weights, which :func:`photo_atlas.models.ensure_models` downloads to the
-    library cache on first use.
+
+def arcface_template(size: int = 112) -> np.ndarray:
+    """Return the ArcFace 5-point alignment template scaled to a ``size``² crop."""
+
+    return (_ARCFACE_TEMPLATE_112 * (size / 112.0)).astype(np.float32)
+
+
+def norm_crop(image: np.ndarray, landmarks: np.ndarray, size: int = 112) -> np.ndarray:
+    """Align a face to ArcFace's canonical crop via a 5-point similarity transform.
+
+    ``landmarks`` is the ``(5, 2)`` set of detected points (YuNet's order); a
+    similarity transform maps them onto :func:`arcface_template`, the standard
+    InsightFace ``norm_crop`` that ArcFace expects.
+    """
+
+    import cv2  # noqa: PLC0415
+
+    src = np.asarray(landmarks, dtype=np.float32).reshape(5, 2)
+    matrix, _ = cv2.estimateAffinePartial2D(src, arcface_template(size), method=cv2.LMEDS)
+    return cv2.warpAffine(image, matrix, (size, size), borderValue=(0.0, 0.0, 0.0))
+
+
+def arcface_preprocess(aligned_bgr: np.ndarray) -> np.ndarray:
+    """Turn an aligned ``HxWx3`` BGR crop into ArcFace's ``(1, 3, H, W)`` blob.
+
+    ArcFace expects RGB in ``[-1, 1]``; the aligned crop arrives BGR (OpenCV), so
+    the channels are swapped and the pixels are scaled ``(x - 127.5) / 127.5``.
+    """
+
+    rgb = np.asarray(aligned_bgr)[:, :, ::-1].astype(np.float32)
+    rgb = (rgb - _ARCFACE_MEAN) / _ARCFACE_STD
+    return np.ascontiguousarray(rgb.transpose(2, 0, 1)[None])
+
+
+class _YuNetBackend:
+    """Shared YuNet detection; subclasses supply the recognition ``_embed``.
+
+    Detection runs on a downscaled copy for speed, with boxes/landmarks mapped
+    back to full-res coordinates so the recogniser aligns/embeds on the best
+    available pixels.
     """
 
     def __init__(
@@ -136,24 +192,31 @@ class YuNetSFaceBackend:
         self._detect_max_side = detect_max_side
         import cv2  # noqa: PLC0415
 
-        if not (hasattr(cv2, "FaceDetectorYN") and hasattr(cv2, "FaceRecognizerSF")):
+        if not hasattr(cv2, "FaceDetectorYN"):
             raise RuntimeError(
-                "This OpenCV build lacks the DNN face module (FaceDetectorYN / "
-                "FaceRecognizerSF). Install opencv-python>=4.10."
+                "This OpenCV build lacks the DNN face module (FaceDetectorYN). "
+                "Install opencv-python>=4.10."
             )
         from .config import AtlasConfig  # noqa: PLC0415
-        from .models import ensure_models  # noqa: PLC0415
 
         if model_dir is None:
             model_dir = AtlasConfig().home / "models"
-        yunet_path, sface_path = ensure_models(Path(model_dir), download=download)
-
         self._cv2 = cv2
+        yunet_path = self._setup(Path(model_dir), download=download)
         self._detector = cv2.FaceDetectorYN.create(
             str(yunet_path), "", (320, 320),
             score_threshold=score_threshold, nms_threshold=nms_threshold,
         )
-        self._recognizer = cv2.FaceRecognizerSF.create(str(sface_path), "")
+
+    def _setup(self, model_dir: Path, *, download: bool) -> Path:
+        """Fetch YuNet + the recogniser; return the YuNet path. Subclass hook."""
+
+        raise NotImplementedError
+
+    def _embed(self, image: np.ndarray, full_row: np.ndarray) -> np.ndarray:
+        """Embed the face described by ``full_row`` (full-res box + landmarks)."""
+
+        raise NotImplementedError
 
     def detect(
         self, image_path: Path, image: np.ndarray | None = None
@@ -182,16 +245,68 @@ class YuNetSFaceBackend:
             if scale != 1.0:
                 full_row[:14] = row[:14] / scale
             x, y, bw, bh = full_row[:4]
-            aligned = self._recognizer.alignCrop(image, full_row)
-            feature = self._recognizer.feature(aligned).flatten()
             observations.append(
                 FaceObservation(
                     bbox=(int(x), int(y), int(bw), int(bh)),
-                    embedding=l2_normalize(feature),
+                    embedding=l2_normalize(self._embed(image, full_row)),
                     confidence=score,
                 )
             )
         return observations
+
+
+class YuNetArcFaceBackend(_YuNetBackend):
+    """Deep face detection (YuNet) + **ArcFace R100** recognition (512-d).
+
+    The default deep backend. Faces are aligned to ArcFace's canonical 112²
+    template via a 5-point similarity transform (:func:`norm_crop`) using YuNet's
+    landmarks, then embedded by the ArcFace ONNX through ``onnxruntime``. The
+    weights are fetched by :func:`photo_atlas.models.ensure_arcface_models`.
+    """
+
+    def _setup(self, model_dir: Path, *, download: bool) -> Path:
+        import onnxruntime as ort  # noqa: PLC0415
+
+        from .models import ensure_arcface_models  # noqa: PLC0415
+
+        yunet_path, arcface_path = ensure_arcface_models(model_dir, download=download)
+        self._session = ort.InferenceSession(
+            str(arcface_path), providers=["CPUExecutionProvider"]
+        )
+        self._input = self._session.get_inputs()[0].name
+        self._output = self._session.get_outputs()[0].name
+        return yunet_path
+
+    def _embed(self, image: np.ndarray, full_row: np.ndarray) -> np.ndarray:
+        landmarks = full_row[4:14].reshape(5, 2)
+        aligned = norm_crop(image, landmarks)
+        blob = arcface_preprocess(aligned)
+        (feature,) = self._session.run([self._output], {self._input: blob})
+        return feature.flatten()
+
+
+class YuNetSFaceBackend(_YuNetBackend):
+    """Deep face detection (YuNet) + recognition embeddings (SFace, 128-d).
+
+    The legacy recogniser, kept selectable (``faces=sface``). Requires OpenCV's
+    DNN face module (``FaceRecognizerSF``); weights come from
+    :func:`photo_atlas.models.ensure_models`.
+    """
+
+    def _setup(self, model_dir: Path, *, download: bool) -> Path:
+        from .models import ensure_models  # noqa: PLC0415
+
+        if not hasattr(self._cv2, "FaceRecognizerSF"):
+            raise RuntimeError(
+                "This OpenCV build lacks FaceRecognizerSF. Install opencv-python>=4.10."
+            )
+        yunet_path, sface_path = ensure_models(model_dir, download=download)
+        self._recognizer = self._cv2.FaceRecognizerSF.create(str(sface_path), "")
+        return yunet_path
+
+    def _embed(self, image: np.ndarray, full_row: np.ndarray) -> np.ndarray:
+        aligned = self._recognizer.alignCrop(image, full_row)
+        return self._recognizer.feature(aligned).flatten()
 
 
 class SyntheticFaceBackend:
@@ -285,20 +400,26 @@ class DlibFaceBackend:  # pragma: no cover - optional heavy dependency
 def get_backend(name: str = "auto", *, model_dir: Path | None = None) -> FaceBackend | None:
     """Return a face backend by name, or ``None`` if none is available.
 
-    ``auto`` prefers the deep YuNet/SFace pipeline, then dlib.
+    ``auto`` prefers the deep YuNet + **ArcFace** pipeline, then dlib. ``yunet`` is
+    an alias for that default deep backend; ``sface`` selects the legacy YuNet +
+    SFace (128-d) recogniser.
     """
 
     order = {
-        "auto": ["yunet", "dlib"],
-        "yunet": ["yunet"],
+        "auto": ["arcface", "dlib"],
+        "arcface": ["arcface"],
+        "yunet": ["arcface"],
+        "sface": ["sface"],
         "dlib": ["dlib"],
         "synthetic": ["synthetic"],
         "none": [],
-    }.get(name, ["yunet"])
+    }.get(name, ["arcface"])
 
     for choice in order:
         try:
-            if choice == "yunet":
+            if choice == "arcface":
+                return YuNetArcFaceBackend(model_dir=model_dir)
+            if choice == "sface":
                 return YuNetSFaceBackend(model_dir=model_dir)
             if choice == "dlib":
                 return DlibFaceBackend()

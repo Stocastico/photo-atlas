@@ -37,8 +37,49 @@ if TYPE_CHECKING:
 _IMAGE_SIZE = 224
 _NORM_MEAN = 0.5
 _NORM_STD = 0.5
-#: SigLIP pads/truncates text to a fixed 64-token window.
+#: SigLIP pads/truncates text to a fixed 64-token window (both v1 and v2).
 _TEXT_PAD_LEN = 64
+#: Pad-token candidates, most-specific first. SigLIP 2's Gemma tokenizer uses
+#: ``<pad>`` (id 0); SigLIP 1's SentencePiece tokenizer uses ``</s>`` (id 1).
+_PAD_TOKEN_PREFERENCE = ("<pad>", "</s>", "<eos>")
+
+
+def _resolve_pad_token(tok, prefer: tuple[str, ...] = _PAD_TOKEN_PREFERENCE) -> tuple[str, int]:
+    """Pick the (token, id) to pad a SigLIP text sequence with.
+
+    SigLIP pools the *last* token's representation over a fixed-length window, so
+    the trailing pad token must be the one the model was trained with. SigLIP 1
+    uses ``</s>``; SigLIP 2's Gemma tokenizer uses ``<pad>`` (id 0) — pick whichever
+    the tokenizer actually defines rather than hardcoding one (SIGLIP2_MIGRATION.md
+    Gap 3). Falls back to ``</s>``/1 for an exotic tokenizer with none of them.
+    """
+
+    for token in prefer:
+        tid = tok.token_to_id(token)
+        if tid is not None:
+            return token, int(tid)
+    return "</s>", 1
+
+
+def configure_text_tokenizer(tok, pad_len: int = _TEXT_PAD_LEN) -> int:
+    """Make ``tok`` pad/truncate to SigLIP's fixed window; return that length.
+
+    SigLIP 2's ``onnx-community`` ``tokenizer.json`` already embeds the right
+    padding (``Fixed:64`` right-pad with ``<pad>``), so we respect it as-is instead
+    of clobbering it with SigLIP 1's ``</s>`` assumption. A tokenizer that ships
+    without a padding config (SigLIP 1) gets configured here with the resolved pad
+    token. Either way truncation is clamped to the window so a long query can't
+    blow past it.
+    """
+
+    existing = getattr(tok, "padding", None)
+    if existing and existing.get("length"):
+        pad_len = int(existing["length"])
+    else:
+        token, pad_id = _resolve_pad_token(tok)
+        tok.enable_padding(length=pad_len, pad_id=pad_id, pad_token=token, direction="right")
+    tok.enable_truncation(pad_len)
+    return pad_len
 
 
 def l2_normalize(vec: np.ndarray) -> np.ndarray:
@@ -90,6 +131,20 @@ def _input_size_from_shape(shape: object, default: int = _IMAGE_SIZE) -> int:
     return int(last) if isinstance(last, int) and last > 0 else default
 
 
+def _resolve_image_size(explicit: int | None, shape: object, default: int = _IMAGE_SIZE) -> int:
+    """Pick the vision input resolution: explicit config > static shape > default.
+
+    An explicitly configured size always wins — SigLIP 2's vision ONNX advertises a
+    fully *dynamic* shape yet only accepts its trained resolution (256), which can't
+    be recovered from the model — while a model that *does* report a static spatial
+    dim (base SigLIP's 224) still self-describes when no size is forced.
+    """
+
+    if explicit:
+        return int(explicit)
+    return _input_size_from_shape(shape, default)
+
+
 def preprocess_image(img: Image.Image, size: int = _IMAGE_SIZE) -> np.ndarray:
     """Turn an open image into a SigLIP ``(1, 3, size, size)`` float32 blob.
 
@@ -106,7 +161,13 @@ def preprocess_image(img: Image.Image, size: int = _IMAGE_SIZE) -> np.ndarray:
 class SigLipImageEncoder:
     """SigLIP vision encoder: an open image -> a unit-norm embedding."""
 
-    def __init__(self, model_path: Path | str):
+    def __init__(
+        self,
+        model_path: Path | str,
+        *,
+        image_size: int | None = None,
+        default_size: int = _IMAGE_SIZE,
+    ):
         import onnxruntime as ort  # noqa: PLC0415
 
         self._session = ort.InferenceSession(
@@ -114,18 +175,22 @@ class SigLipImageEncoder:
         )
         inp = self._session.get_inputs()[0]
         self._input = inp.name
-        # Auto-detect the model's input resolution (224 for base SigLIP, 256/384 for
-        # SigLIP 2 variants), so a model swap stays a config change, not a code edit.
-        self._image_size = _input_size_from_shape(inp.shape)
+        # Resolve the input resolution: an explicit/configured size wins, else a
+        # static model shape (base SigLIP's 224), else ``default_size``. SigLIP 2's
+        # ONNX is dynamic-shaped, so its 256 comes from the configured default.
+        self._image_size = _resolve_image_size(image_size, inp.shape, default_size)
         self._output = _select_output_name(
             [o.name for o in self._session.get_outputs()], ("pooler_output", "image_embeds")
         )
 
     @classmethod
     def from_config(cls, config: AtlasConfig) -> SigLipImageEncoder:
-        from .models import ensure_scene_model  # noqa: PLC0415
+        from .models import ensure_scene_input_size, ensure_scene_model  # noqa: PLC0415
 
-        return cls(ensure_scene_model(config.models_dir, download=True))
+        return cls(
+            ensure_scene_model(config.models_dir, download=True),
+            default_size=ensure_scene_input_size(),
+        )
 
     def embed_image(self, img: Image.Image) -> np.ndarray:
         """Embed an already-open image (the indexer's decode-once path)."""
@@ -153,12 +218,11 @@ class SigLipTextEncoder:
         from tokenizers import Tokenizer  # noqa: PLC0415
 
         tok = Tokenizer.from_file(str(tokenizer_path))
-        # SigLIP pads/truncates to a fixed window with the </s> token (mirrors
-        # scripts/build_scene_embeddings.py, which built the bundled label matrix).
-        pad_id = tok.token_to_id("</s>")
-        pad_id = 1 if pad_id is None else pad_id
-        tok.enable_truncation(pad_len)
-        tok.enable_padding(length=pad_len, pad_id=pad_id, pad_token="</s>", direction="right")
+        # Pad/truncate to SigLIP's fixed window, honouring the tokenizer's own
+        # padding config when it has one (SigLIP 2's Gemma tokenizer) and falling
+        # back to a resolved pad token otherwise (SigLIP 1). Mirrors
+        # scripts/build_scene_embeddings.py, which builds the bundled label matrix.
+        configure_text_tokenizer(tok, pad_len)
         self._tok = tok
         self._session = ort.InferenceSession(
             str(model_path), providers=["CPUExecutionProvider"]
