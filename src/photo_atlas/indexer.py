@@ -365,6 +365,85 @@ def _prepare_photo(
     )
 
 
+def _bbox_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    """Intersection-over-union of two ``(x, y, w, h)`` boxes."""
+
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    ix = max(0, min(ax + aw, bx + bw) - max(ax, bx))
+    iy = max(0, min(ay + ah, by + bh) - max(ay, by))
+    inter = ix * iy
+    union = aw * ah + bw * bh - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _match_human_labels(
+    old_items: list[dict], new_bboxes: list[tuple[int, int, int, int]], *, threshold: float
+) -> dict[int, dict]:
+    """Greedily assign each prior human label to the new face it best overlaps.
+
+    Returns ``{new_face_index: old_item}`` for every new face whose IoU with an
+    ``old_items`` box clears ``threshold``; each old label is used at most once
+    (highest-IoU pair wins), so re-detecting an extra face never duplicates a name.
+    """
+
+    pairs: list[tuple[float, int, int]] = []
+    for ni, nb in enumerate(new_bboxes):
+        for oi, item in enumerate(old_items):
+            iou = _bbox_iou(nb, item["bbox"])
+            if iou >= threshold:
+                pairs.append((iou, ni, oi))
+    pairs.sort(reverse=True)  # best overlap first
+    matched: dict[int, dict] = {}
+    used_old: set[int] = set()
+    for _iou, ni, oi in pairs:
+        if ni in matched or oi in used_old:
+            continue
+        matched[ni] = old_items[oi]
+        used_old.add(oi)
+    return matched
+
+
+def _carry_human_labels(
+    conn: sqlite3.Connection,
+    photo_id: int,
+    face_rows: list[dict],
+    *,
+    threshold: float = 0.5,
+) -> list[dict]:
+    """Preserve manual face naming across a re-index (mutates ``face_rows``).
+
+    Before ``replace_faces`` wipes a photo's faces, carry any prior *human*
+    assignment (``confidence >= 1.0``) onto the freshly detected face whose bbox
+    overlaps it, so an ``index --recompute`` refreshes detection/embeddings without
+    discarding the user's naming work. A no-op for a fresh photo (no prior faces)
+    and for purely auto-recognised labels.
+    """
+
+    old = conn.execute(
+        "SELECT person_id, confidence, bbox_x, bbox_y, bbox_w, bbox_h FROM faces "
+        "WHERE photo_id=? AND person_id IS NOT NULL AND confidence >= 1.0",
+        (photo_id,),
+    ).fetchall()
+    if not old or not face_rows:
+        return face_rows
+    old_items = [
+        {
+            "person_id": r["person_id"],
+            "confidence": r["confidence"],
+            "bbox": (r["bbox_x"], r["bbox_y"], r["bbox_w"], r["bbox_h"]),
+        }
+        for r in old
+    ]
+    new_bboxes = [
+        (r["bbox_x"], r["bbox_y"], r["bbox_w"], r["bbox_h"]) for r in face_rows
+    ]
+    for ni, item in _match_human_labels(old_items, new_bboxes, threshold=threshold).items():
+        face_rows[ni]["person_id"] = item["person_id"]
+        face_rows[ni]["confidence"] = item["confidence"]
+    return face_rows
+
+
 def _commit_prepared(
     conn: sqlite3.Connection,
     config: AtlasConfig,
@@ -403,9 +482,11 @@ def _commit_prepared(
     }
     photo_id = db.upsert_photo(conn, record)
     if prepared.embedding_blob is not None:
-        conn.execute(
-            "UPDATE photos SET embedding=?, embed_dim=? WHERE id=?",
-            (prepared.embedding_blob, prepared.embed_dim, photo_id),
+        # Route through the db helper so the embeddings_version bump fires here too
+        # (a raw UPDATE would skip it, leaving a live server's semantic cache stale
+        # after an in-place `index --embed --recompute`).
+        db.set_photo_embedding_blob(
+            conn, photo_id, prepared.embedding_blob, prepared.embed_dim
         )
     # Always refresh the perceptual hash (kept out of PHOTO_COLUMNS, like the
     # embedding), so a re-index keeps it current and burst grouping stays accurate.
@@ -437,6 +518,9 @@ def _commit_prepared(
             }
         )
 
+    # Carry any prior manual naming onto the re-detected faces before the blanket
+    # replace, so `index --recompute` doesn't discard the user's assignments.
+    _carry_human_labels(conn, photo_id, face_rows)
     db.replace_faces(conn, photo_id, face_rows)
     if stats is not None:
         stats.faces += len(face_rows)

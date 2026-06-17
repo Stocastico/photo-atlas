@@ -46,6 +46,28 @@ def test_set_photo_embedding_bumps_version(tmp_path):
         conn.close()
 
 
+def test_set_photo_embedding_blob_bumps_version(tmp_path):
+    # The index-time write path stores a *pre-serialised* blob (computed in a
+    # worker) rather than an ndarray, but it must bump the version exactly like
+    # set_photo_embedding so `index --embed --recompute` invalidates a live cache.
+    conn = db.connect(tmp_path / "s.db")
+    try:
+        pid = db.upsert_photo(conn, {"path": "/a.jpg", "filename": "a.jpg"})
+        blob = db.embedding_to_blob(_unit(1, 0, 0))
+        db.set_photo_embedding_blob(conn, pid, blob, 3)
+        assert db.get_meta(conn, "embeddings_version") == "1"
+        row = conn.execute(
+            "SELECT embedding, embed_dim FROM photos WHERE id=?", (pid,)
+        ).fetchone()
+        assert row["embed_dim"] == 3
+        assert db.blob_to_embedding(row["embedding"]) is not None
+        # A second write (an in-place recompute) bumps again.
+        db.set_photo_embedding_blob(conn, pid, blob, 3)
+        assert db.get_meta(conn, "embeddings_version") == "2"
+    finally:
+        conn.close()
+
+
 # -- API: a running server reflects an in-place recompute -------------------
 def _photo(conn, path, vec):
     pid = db.upsert_photo(conn, {"path": path, "filename": path.rsplit("/", 1)[-1]})

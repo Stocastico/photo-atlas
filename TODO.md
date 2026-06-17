@@ -539,3 +539,31 @@ the next slice is easy to pick. Ordered by value-per-effort.
 - ~~YuNet → SCRFD~~ — non-drop-in detector swap at medium risk; the YuNet 2026may +
   ArcFace R100 stack suffices unless an eval proves detection recall is the limiter
   (2026-06-17).
+
+## Review hardening (2026-06-17)
+
+A pre-collection correctness/perf review (backend, API, indexing pipeline). Most of
+the codebase held up; the two actionable fixes:
+
+- [x] **Re-index no longer wipes manual face naming.** `index --recompute` re-detects
+  faces and `db.replace_faces` blanket-deletes the old ones, which silently discarded
+  every human `assign_face` (confidence 1.0). `_commit_prepared` now calls
+  `_carry_human_labels` first: it IoU-matches each re-detected face against the photo's
+  prior `confidence>=1.0` assignments and copies the name/confidence across (greedy,
+  one old label per new face), so a recompute refreshes detection/embeddings without
+  losing naming work. Pure IoU/matching + the DB carry-over are unit-tested
+  (`tests/test_recompute_labels.py`). (Negatives/rejections are still reset on recompute
+  — a minor active-learning detail, not the naming work.)
+- [x] **Index-time embedding write now bumps `embeddings_version`.** The `index --embed`
+  commit path used a raw `UPDATE` that skipped the version bump (only the `embed` command
+  went through `db.set_photo_embedding`), so an in-place `index --embed --recompute`
+  wouldn't invalidate a running server's cached `SemanticIndex`. Both paths now route
+  through `db.set_photo_embedding_blob`, which bumps the version
+  (`tests/test_cache_freshness.py`).
+
+Verified **non-issues** (checked, not bugs): `/api/image` NULL path (`photos.path` is
+`NOT NULL`), LIKE-escaping, placeholder/param counts, `PHOTO_COLUMNS` omissions surviving
+re-index, decode-once + EXIF-transpose-once, worker picklability/per-file isolation,
+model-prefetch race, phash always computed. Deferred low-priority hardening (single-user
+loopback impact): write-guard `Origin`/`Host` port normalisation, cache `threading.Lock`,
+`_text_encoder` retry-after-transient-failure.

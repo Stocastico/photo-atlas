@@ -83,10 +83,12 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   `_worker_init`.
 - **Photo embeddings live in `photos.embedding`/`embed_dim` but are deliberately
   NOT in `PHOTO_COLUMNS`** — they'd bloat the grid/list payload. They're written
-  separately (`db.set_photo_embedding`, which also bumps `meta['embeddings_version']`)
-  and loaded by `SemanticIndex`. The API caches that index keyed on
-  `(count, max_id, embeddings_version)`, so an in-place `embed --recompute` (same count
-  + max id) still invalidates the cache and a running `serve` reloads it.
+  separately (`db.set_photo_embedding` from `embed`, or `db.set_photo_embedding_blob`
+  from the index pipeline's pre-serialised blob — **both** bump
+  `meta['embeddings_version']`) and loaded by `SemanticIndex`. The API caches that index
+  keyed on `(count, max_id, embeddings_version)`, so an in-place `embed`/`index --embed
+  --recompute` (same count + max id) still invalidates the cache and a running `serve`
+  reloads it.
 - **The perceptual hash (`photos.phash`, dHash hex) is also out of `PHOTO_COLUMNS`**
   (written via `db.set_phash`, kept off `_LIST_COLUMNS`), but unlike embeddings it's
   *always* computed at index time (it's cheap) — `_commit_prepared` refreshes it on
@@ -108,7 +110,10 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   `face_negatives` row; `_load_enrollment` feeds those into `Enrollment` so
   `knn_person_match` penalises a rejected identity. A human `assign_face` sets
   `confidence=1.0`; the "Review guesses" list (`/api/faces/review`) shows auto-tags
-  below `config.review_confidence`.
+  below `config.review_confidence`. **`index --recompute` preserves manual naming:**
+  before `replace_faces` blanket-deletes a photo's faces, `_carry_human_labels`
+  (IoU-matched by bbox) copies any prior `confidence>=1.0` assignment onto the
+  re-detected face, so re-indexing refreshes detection/embeddings without wiping names.
 - **Frontend has no test runner**; pure JS helpers (grid windowing, URL state) are
   exercised by Node harnesses in `tests/js/` via `tests/test_web_js.py`, which skips
   when Node isn't installed.

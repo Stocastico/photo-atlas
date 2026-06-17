@@ -324,6 +324,25 @@ def set_photo_embedding(
     bump_meta(conn, "embeddings_version")
 
 
+def set_photo_embedding_blob(
+    conn: sqlite3.Connection, photo_id: int, blob: bytes | None, dim: int | None
+) -> None:
+    """Persist a *pre-serialised* embedding blob and bump ``embeddings_version``.
+
+    The indexing pipeline serialises the embedding in a worker process (so the
+    main process only commits bytes); this is its write seam. It mirrors
+    :func:`set_photo_embedding` but takes the ready blob/dim instead of re-encoding
+    an ndarray, and — crucially — bumps the version too, so an in-place
+    ``index --embed --recompute`` (unchanged row count + max id) still invalidates a
+    running server's cached :class:`~photo_atlas.search.SemanticIndex`.
+    """
+
+    conn.execute(
+        "UPDATE photos SET embedding=?, embed_dim=? WHERE id=?", (blob, dim, photo_id)
+    )
+    bump_meta(conn, "embeddings_version")
+
+
 def set_phash(conn: sqlite3.Connection, photo_id: int, phash: str | None) -> None:
     """Persist (or clear) a photo's perceptual hash for near-duplicate grouping.
 
