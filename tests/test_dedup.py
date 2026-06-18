@@ -210,6 +210,19 @@ def test_delete_photos_empty_is_noop(tmp_path):
     assert result["rows"] == 0 and result["files"] == 0
 
 
+def test_malformed_timestamp_kept_as_singleton(tmp_path):
+    conn = db.connect(tmp_path / "s.db")
+    try:
+        # Two visually identical frames, but one carries a non-null yet unparseable
+        # taken_at (a garbled stored value). It survives the SQL filter (taken_at
+        # IS NOT NULL) but can't be placed on the timeline, so it never groups.
+        _insert(conn, "/a.jpg", "not-a-timestamp", "0f0f0f0f0f0f0f0f")
+        _insert(conn, "/b.jpg", "also bogus", "0f0f0f0f0f0f0f0f")
+        assert search.find_burst_groups(conn) == []
+    finally:
+        conn.close()
+
+
 def test_hidden_and_undated_excluded(tmp_path):
     conn = db.connect(tmp_path / "s.db")
     try:

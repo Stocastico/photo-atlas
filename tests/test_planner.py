@@ -85,6 +85,23 @@ def test_substring_is_not_a_false_name_match():
     assert plan.text == "Annabelle doll"
 
 
+def test_trailing_connectives_are_trimmed():
+    # Connective words on the *trailing* edge are stripped too (kept internally so
+    # "cup of coffee" survives, but a dangling "and the" carries no visual signal).
+    plan = plan_query("Anna near a sunset and the", PERSONS)
+    assert plan.person_ids == [2]
+    assert plan.text == "near a sunset"
+
+
+def test_empty_person_name_is_skipped():
+    # A person row with a blank/None name must not match (an empty regex would
+    # otherwise match everywhere); it's simply ignored.
+    persons = [{"id": 9, "name": ""}, {"id": 10, "name": None}, {"id": 1, "name": "Stefano"}]
+    plan = plan_query("Stefano hiking", persons)
+    assert plan.person_ids == [1]
+    assert plan.text == "hiking"
+
+
 # -- API integration --------------------------------------------------------
 class _StubTextEncoder:
     def __init__(self, vec):
