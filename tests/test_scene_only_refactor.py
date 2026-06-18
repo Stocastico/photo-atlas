@@ -29,6 +29,13 @@ def test_config_has_no_scene_backend_knob():
     assert not hasattr(AtlasConfig(), "scene_backend")
 
 
+def test_tagger_requires_model_or_encoder():
+    # With neither a model path nor an injected encoder there's nothing to run the
+    # vision tower on — fail loudly rather than try to download at construction time.
+    with pytest.raises(ValueError, match="model_path or an encoder"):
+        ZeroShotSceneTagger()
+
+
 def test_get_tagger_is_always_zeroshot():
     # Inject a stub encoder so this stays offline; the point is the *type*.
     class _Enc:
