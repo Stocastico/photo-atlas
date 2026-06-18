@@ -42,6 +42,7 @@ from .faces import (
     knn_person_match,
     pil_to_bgr,
 )
+from .filename_date import parse_filename_date
 from .folder_meta import extract_folder_meta
 from .geocode import Geocoder
 from .metadata import (
@@ -292,9 +293,10 @@ def _prepare_photo(
 
         # Folder names (e.g. 2012/2012_05_Sardegna) often carry a year/month/place
         # the file's EXIF lacks. Use them only to fill gaps: a folder date replaces
-        # the filesystem-mtime fallback but never a real EXIF capture time.
+        # the filesystem-mtime fallback but never a real EXIF capture time *or* a
+        # filename-mined date (both are at least as precise as a folder year/month).
         folder = extract_folder_meta(path)
-        if meta.taken_source != "exif" and folder.year is not None:
+        if meta.taken_source == "mtime" and folder.year is not None:
             synthesized = datetime(folder.year, folder.month or 1, 1)
             meta.taken_at = synthesized.isoformat(timespec="seconds")
             meta.taken_source = "folder"
@@ -590,9 +592,14 @@ def index_video(
         thumb_path = thumb_path_for(config, sha1)
         make_thumbnail_from_image(pimg, thumb_path, size=config.thumb_size)
 
-    # Capture time: container metadata → folder hint → filesystem mtime.
+    # Capture time: container metadata → filename → folder hint → filesystem mtime.
     folder = extract_folder_meta(path)
     taken_at, taken_source = meta.taken_at, "video"
+    if taken_at is None:
+        from_name = parse_filename_date(path.name)
+        if from_name is not None:
+            taken_at = from_name.isoformat(timespec="seconds")
+            taken_source = "filename"
     if taken_at is None and folder.year is not None:
         taken_at = datetime(folder.year, folder.month or 1, 1).isoformat(timespec="seconds")
         taken_source = "folder"

@@ -64,6 +64,32 @@ def test_extract_returns_empty_without_year(tmp_path):
     assert extract_folder_meta(photo) == FolderMeta()
 
 
+def test_extract_month_from_yearless_named_subfolder(tmp_path):
+    # A common layout: YYYY/<NN-monthname>/file. The month folder carries no year,
+    # but the named month is unambiguous and the year comes from its parent.
+    photo = tmp_path / "Kai" / "2026" / "01-gennaio" / "img.jpg"
+    assert extract_folder_meta(photo) == FolderMeta(2026, 1, None)
+
+
+def test_extract_named_month_subfolder_english(tmp_path):
+    photo = tmp_path / "2025" / "august" / "img.jpg"
+    assert extract_folder_meta(photo) == FolderMeta(2025, 8, None)
+
+
+def test_extract_ignores_bare_numeric_subfolder(tmp_path):
+    # A yearless, purely numeric folder is too ambiguous (day? counter?) to read
+    # as a month, so the year folder alone supplies the date.
+    photo = tmp_path / "2025" / "05" / "img.jpg"
+    assert extract_folder_meta(photo) == FolderMeta(2025, None, None)
+
+
+def test_extract_explicit_month_beats_yearless_sibling(tmp_path):
+    # When the dated folder already names a month, a deeper yearless month folder
+    # must not override it.
+    photo = tmp_path / "2025_03_Trip" / "marzo" / "img.jpg"
+    assert extract_folder_meta(photo) == FolderMeta(2025, 3, "Trip")
+
+
 # -- integration: indexer / db / search ------------------------------------
 def _plain_jpeg(path, color=(20, 40, 60)):
     """Write a tiny JPEG with no EXIF date or GPS."""

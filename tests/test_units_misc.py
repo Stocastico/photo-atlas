@@ -151,6 +151,28 @@ def test_mtime_fallback_when_no_exif(tmp_path):
     assert meta.taken_source == "mtime" and meta.taken_at
 
 
+def test_filename_date_used_when_no_exif(tmp_path):
+    # A dated filename (no EXIF) is mined as taken_source='filename', ranked
+    # above the mtime fallback.
+    from PIL import Image
+
+    src = tmp_path / "IMG_20180704_153012.png"
+    Image.new("RGB", (16, 16), (1, 2, 3)).save(src)
+    meta = metadata.extract_meta(src)
+    assert meta.taken_source == "filename"
+    assert meta.taken_at == "2018-07-04T15:30:12"
+
+
+def test_filename_counter_falls_through_to_mtime(tmp_path):
+    # A bare counter is not a date, so resolution falls through to mtime.
+    from PIL import Image
+
+    src = tmp_path / "IMG_7133.png"
+    Image.new("RGB", (16, 16), (1, 2, 3)).save(src)
+    meta = metadata.extract_meta(src)
+    assert meta.taken_source == "mtime"
+
+
 # -- models resolution -----------------------------------------------------
 def test_models_env_override_missing_file(monkeypatch, tmp_path):
     monkeypatch.setenv("PHOTO_ATLAS_YUNET", str(tmp_path / "absent.onnx"))

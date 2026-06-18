@@ -17,6 +17,8 @@ from pathlib import Path
 from PIL import Image, ImageOps
 from PIL.ExifTags import GPSTAGS, TAGS
 
+from .filename_date import parse_filename_date
+
 # HEIC/HEIF (the default iPhone format) needs the optional ``pillow-heif``
 # plugin; register it when present so those files decode instead of failing.
 # Install with ``uv sync --extra heic`` (or ``pip install 'photo-atlas[heic]'``).
@@ -184,6 +186,16 @@ def extract_meta_from_image(img: Image.Image, path: Path) -> PhotoMeta:
     meta.camera_model = str(model).strip("\x00 ").strip() or None if model else None
 
     meta.lat, meta.lon = _extract_gps(img)
+
+    # EXIF is often stripped on edited / exported / messaging-app copies, but the
+    # capture date frequently survives in the filename. Trust it above the folder
+    # hint and the filesystem mtime (the folder gap-fill lives in the indexer,
+    # which has the directory tree).
+    if meta.taken_at is None:
+        from_name = parse_filename_date(path.name)
+        if from_name is not None:
+            meta.taken_at = from_name.isoformat(timespec="seconds")
+            meta.taken_source = "filename"
 
     if meta.taken_at is None:
         ts = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)

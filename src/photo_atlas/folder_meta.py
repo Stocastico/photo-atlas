@@ -62,6 +62,30 @@ def _is_day(token: str) -> bool:
     return token.isdigit() and 1 <= int(token) <= 31
 
 
+def _loose_month(name: str) -> int | None:
+    """Return a month if ``name`` is *clearly nothing but* a month folder.
+
+    Handles the ``YYYY/<NN-monthname>/file`` layout (e.g. ``2026/01-gennaio``)
+    where the month sits in its own yearless folder under a year folder. To stay
+    safe we require a **named** month (``gennaio``/``august``): the component may
+    also carry a numeric month/day token (``01`` in ``01-gennaio``), but any
+    other word means it's a place label (``Maggio in montagna``), not a month,
+    and a bare numeric folder (``05``) is too ambiguous (day? counter?) to trust.
+    """
+
+    tokens = [t for t in _SEP.split(name.strip()) if t]
+    month: int | None = None
+    for token in tokens:
+        named = _MONTHS.get(token.lower())
+        if named is not None:
+            if month is not None and month != named:
+                return None  # two different month names — ambiguous
+            month = named
+        elif not (token.isdigit() and 1 <= int(token) <= 31):
+            return None  # an ordinary word — this is a place, not a month folder
+    return month
+
+
 def parse_component(name: str) -> FolderMeta:
     """Parse a single folder name.
 
@@ -108,9 +132,15 @@ def extract_folder_meta(path: Path | str) -> FolderMeta:
     """
 
     result = FolderMeta()
+    # A month can live in its own yearless folder (``2026/01-gennaio``); remember
+    # the nearest such month and apply it only if a year turns up and no dated
+    # folder supplied an (always-preferred) explicit month.
+    pending_month: int | None = None
     for parent in Path(path).parents:
         fm = parse_component(parent.name)
         if fm.year is None:
+            if pending_month is None:
+                pending_month = _loose_month(parent.name)
             continue
         if result.year is None:
             result.year = fm.year
@@ -120,4 +150,6 @@ def extract_folder_meta(path: Path | str) -> FolderMeta:
             result.place = fm.place
         if result.year is not None and result.month is not None and result.place is not None:
             break
+    if result.year is not None and result.month is None and pending_month is not None:
+        result.month = pending_month
     return result
