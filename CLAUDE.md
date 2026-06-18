@@ -105,6 +105,9 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   ingested by `index_video` (poster frame stored content-addressed under
   `posters_dir`; `path` stays the playable file so `/api/image` streams it), gated on
   `video.ffmpeg_available()` — no ffmpeg means videos are counted but not indexed.
+  `extract_poster` writes the poster to an atomic `.part` temp, so it **must** pass
+  `-f image2` to pin the muxer (ffmpeg otherwise infers the format from the `.part`
+  extension and fails); the `at=` seek falls back to the opening frame for short clips.
 - **Facet filters accept a scalar or a list** (OR within a facet, AND across facets).
   Semantic search is a *ranking* layered on top, via the `text` query param.
 - **Face active learning:** correcting an auto-tag (un/reassign) records a

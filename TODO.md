@@ -212,6 +212,12 @@ A full-app review at ~27k images + ~600 videos drove a round of hardening.
   (`_parse_probe`/`_parse_iso6709`/`_parse_creation_time`) and the indexing path (via an
   injected stub poster + probe) are tested offline in `tests/test_video.py`, with a live
   ffmpeg round-trip gated on the binary being installed.
+  - **Bug fix (2026-06-18):** `extract_poster` wrote to a `.part` atomic temp, so ffmpeg
+    couldn't infer an image muxer from the extension and failed *every* poster write
+    ("Unable to choose an output format", exit 234) — `index_video` would have failed on
+    all real videos. Fixed by pinning `-f image2`. The live test missed it because CI has
+    no ffmpeg (it skips); now strengthened with a 2s-clip seek path + a short-clip
+    fallback test.
 
 ## Deep review (2026-06-16): bugs, scale & bold ideas
 
