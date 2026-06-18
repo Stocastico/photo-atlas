@@ -25,7 +25,7 @@ from .indexer import (
     prune_library,
     retag_scenes,
 )
-from .search import facets
+from .search import facets, taken_source_counts
 
 
 def _config(args) -> AtlasConfig:
@@ -203,6 +203,7 @@ def _cmd_stats(args) -> int:
     conn = db.connect(config.db_path)
     try:
         data = facets(conn)
+        date_sources = taken_source_counts(conn)
     finally:
         conn.close()
 
@@ -217,6 +218,14 @@ def _cmd_stats(args) -> int:
     if data["persons"]:
         people = ", ".join(f"{p['name']} ({p['count']})" for p in data["persons"][:10])
         print(f"Top people: {people}")
+    if date_sources:
+        # Provenance of capture dates, best source first; 'mtime' is the weakest
+        # (backup/copy time), so a large filename/folder share is the win here.
+        order = ["exif", "filename", "folder", "video", "mtime"]
+        ranked = sorted(date_sources.items(), key=lambda kv: (order.index(kv[0])
+                        if kv[0] in order else len(order), -kv[1]))
+        breakdown = ", ".join(f"{src} ({n})" for src, n in ranked)
+        print(f"Date sources: {breakdown}")
     return 0
 
 

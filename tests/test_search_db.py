@@ -60,6 +60,22 @@ def test_search_photos_omits_scene_scores_but_detail_keeps_it(tmp_path):
         conn.close()
 
 
+def test_taken_source_counts(tmp_path):
+    """The date-provenance breakdown groups photos by their taken_source."""
+
+    conn = db.connect(tmp_path / "s.db")
+    try:
+        for i, src in enumerate(["exif", "filename", "filename", "folder", "mtime"]):
+            _insert(conn, path=f"/a/{i}.jpg", taken_source=src)
+        # A NULL source defaults to 'mtime' (older rows).
+        _insert(conn, path="/a/null.jpg", taken_source=None)
+
+        counts = search.taken_source_counts(conn)
+        assert counts == {"exif": 1, "filename": 2, "folder": 1, "mtime": 2}
+    finally:
+        conn.close()
+
+
 def test_people_count_filter_and_facet(tmp_path):
     """Number-of-people buckets filter on face_count and the facet counts agree."""
 

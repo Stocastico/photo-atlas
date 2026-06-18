@@ -537,6 +537,21 @@ def search_photos(
     return [dict(r) for r in rows], int(total)
 
 
+def taken_source_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    """How many photos got their capture date from each source.
+
+    Keys are the ``taken_source`` values (``exif`` / ``filename`` / ``folder`` /
+    ``mtime`` / ``video``); the counts let a ``stats`` run report how much the
+    filename/folder mining recovered over the bare filesystem-mtime fallback.
+    """
+
+    rows = conn.execute(
+        "SELECT COALESCE(taken_source, 'mtime') AS src, COUNT(*) AS n "
+        "FROM photos GROUP BY src"
+    ).fetchall()
+    return {r["src"]: r["n"] for r in rows}
+
+
 def on_this_day(
     conn: sqlite3.Connection, month: int, day: int, *, per_year: int = 24
 ) -> list[dict]:
