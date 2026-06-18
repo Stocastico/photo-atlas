@@ -574,6 +574,11 @@ Work that needs the actual library in hand (real filenames, real volume, real
 hardware) to design and benchmark. None of it is started.
 
 - [ ] **GPU / hardware-accelerated inference (ONNX Runtime execution providers).**
+  **Deferred (2026-06-18):** the current indexing host is a **2016 Intel Mac** with no
+  Apple Silicon GPU/Neural Engine — CoreML EP there would fall back to the Intel iGPU for
+  marginal, op-coverage-limited gains, so it's **not worth it until a newer (Apple Silicon)
+  machine**. On Apple Silicon this becomes the highest-value perf item; revisit then. The
+  env-flag EP wiring (step 1) is still cheap and harmless to land early if useful.
   Today the stack is **CPU-only**: the dependency is plain `onnxruntime` (CPU EP only)
   *and* every `ort.InferenceSession(...)` in `embed.py`/`faces.py`/`classify.py` is built
   with default providers, so it wouldn't use a GPU even if one were installed. The three

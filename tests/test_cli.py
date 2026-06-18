@@ -87,13 +87,13 @@ def test_index_real_directory(tmp_path, capsys):
     demo.generate(photos, count=5, seed=3)
     home = tmp_path / "lib"
 
-    rc = cli.main(["--home", str(home), "index", str(photos), "--faces", "none"])
+    rc = cli.main(["--home", str(home), "index", str(photos), "--faces", "none", "--workers", "1"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "5 indexed" in out
 
     # Indexing again skips everything (incremental).
-    cli.main(["--home", str(home), "index", str(photos), "--faces", "none"])
+    cli.main(["--home", str(home), "index", str(photos), "--faces", "none", "--workers", "1"])
     assert "0 indexed, 5 skipped" in capsys.readouterr().out
 
 
@@ -105,7 +105,7 @@ def test_prune_command_removes_deleted_files(tmp_path, capsys):
     photos = tmp_path / "pics"
     paths = demo.generate(photos, count=3, seed=4)
     home = tmp_path / "lib"
-    cli.main(["--home", str(home), "index", str(photos), "--faces", "none"])
+    cli.main(["--home", str(home), "index", str(photos), "--faces", "none", "--workers", "1"])
     capsys.readouterr()
 
     Path(paths[0]).unlink()
@@ -145,7 +145,7 @@ def test_dedup_command_backfills_hashes(tmp_path, capsys):
     photos = tmp_path / "pics"
     demo.generate(photos, count=4, seed=5)
     home = tmp_path / "lib"
-    cli.main(["--home", str(home), "index", str(photos), "--faces", "none"])
+    cli.main(["--home", str(home), "index", str(photos), "--faces", "none", "--workers", "1"])
     # Clear the hashes computed at index time to simulate a pre-phash catalog.
     conn = db.connect(AtlasConfig(home=home).db_path)
     conn.execute("UPDATE photos SET phash=NULL")
@@ -168,7 +168,9 @@ def test_index_reports_failed_files_on_stderr(tmp_path, capsys):
     pics = tmp_path / "pics"
     pics.mkdir()
     (pics / "broken.jpg").write_bytes(b"not a real jpeg")
-    rc = cli.main(["--home", str(tmp_path / "lib"), "index", str(pics), "--faces", "none"])
+    rc = cli.main(
+        ["--home", str(tmp_path / "lib"), "index", str(pics), "--faces", "none", "--workers", "1"]
+    )
     assert rc == 0
     err = capsys.readouterr().err
     assert "failed" in err and "broken.jpg" in err

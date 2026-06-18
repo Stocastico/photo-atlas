@@ -100,7 +100,9 @@ def test_index_prune_flag_reconciles(tmp_path, capsys):
     orphan.parent.mkdir(parents=True, exist_ok=True)
     orphan.write_bytes(b"x")
 
-    rc = cli.main(["--home", str(home), "index", str(photos), "--faces", "none", "--prune"])
+    rc = cli.main(
+        ["--home", str(home), "index", str(photos), "--faces", "none", "--prune", "--workers", "1"]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert "Pruned" in out  # reconciliation ran as part of index
