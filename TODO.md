@@ -599,26 +599,29 @@ hardware) to design and benchmark. None of it is started.
     to prioritise. (Indexing is also I/O-bound on an external disk; measure disk read
     throughput before assuming compute is the bottleneck.)
 
-- [ ] **Mine capture dates from filenames (a new `taken_source='filename'`).** Across 15
-  years, phones/cameras stamp the date into the filename in many formats —
-  `IMG_20180704_153012.jpg`, `2018-07-04 15.30.12.jpg`, `PXL_20210101_010101123.jpg`
-  (Pixel), `Screenshot_20200101-...`, `VID_...`, `IMG-20180101-WA0001.jpg` (WhatsApp),
-  `Signal-2019-...`, bare `DSC_0001`/`IMG_1234` (no date) — and EXIF is often missing on
-  edited/exported/messaging-app copies. Today `metadata` resolves `taken_at` as
-  `exif → folder → mtime`; a filename parser slots in as a higher-confidence source than
-  folder/mtime. Plan:
-  1. **Analysis first** (what the user asked for): a CLI/offline tool that samples the
-     library's filenames, clusters them into format families, and reports each pattern's
-     frequency + coverage + a few examples — so the parser set is driven by what's
-     *actually* present, not guesswork.
-  2. Implement a small, ordered registry of dated-filename regexes (pure + unit-testable
-     offline), validate the parsed datetime is sane (range-checked, not a resolution like
-     `1920x1080` or a counter), and wire it into the `taken_at` resolution chain as
-     `taken_source='filename'`, ranked between `exif` and `folder`.
-  - **Effort: low–medium.** **Risk: low** (additive source; guard against false positives
-    like dimensions/IDs masquerading as dates).
+- [x] **Mine capture dates from filenames (a new `taken_source='filename'`).** **Done**
+  (2026-06-18). A format survey of the real `/Volumes/Backup/Photos` tree (27,627 files)
+  drove the parser set: ~18k files carry a date in the name. `filename_date.parse_filename_date`
+  is an ordered, offline-testable regex registry over the families actually present —
+  Android `IMG_/VID_YYYYMMDD_HHMMSS`, Google Pixel `PXL_...mmm`, iOS exports
+  `YYYYMMDD_HHMMSSmmm_iOS` (+ ` N` dup suffix), Windows Phone `WP_YYYYMMDD_HH_MM_SS_*`
+  (and the `WP_YYYYMMDD_NNN` counter form, date-only), WhatsApp `IMG-/VID-YYYYMMDD-WAnnnn`
+  (date-only), `YYYY-MM-DD HH.MM.SS`, bare compact `YYYYMMDD_HHMMSS`, and Italian text
+  dates (`25 Aprile 2006`, `15.5.2006`, day-first). Every candidate is validated as a real
+  calendar moment within `[1990, now+1]`, so bare counters (`IMG_7133`, `DSC_0191`,
+  `DSCN0958`, plain `1207`), sequence numbers and resolutions (`1920x1080`) are rejected.
+  Wired into the `taken_at` chain as **exif → filename → folder → mtime** for both photos
+  (`metadata.extract_meta_from_image`) and videos (`indexer.index_video`); the folder hint
+  now fills only the `mtime` gap. `stats` reports a `Date sources:` provenance breakdown
+  (`search.taken_source_counts`). Parser + wiring + breakdown unit-tested
+  (`tests/test_filename_date.py`, `tests/test_units_misc.py`, `tests/test_search_db.py`).
 
-- [ ] **Folder-structure / file-naming conventions.** (Previously noted.) Mine
-  organisational patterns from the real tree — date-named folders, event/trip folders,
-  `YYYY/MM` hierarchies, camera-dump dirs — to enrich place/trip/date inference. Needs the
-  real collection to design against.
+- [x] **Folder-structure / file-naming conventions.** **Done** (2026-06-18). The real tree
+  is overwhelmingly `YYYY/YYYY_MM_Place/` (already handled) plus a `Kai/2026/01-gennaio/`
+  layout where the **month lives in its own yearless subfolder** under a year folder.
+  `folder_meta` now recovers that month (`_loose_month`: a *named* month — English/Italian —
+  optionally with a numeric month/day token, but never a bare numeric or an ordinary word so
+  places like `Maggio in montagna` aren't misread), applied when an ancestor supplies the
+  year and no dated folder named an explicit month. Place inference stays year-gated as
+  before (so `ALTRE`/`Food Pics`/`Mosaico` aren't mistaken for places); the date for those
+  `*_varie` folders comes from filename mining instead. Unit-tested (`tests/test_folder_meta.py`).

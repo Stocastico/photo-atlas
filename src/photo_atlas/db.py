@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS photos (
     height       INTEGER,
     bytes        INTEGER,
     taken_at     TEXT,          -- ISO 8601, best available timestamp
-    taken_source TEXT,          -- 'exif' | 'folder' | 'mtime'
+    taken_source TEXT,          -- 'exif' | 'filename' | 'folder' | 'mtime' | 'video'
     camera_make  TEXT,
     camera_model TEXT,
     lat          REAL,

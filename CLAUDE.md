@@ -62,14 +62,15 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 | `config.py` | `AtlasConfig` — library paths + tunables (`~/.photo_atlas`, `PHOTO_ATLAS_HOME`) |
 | `db.py` | SQLite schema, additive migrations (`_migrate`), embedding (de)serialisation. `PHOTO_COLUMNS` is the single source of truth for writable photo columns |
 | `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Also `embed_library`, `backfill_phashes`, `retag_scenes`, `prune_library`, `delete_photos` (hard delete: rows + files + derivatives), `export_photos` (copy a selection's originals to a folder), `cluster_library` |
-| `metadata.py` | EXIF/dimensions/thumbnails, `cached_resized` derivatives (atomic temp+replace), HEIF opener |
+| `metadata.py` | EXIF/dimensions/thumbnails, `cached_resized` derivatives (atomic temp+replace), HEIF opener. Resolves `taken_at` as **exif → filename → mtime** (folder hint slots in via the indexer) |
+| `filename_date.py` | `parse_filename_date` — ordered regex registry mining a capture date/time from real filename conventions (Android/iOS/WP/WhatsApp/`YYYY-MM-DD HH.MM.SS`/bare compact/Italian text), validated against a sane calendar range so counters/resolutions aren't misread |
 | `video.py` | optional ffmpeg/ffprobe poster-frame + capture-date/GPS extraction for videos (`index_video`); pure `_parse_probe` is the offline-testable seam |
 | `faces.py` | shared `_YuNetBackend` detection + `YuNetArcFaceBackend` (default, 512-d via onnxruntime, 5-pt `norm_crop` alignment) / `YuNetSFaceBackend` (legacy 128-d) embed backends, DBSCAN clustering, negative-aware k-NN recognition (`Enrollment` carries positives + "not this person" negatives) |
 | `classify.py` | scene tagging: SigLIP 2-only `ZeroShotSceneTagger` (shares the vision encoder with embeddings) |
 | `embed.py` | `SigLipImageEncoder` / `SigLipTextEncoder` for semantic search; `configure_text_tokenizer` honours the tokenizer's embedded pad config (SigLIP 2 Gemma) |
 | `search.py` | filter dict → SQL (`_where`), facets, plus `SemanticIndex`/`semantic_search` (cosine ranking ANDed with filters), `FaceIndex`/`similar_faces` ("more like this person" over ArcFace embeddings), trip/memory grouping, and `find_burst_groups` (perceptual+temporal near-duplicate detection) |
 | `planner.py` | model-free decomposition of NL queries → person/people filters + residual visual text |
-| `geocode.py` / `folder_meta.py` | GPS→city/country; year/place mined from folder names |
+| `geocode.py` / `folder_meta.py` | GPS→city/country; year/place mined from folder names (incl. a month from a yearless named-month subfolder, e.g. `2026/01-gennaio`) |
 | `library.py` | person/cluster management (rename/merge/cover/assign) |
 | `api.py` | FastAPI app (`create_app`); media + JSON endpoints; cross-origin write guard; caches the semantic index + text encoder |
 | `models.py` | on-demand model downloads (YuNet/ArcFace/SFace + SigLIP 2) with env overrides; `ensure_arcface_models` (default), `ensure_models` (SFace), `ensure_scene_input_size` |
