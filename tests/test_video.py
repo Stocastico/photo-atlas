@@ -293,10 +293,12 @@ def test_api_serves_video_media(tmp_path):
 # -- optional live round-trip (only when ffmpeg is installed) ---------------
 @pytest.mark.skipif(not video.ffmpeg_available(), reason="ffmpeg/ffprobe not installed")
 def test_live_ffmpeg_poster_and_probe(tmp_path):
+    # A 2s clip so the default `at=1.0` seek lands on a real frame (the common
+    # real-world path), not at EOF.
     clip = tmp_path / "gen.mp4"
     subprocess.run(
         ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
-         "-i", "testsrc=duration=1:size=320x240:rate=10", str(clip)],
+         "-i", "testsrc=duration=2:size=320x240:rate=10", str(clip)],
         check=True, capture_output=True, timeout=60,
     )
     dest = tmp_path / "poster.jpg"
@@ -306,7 +308,24 @@ def test_live_ffmpeg_poster_and_probe(tmp_path):
         assert img.size == (320, 240)
     meta = video.probe_metadata(clip)
     assert meta.width == 320 and meta.height == 240
-    assert meta.duration == pytest.approx(1.0, abs=0.3)
+    assert meta.duration == pytest.approx(2.0, abs=0.3)
+
+
+@pytest.mark.skipif(not video.ffmpeg_available(), reason="ffmpeg/ffprobe not installed")
+def test_live_ffmpeg_poster_falls_back_for_short_clip(tmp_path):
+    # A clip shorter than `at` makes the seek land at EOF (no frame); extraction
+    # must fall back to the opening frame and still produce a valid poster.
+    clip = tmp_path / "short.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+         "-i", "testsrc=duration=1:size=160x120:rate=10", str(clip)],
+        check=True, capture_output=True, timeout=60,
+    )
+    dest = tmp_path / "poster.jpg"
+    video.extract_poster(clip, dest, at=5.0)
+    assert dest.exists() and dest.stat().st_size > 0
+    with Image.open(dest) as img:
+        assert img.size == (160, 120)
 
 
 def test_ffmpeg_available_returns_bool():

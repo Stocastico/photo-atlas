@@ -57,7 +57,11 @@ def extract_poster(video: Path, dest: Path, *, at: float = 1.0, timeout: int = 1
         cmd = [FFMPEG, "-y", "-loglevel", "error"]
         if seek:
             cmd += ["-ss", str(seek)]  # input-side seek: fast and frame-accurate enough
-        cmd += ["-i", str(video), "-frames:v", "1", "-q:v", "3", str(tmp)]
+        # ``-f image2`` pins the output muxer explicitly: ffmpeg otherwise infers it
+        # from the filename extension, and our atomic temp ends in ``.part`` (not
+        # ``.jpg``), so without this every poster write fails with "Unable to choose
+        # an output format".
+        cmd += ["-i", str(video), "-frames:v", "1", "-q:v", "3", "-f", "image2", str(tmp)]
         subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
 
     try:
