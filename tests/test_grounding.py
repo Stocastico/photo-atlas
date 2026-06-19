@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from photo_atlas import db
+from photo_atlas import db, search
 from photo_atlas.indexer import region_box
 
 
@@ -104,6 +104,140 @@ def test_region_box_clamps_at_edges():
 def test_region_box_full_frame_face_is_the_whole_image():
     # A face filling the frame yields the whole image (everything clamps).
     assert region_box((0, 0, 64, 64), 64, 64) == (0, 0, 64, 64)
+
+
+# -- RegionIndex + grounded_search -----------------------------------------
+def _add_face(conn, photo_id, person_id, region_vec=None, **bbox):
+    bbox.setdefault("bbox_x", 0)
+    bbox.setdefault("bbox_y", 0)
+    bbox.setdefault("bbox_w", 4)
+    bbox.setdefault("bbox_h", 4)
+    cur = conn.execute(
+        "INSERT INTO faces (photo_id, person_id, bbox_x, bbox_y, bbox_w, bbox_h, "
+        "region_embedding, region_dim) VALUES (?,?,?,?,?,?,?,?)",
+        (
+            photo_id, person_id, bbox["bbox_x"], bbox["bbox_y"],
+            bbox["bbox_w"], bbox["bbox_h"],
+            db.embedding_to_blob(region_vec) if region_vec is not None else None,
+            None if region_vec is None else int(np.asarray(region_vec).reshape(-1).shape[0]),
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def _grounding_library(tmp_path):
+    """Stefano in two photos with opposite region embeddings; Bob in a third."""
+    conn = db.connect(tmp_path / "g.db")
+    stefano = db.get_or_create_person(conn, "Stefano")
+    bob = db.get_or_create_person(conn, "Bob")
+
+    def photo(path, vec, **cols):
+        pid = db.upsert_photo(conn, {"path": path, "filename": path.lstrip("/"), **cols})
+        if vec is not None:
+            db.set_photo_embedding(conn, pid, vec)
+        return pid
+
+    # Whole-image embeddings make B look most "eating"; region embeddings flip it.
+    a = photo("/a.jpg", _unit(0.3, 1, 0))  # Stefano's region = eating
+    b = photo("/b.jpg", _unit(1, 0.1, 0))  # Stefano's region = beach
+    c = photo("/c.jpg", _unit(1, 0, 0))    # Bob only
+    _add_face(conn, a, stefano, _unit(1, 0, 0))    # eating
+    _add_face(conn, b, stefano, _unit(0, 1, 0))    # beach
+    _add_face(conn, c, bob, _unit(1, 0, 0))        # eating, but Bob
+    conn.commit()
+    return conn, {"stefano": stefano, "bob": bob, "a": a, "b": b, "c": c}
+
+
+def test_region_index_loads_named_faces_only(tmp_path):
+    conn, ids = _grounding_library(tmp_path)
+    try:
+        # An unnamed face with a region embedding is not grounding material.
+        _add_face(conn, ids["a"], None, _unit(0, 0, 1))
+        conn.commit()
+        index = search.RegionIndex.load(conn)
+        # Three named faces carry region embeddings (a, b, c); the unnamed one drops.
+        assert index.size == 3
+        assert index.has_any({ids["stefano"]})
+        assert not index.has_any({999})
+    finally:
+        conn.close()
+
+
+def test_grounded_search_ranks_by_the_person_region(tmp_path):
+    conn, ids = _grounding_library(tmp_path)
+    try:
+        index = search.RegionIndex.load(conn)
+        # "eating" query, grounded on Stefano: photo A (his region = eating) wins
+        # over B even though B's *whole-image* embedding is the more "eating" one.
+        filters = {"person_id": [ids["stefano"]]}
+        rows, total = search.grounded_search(
+            conn, filters, _unit(1, 0, 0), index, [ids["stefano"]]
+        )
+        assert total == 2  # Bob's photo is excluded by the person filter
+        assert [r["id"] for r in rows] == [ids["a"], ids["b"]]
+        assert "score" in rows[0] and rows[0]["score"] >= rows[1]["score"]
+    finally:
+        conn.close()
+
+
+def test_grounded_search_takes_best_region_per_photo(tmp_path):
+    conn, ids = _grounding_library(tmp_path)
+    try:
+        # A second Stefano face in photo B whose region matches "eating" lifts B.
+        _add_face(conn, ids["b"], ids["stefano"], _unit(1, 0, 0))
+        conn.commit()
+        index = search.RegionIndex.load(conn)
+        rows, _ = search.grounded_search(
+            conn, {"person_id": [ids["stefano"]]}, _unit(1, 0, 0), index, [ids["stefano"]]
+        )
+        # Both photos now have an "eating" region, so they tie at the top; the page
+        # still contains both (a stable sort keeps a deterministic order).
+        assert {r["id"] for r in rows} == {ids["a"], ids["b"]}
+    finally:
+        conn.close()
+
+
+def test_grounded_search_honours_structured_filters(tmp_path):
+    conn, ids = _grounding_library(tmp_path)
+    try:
+        # Pin photo A to 2010 and restrict the query to 2010 — only A survives.
+        conn.execute("UPDATE photos SET taken_at='2010-05-01T00:00:00' WHERE id=?", (ids["a"],))
+        conn.execute("UPDATE photos SET taken_at='2021-05-01T00:00:00' WHERE id=?", (ids["b"],))
+        conn.commit()
+        index = search.RegionIndex.load(conn)
+        filters = {"person_id": [ids["stefano"]], "year": "2010"}
+        rows, total = search.grounded_search(
+            conn, filters, _unit(1, 0, 0), index, [ids["stefano"]]
+        )
+        assert total == 1 and [r["id"] for r in rows] == [ids["a"]]
+    finally:
+        conn.close()
+
+
+def test_grounded_search_paginates(tmp_path):
+    conn, ids = _grounding_library(tmp_path)
+    try:
+        index = search.RegionIndex.load(conn)
+        f = {"person_id": [ids["stefano"]]}
+        p1, total = search.grounded_search(conn, f, _unit(1, 0, 0), index, [ids["stefano"]],
+                                           limit=1, offset=0)
+        p2, total2 = search.grounded_search(conn, f, _unit(1, 0, 0), index, [ids["stefano"]],
+                                            limit=1, offset=1)
+        assert total == total2 == 2
+        assert [r["id"] for r in p1] == [ids["a"]]
+        assert [r["id"] for r in p2] == [ids["b"]]
+    finally:
+        conn.close()
+
+
+def test_grounded_search_empty_index_is_safe(tmp_path):
+    conn = db.connect(tmp_path / "e.db")
+    try:
+        index = search.RegionIndex.load(conn)
+        assert index.size == 0 and not index.has_any({1})
+        assert search.grounded_search(conn, {}, _unit(1, 0, 0), index, [1]) == ([], 0)
+    finally:
+        conn.close()
 
 
 def test_region_columns_added_to_legacy_faces_table(tmp_path):
