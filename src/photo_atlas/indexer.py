@@ -133,6 +133,11 @@ class _PreparedFace:
     crop_jpeg: bytes | None
     person_id: int | None
     confidence: float
+    #: SigLIP embedding of the *region* around the face (for per-person grounding),
+    #: as raw float32 bytes so it crosses a process boundary. ``None`` unless
+    #: embeddings were requested (the same ``image_encoder`` that embeds the photo).
+    region_embedding_blob: bytes | None = None
+    region_dim: int | None = None
 
 
 @dataclass
@@ -366,6 +371,17 @@ def _prepare_photo(
                     k=config.recognition_k, threshold=config.face_match_threshold,
                 )
             x, y, w, h = obs.bbox
+            # Per-person grounding: embed the region around this face in the same
+            # SigLIP space as the photo/text embeddings, so a hybrid query can score
+            # *this person's* region. Only when embeddings are on (same encoder).
+            region_blob: bytes | None = None
+            region_dim: int | None = None
+            if image_encoder is not None:
+                rx, ry, rw, rh = region_box(obs.bbox, img.width, img.height)
+                region_img = img.convert("RGB").crop((rx, ry, rx + rw, ry + rh))
+                region_vec = image_encoder.embed_image(region_img)
+                region_blob = db.embedding_to_blob(region_vec)
+                region_dim = int(region_vec.shape[0])
             faces.append(
                 _PreparedFace(
                     bbox=(int(x), int(y), int(w), int(h)),
@@ -374,6 +390,8 @@ def _prepare_photo(
                     crop_jpeg=_encode_face_crop(img, obs.bbox),
                     person_id=person_id,
                     confidence=confidence,
+                    region_embedding_blob=region_blob,
+                    region_dim=region_dim,
                 )
             )
 
@@ -551,6 +569,8 @@ def _commit_prepared(
                 "embedding": face.embedding_blob,
                 "crop_path": str(crop_path) if crop_saved else None,
                 "confidence": face.confidence,
+                "region_embedding": face.region_embedding_blob,
+                "region_dim": face.region_dim,
             }
         )
 

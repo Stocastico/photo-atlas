@@ -12,14 +12,25 @@ This file covers the storage, geometry, ranking, indexing and API legs.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from photo_atlas import db, search
+from photo_atlas import db, indexer, search
 from photo_atlas.indexer import region_box
 
 
 def _unit(*vals: float) -> np.ndarray:
     v = np.array(vals, dtype=np.float32)
     return v / np.linalg.norm(v)
+
+
+class _StubImageEncoder:
+    """Maps any image to a fixed embedding (deterministic, model-free)."""
+
+    def __init__(self, vec):
+        self._vec = np.asarray(vec, dtype=np.float32)
+
+    def embed_image(self, _img):
+        return self._vec
 
 
 # -- DB storage: faces.region_embedding ------------------------------------
@@ -236,6 +247,74 @@ def test_grounded_search_empty_index_is_safe(tmp_path):
         index = search.RegionIndex.load(conn)
         assert index.size == 0 and not index.has_any({1})
         assert search.grounded_search(conn, {}, _unit(1, 0, 0), index, [1]) == ([], 0)
+    finally:
+        conn.close()
+
+
+# -- index-time region embedding -------------------------------------------
+def _demo_photo_with_face(config, tmp_path, encoder):
+    from scene_stub import StubTagger
+
+    from photo_atlas import demo
+    from photo_atlas.faces import SyntheticFaceBackend
+
+    photos = tmp_path / "photos"
+    demo.generate(photos, count=8, seed=3)
+    backend = SyntheticFaceBackend()
+    for i, p in enumerate(sorted(photos.glob("*"))):
+        prepared = indexer._prepare_photo(
+            config, p, backend=backend, tagger=StubTagger(), enrollment=None,
+            sha1=f"deadbeef{i:08d}", image_encoder=encoder,
+        )
+        if prepared.faces:
+            return prepared
+    pytest.fail("the synthetic demo produced no detectable faces")
+
+
+def test_prepare_photo_computes_region_embeddings(config, tmp_path):
+    enc = _StubImageEncoder(_unit(1, 0, 0, 0))
+    prepared = _demo_photo_with_face(config, tmp_path, enc)
+    # Every detected face carries a region embedding in the SigLIP space.
+    assert all(f.region_embedding_blob is not None for f in prepared.faces)
+    assert all(f.region_dim == 4 for f in prepared.faces)
+    region = db.blob_to_embedding(prepared.faces[0].region_embedding_blob)
+    assert np.allclose(region, _unit(1, 0, 0, 0))
+    # The whole-image embedding is still computed too.
+    assert prepared.embedding_blob is not None
+
+
+def test_prepare_photo_no_encoder_means_no_region_embedding(config, tmp_path):
+    from scene_stub import StubTagger
+
+    from photo_atlas import demo
+    from photo_atlas.faces import SyntheticFaceBackend
+
+    photos = tmp_path / "photos"
+    demo.generate(photos, count=8, seed=3)
+    backend = SyntheticFaceBackend()
+    for i, p in enumerate(sorted(photos.glob("*"))):
+        prepared = indexer._prepare_photo(
+            config, p, backend=backend, tagger=StubTagger(), enrollment=None,
+            sha1=f"cafe{i:08d}", image_encoder=None,
+        )
+        if prepared.faces:
+            assert all(f.region_embedding_blob is None for f in prepared.faces)
+            return
+    pytest.fail("the synthetic demo produced no detectable faces")
+
+
+def test_commit_prepared_persists_region_embeddings(config, tmp_path):
+    enc = _StubImageEncoder(_unit(0, 1, 0, 0))
+    prepared = _demo_photo_with_face(config, tmp_path, enc)
+    conn = db.connect(config.db_path)
+    try:
+        indexer._commit_prepared(conn, config, prepared, None, None)
+        rows = conn.execute(
+            "SELECT region_embedding, region_dim FROM faces WHERE region_embedding IS NOT NULL"
+        ).fetchall()
+        assert rows, "region embeddings should have been written for the faces"
+        assert all(r["region_dim"] == 4 for r in rows)
+        assert np.allclose(db.blob_to_embedding(rows[0]["region_embedding"]), _unit(0, 1, 0, 0))
     finally:
         conn.close()
 
