@@ -491,11 +491,22 @@ the next slice is easy to pick. Ordered by value-per-effort.
   in `faces.py`, not a `FaceDetectorYN` replacement) at medium risk; the YuNet 2026may +
   ArcFace R100 stack already covers detection/recognition well, so this is dropped unless
   a future eval shows detection is the limiter.
-- [ ] **Per-person semantic grounding.** *(Future)* Run SigLIP on the per-person face
-  crop so "Stefano eating food" scores the region containing Stefano, not the whole
-  frame. **Upside: medium** (sharper hybrid queries). **Effort: medium–high** (per-crop
-  embedding store + ranking). **Risk: medium.** Follow-up to the hybrid planner —
-  parked as a future item.
+- [x] **Per-person semantic grounding.** **Done** (2026-06-19): "Stefano eating food"
+  now scores the region *around Stefano's face* rather than the whole frame. A SigLIP
+  embedding of an expanded person-region (`indexer.region_box` — the face box grown
+  sideways and, more, downward for the torso) is stored per face
+  (`faces.region_embedding`/`region_dim`, additive migration, kept in the joint
+  image/text space). It's computed for free at index time (`index --embed`, same
+  encoder that embeds the photo) and backfillable on an existing library via
+  `indexer.embed_face_regions` (folded into `photo-atlas embed`). `search.RegionIndex`
+  + `search.grounded_search` rank a named person's photos by their best matching
+  region (max over that person's faces in a photo), ANDed with the structured filters;
+  `GET /api/photos?text=` uses it whenever the planner names a person who has region
+  embeddings (and echoes `plan.grounded`), falling back to whole-image semantic search
+  otherwise. The UI shows a 🎯 "focused on the person" hint. Storage/geometry/ranking/
+  index/backfill/API all unit-tested (`tests/test_grounding.py`, `tests/test_cli.py`).
+  The whole-image caveat is gone for *named*-person queries (an unnamed face can't be
+  addressed by name, so those still rank whole-image).
 - [ ] ~~**Inline duplicate-grid collapse.**~~ **Won't do** (2026-06-17). Collapsing a
   burst behind its cover *in the main photo grid* (badge + expand) would rework the
   virtualised windowing grid (variable-height rows / group headers) for medium-only
