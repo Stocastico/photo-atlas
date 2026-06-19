@@ -158,6 +158,44 @@ def test_dedup_command_backfills_hashes(tmp_path, capsys):
     assert "4 photo(s) hashed" in capsys.readouterr().out
 
 
+def test_embed_command_embeds_photos_and_face_regions(tmp_path, capsys, monkeypatch):
+    import numpy as np
+
+    from photo_atlas import demo, embed
+
+    photos = tmp_path / "pics"
+    demo.generate(photos, count=4, seed=5)
+    home = tmp_path / "lib"
+    cli.main(["--home", str(home), "index", str(photos), "--faces", "synthetic", "--workers", "1"])
+    capsys.readouterr()
+
+    class _StubEnc:
+        def embed_image(self, _img):
+            return np.ones(8, dtype=np.float32)
+
+    # Stand in for the SigLIP image encoder so the command stays offline.
+    monkeypatch.setattr(
+        embed.SigLipImageEncoder, "from_config", classmethod(lambda cls, c: _StubEnc())
+    )
+    rc = cli.main(["--home", str(home), "embed"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "photo(s) embedded" in out and "face region(s) embedded" in out
+
+    conn = db.connect(AtlasConfig(home=home).db_path)
+    try:
+        photos_embedded = conn.execute(
+            "SELECT COUNT(*) FROM photos WHERE embedding IS NOT NULL"
+        ).fetchone()[0]
+        regions = conn.execute(
+            "SELECT COUNT(*) FROM faces WHERE region_embedding IS NOT NULL"
+        ).fetchone()[0]
+        assert photos_embedded == 4
+        assert regions >= 1  # the synthetic demo yields at least one face
+    finally:
+        conn.close()
+
+
 def test_index_missing_path_returns_error(tmp_path, capsys):
     rc = cli.main(["--home", str(tmp_path / "lib"), "index", str(tmp_path / "nope")])
     assert rc == 2

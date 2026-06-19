@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from photo_atlas import db, indexer, search
+from photo_atlas.config import AtlasConfig
 from photo_atlas.indexer import region_box
 
 
@@ -317,6 +318,75 @@ def test_commit_prepared_persists_region_embeddings(config, tmp_path):
         assert np.allclose(db.blob_to_embedding(rows[0]["region_embedding"]), _unit(0, 1, 0, 0))
     finally:
         conn.close()
+
+
+# -- embed_face_regions backfill -------------------------------------------
+def _library_with_unembedded_faces(tmp_path):
+    from PIL import Image
+
+    config = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    conn = db.connect(config.db_path)
+    src = tmp_path / "img.jpg"
+    Image.new("RGB", (20, 20), (10, 20, 30)).save(src)
+    pid = db.upsert_photo(conn, {"path": str(src), "filename": "img.jpg"})
+    db.replace_faces(
+        conn,
+        pid,
+        [
+            {"bbox_x": 2, "bbox_y": 2, "bbox_w": 6, "bbox_h": 6},
+            {"bbox_x": 10, "bbox_y": 10, "bbox_w": 5, "bbox_h": 5},
+        ],
+    )
+    conn.commit()
+    conn.close()
+    return config
+
+
+def test_embed_face_regions_backfills_only_missing(tmp_path):
+    config = _library_with_unembedded_faces(tmp_path)
+    n = indexer.embed_face_regions(config, image_encoder=_StubImageEncoder(_unit(1, 0, 0, 0)))
+    assert n == 2
+
+    conn = db.connect(config.db_path)
+    try:
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM faces WHERE region_embedding IS NOT NULL"
+        ).fetchone()[0]
+        assert cnt == 2
+    finally:
+        conn.close()
+
+    # A second pass (no recompute) skips the already-embedded faces.
+    assert indexer.embed_face_regions(
+        config, image_encoder=_StubImageEncoder(_unit(0, 1, 0, 0))
+    ) == 0
+
+
+def test_embed_face_regions_recompute_overwrites(tmp_path):
+    config = _library_with_unembedded_faces(tmp_path)
+    indexer.embed_face_regions(config, image_encoder=_StubImageEncoder(_unit(1, 0, 0, 0)))
+    assert indexer.embed_face_regions(
+        config, image_encoder=_StubImageEncoder(_unit(0, 1, 0, 0)), recompute=True
+    ) == 2
+    conn = db.connect(config.db_path)
+    try:
+        vec = db.blob_to_embedding(
+            conn.execute("SELECT region_embedding FROM faces LIMIT 1").fetchone()[0]
+        )
+        assert np.allclose(vec, _unit(0, 1, 0, 0))
+    finally:
+        conn.close()
+
+
+def test_embed_face_regions_skips_missing_source(tmp_path):
+    config = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    conn = db.connect(config.db_path)
+    pid = db.upsert_photo(conn, {"path": str(tmp_path / "gone.jpg"), "filename": "gone.jpg"})
+    db.replace_faces(conn, pid, [{"bbox_x": 0, "bbox_y": 0, "bbox_w": 4, "bbox_h": 4}])
+    conn.commit()
+    conn.close()
+    # Source file doesn't exist -> nothing embedded, no crash.
+    assert indexer.embed_face_regions(config, image_encoder=_StubImageEncoder(_unit(1, 0))) == 0
 
 
 def test_region_columns_added_to_legacy_faces_table(tmp_path):

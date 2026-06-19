@@ -1241,6 +1241,70 @@ def embed_library(
     return embedded
 
 
+def embed_face_regions(
+    config: AtlasConfig,
+    *,
+    image_encoder: SigLipImageEncoder | None = None,
+    recompute: bool = False,
+    progress: Callable[[int, int], None] | None = None,
+) -> int:
+    """Backfill per-face region embeddings for grounding, without a re-index.
+
+    Decodes each still-present photo that has a face missing a region embedding
+    (or every photo with faces when ``recompute``), crops the :func:`region_box`
+    around each stored face bbox off the same EXIF-upright pixels detection used,
+    and stores its SigLIP embedding via :func:`db.set_face_region_embedding`. No
+    face re-detection. Returns the number of faces embedded.
+    """
+
+    encoder = image_encoder or SigLipImageEncoder.from_config(config)
+    conn = db.connect(config.db_path)
+    embedded = 0
+    try:
+        # Photos that have at least one face needing a region embedding (or all
+        # photos with faces under ``recompute``). One decode per photo.
+        face_filter = "" if recompute else " AND f.region_embedding IS NULL"
+        rows = conn.execute(
+            "SELECT DISTINCT p.id, p.path FROM photos p JOIN faces f ON f.photo_id = p.id "
+            f"WHERE p.is_video = 0{face_filter}"
+        ).fetchall()
+        total = len(rows)
+        for i, row in enumerate(rows):
+            path = Path(row["path"])
+            if not path.exists():
+                continue
+            face_where = "photo_id=?" if recompute else "photo_id=? AND region_embedding IS NULL"
+            faces = conn.execute(
+                f"SELECT id, bbox_x, bbox_y, bbox_w, bbox_h FROM faces WHERE {face_where}",
+                (int(row["id"]),),
+            ).fetchall()
+            if not faces:
+                continue
+            try:
+                with Image.open(path) as raw:
+                    raw.load()
+                    img = (ImageOps.exif_transpose(raw) or raw).convert("RGB")
+            except Exception as exc:
+                print(f"warning: could not embed regions for {path}: {exc}", file=sys.stderr)
+                continue
+            for face in faces:
+                bbox = (face["bbox_x"], face["bbox_y"], face["bbox_w"], face["bbox_h"])
+                if any(v is None for v in bbox):
+                    continue
+                rx, ry, rw, rh = region_box(
+                    cast(tuple[int, int, int, int], bbox), img.width, img.height
+                )
+                region_vec = encoder.embed_image(img.crop((rx, ry, rx + rw, ry + rh)))
+                db.set_face_region_embedding(conn, int(face["id"]), region_vec)
+                embedded += 1
+            if progress is not None:
+                progress(i + 1, total)
+        conn.commit()
+    finally:
+        conn.close()
+    return embedded
+
+
 def backfill_phashes(
     config: AtlasConfig,
     *,
