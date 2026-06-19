@@ -152,6 +152,25 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             _faces["sig"] = sig
         return _faces["index"]
 
+    # Per-face region-embedding index for per-person grounding, cached and rebuilt
+    # only when the set of named, region-embedded faces changes (a re-embed bumps
+    # ``face_regions_version`` so an in-place backfill also invalidates it).
+    _regions: dict = {"index": None, "sig": None}
+
+    def _region_signature(conn: sqlite3.Connection) -> tuple[int, int, str]:
+        row = conn.execute(
+            "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM faces "
+            "WHERE region_embedding IS NOT NULL AND person_id IS NOT NULL"
+        ).fetchone()
+        return int(row[0]), int(row[1]), str(db.get_meta(conn, "face_regions_version"))
+
+    def _region_index(conn: sqlite3.Connection):
+        sig = _region_signature(conn)
+        if _regions["sig"] != sig:
+            _regions["index"] = search.RegionIndex.load(conn)
+            _regions["sig"] = sig
+        return _regions["index"]
+
     def _text_encoder():
         if _semantic["encoder"] is None and not _semantic["encoder_tried"]:
             _semantic["encoder_tried"] = True
@@ -258,18 +277,28 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             plan_payload = {
                 "persons": plan.person_names, "people": plan.people,
                 "person_mode": plan.person_mode, "text": plan.text,
+                "grounded": False,
             }
 
             rows: list[dict]
             total: int | None
             if plan.text:
-                index = _semantic_index(conn)
-                if index.size == 0:
-                    raise HTTPException(
-                        409,
-                        "No photo embeddings yet — run `photo-atlas embed` (or "
-                        "`index --embed`) to enable semantic search.",
-                    )
+                # Per-person grounding: when the query named a person *and* that
+                # person has region embeddings, rank by how well *their* region
+                # matches the residual rather than the whole frame. Decide before
+                # building the (heavier) text encoder so the no-embeddings 409 still
+                # fires for a plain semantic query on an un-embedded library.
+                region_index = _region_index(conn)
+                grounded = bool(plan.person_ids and region_index.has_any(plan.person_ids))
+                index = None
+                if not grounded:
+                    index = _semantic_index(conn)
+                    if index.size == 0:
+                        raise HTTPException(
+                            409,
+                            "No photo embeddings yet — run `photo-atlas embed` (or "
+                            "`index --embed`) to enable semantic search.",
+                        )
                 encoder = _text_encoder()
                 if encoder is None:
                     raise HTTPException(
@@ -278,10 +307,19 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
                         "check the model can be downloaded (or set "
                         "PHOTO_ATLAS_TEXT_MODEL to a local file).",
                     )
-                rows, total = search.semantic_search(
-                    conn, merged, encoder.embed_text(plan.text), index,
-                    top_k=config.semantic_top_k, limit=limit, offset=offset,
-                )
+                query_vec = encoder.embed_text(plan.text)
+                if grounded:
+                    rows, total = search.grounded_search(
+                        conn, merged, query_vec, region_index, plan.person_ids,
+                        top_k=config.semantic_top_k, limit=limit, offset=offset,
+                    )
+                    plan_payload["grounded"] = True
+                else:
+                    assert index is not None
+                    rows, total = search.semantic_search(
+                        conn, merged, query_vec, index,
+                        top_k=config.semantic_top_k, limit=limit, offset=offset,
+                    )
             else:
                 # The query reduced to pure structured filters ("Stefano alone"):
                 # no visual leg, so no embeddings/model needed — just filter + page.

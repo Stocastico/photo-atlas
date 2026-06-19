@@ -389,6 +389,85 @@ def test_embed_face_regions_skips_missing_source(tmp_path):
     assert indexer.embed_face_regions(config, image_encoder=_StubImageEncoder(_unit(1, 0))) == 0
 
 
+# -- API: grounded hybrid search -------------------------------------------
+class _StubTextEncoder:
+    def __init__(self, vec):
+        self._vec = np.asarray(vec, dtype=np.float32)
+
+    def embed_text(self, _text):
+        return self._vec
+
+
+def _grounding_app(tmp_path, *, with_regions=True):
+    config = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    conn = db.connect(config.db_path)
+    stefano = db.get_or_create_person(conn, "Stefano")
+
+    def photo(path, vec):
+        pid = db.upsert_photo(conn, {"path": path, "filename": path.lstrip("/")})
+        db.set_photo_embedding(conn, pid, vec)
+        return pid
+
+    # Whole-image: B looks more "eating" than A. Region: A is the eating one.
+    a = photo("/a.jpg", _unit(0.3, 1, 0))
+    b = photo("/b.jpg", _unit(1, 0.1, 0))
+    _add_face(conn, a, stefano, _unit(1, 0, 0) if with_regions else None)
+    _add_face(conn, b, stefano, _unit(0, 1, 0) if with_regions else None)
+    conn.commit()
+    conn.close()
+
+    from fastapi.testclient import TestClient
+
+    from photo_atlas.api import create_app
+
+    return config, {"stefano": stefano, "a": a, "b": b}, TestClient(create_app(config))
+
+
+def test_api_grounds_hybrid_person_plus_visual(tmp_path, monkeypatch):
+    from photo_atlas import embed
+
+    _, ids, client = _grounding_app(tmp_path, with_regions=True)
+    monkeypatch.setattr(
+        embed.SigLipTextEncoder, "from_config",
+        classmethod(lambda cls, c: _StubTextEncoder(_unit(1, 0, 0))),
+    )
+    data = client.get("/api/photos", params={"text": "Stefano eating food"}).json()
+    # Grounding flips the order: A (Stefano's region = eating) leads B, even though
+    # B's whole-image embedding is the more "eating" one.
+    assert data["plan"]["grounded"] is True
+    assert data["plan"]["persons"] == ["Stefano"]
+    assert [p["id"] for p in data["photos"]] == [ids["a"], ids["b"]]
+
+
+def test_api_falls_back_to_whole_image_without_regions(tmp_path, monkeypatch):
+    from photo_atlas import embed
+
+    _, ids, client = _grounding_app(tmp_path, with_regions=False)
+    monkeypatch.setattr(
+        embed.SigLipTextEncoder, "from_config",
+        classmethod(lambda cls, c: _StubTextEncoder(_unit(1, 0, 0))),
+    )
+    data = client.get("/api/photos", params={"text": "Stefano eating food"}).json()
+    # No region embeddings -> whole-image semantic ranking (B leads), grounded False.
+    assert data["plan"]["grounded"] is False
+    assert [p["id"] for p in data["photos"]] == [ids["b"], ids["a"]]
+
+
+def test_api_structured_only_query_is_not_grounded(tmp_path, monkeypatch):
+    from photo_atlas import embed
+
+    _, _ids, client = _grounding_app(tmp_path, with_regions=True)
+
+    def _boom(cls, c):
+        raise AssertionError("a structured-only query must not build the text encoder")
+
+    monkeypatch.setattr(embed.SigLipTextEncoder, "from_config", classmethod(_boom))
+    data = client.get("/api/photos", params={"text": "Stefano alone"}).json()
+    # "alone" -> a people bucket; no visual residual, so no model and not grounded.
+    assert data["plan"]["grounded"] is False
+    assert data["plan"]["text"] == ""
+
+
 def test_region_columns_added_to_legacy_faces_table(tmp_path):
     # A catalog whose faces table predates the region columns gains them on connect.
     import sqlite3
