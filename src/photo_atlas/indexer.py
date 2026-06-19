@@ -174,6 +174,40 @@ class _PreparedPhoto:
     phash: str | None = None
 
 
+# Per-person grounding crops a *region* around each face (not the tight face box)
+# so the SigLIP embedding captures what the person is doing / surrounded by — the
+# context a query like "eating food" keys on. The face box is grown sideways and,
+# more, downward to take in the torso; everything is clamped to the image.
+_REGION_SIDE = 0.5   # grow left/right by this fraction of the face width each
+_REGION_UP = 0.3     # grow up by this fraction of the face height (a little headroom)
+_REGION_DOWN = 1.5   # grow down by this fraction of the face height (the torso)
+
+
+def region_box(
+    bbox: tuple[int, int, int, int], img_w: int, img_h: int
+) -> tuple[int, int, int, int]:
+    """Expand a face ``bbox`` into a person-region box, clamped to the image.
+
+    Returns ``(x, y, w, h)`` ints. The box is grown sideways by
+    :data:`_REGION_SIDE` of the face width and biased downward
+    (:data:`_REGION_UP` / :data:`_REGION_DOWN` of the face height) so it captures
+    the torso/surroundings the SigLIP grounding query keys on, then clamped so it
+    never leaves the ``img_w``×``img_h`` frame. A face filling the frame yields the
+    whole image.
+    """
+
+    x, y, w, h = bbox
+    left = x - _REGION_SIDE * w
+    right = x + w + _REGION_SIDE * w
+    top = y - _REGION_UP * h
+    bottom = y + h + _REGION_DOWN * h
+    nx = max(0, int(round(left)))
+    ny = max(0, int(round(top)))
+    nr = min(img_w, int(round(right)))
+    nb = min(img_h, int(round(bottom)))
+    return nx, ny, max(1, nr - nx), max(1, nb - ny)
+
+
 def _encode_face_crop(img: Image.Image, bbox: tuple[int, int, int, int]) -> bytes | None:
     """Crop ``bbox`` from the open image and return JPEG bytes (or ``None``)."""
 

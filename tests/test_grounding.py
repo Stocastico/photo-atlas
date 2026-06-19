@@ -14,6 +14,7 @@ from __future__ import annotations
 import numpy as np
 
 from photo_atlas import db
+from photo_atlas.indexer import region_box
 
 
 def _unit(*vals: float) -> np.ndarray:
@@ -71,6 +72,38 @@ def test_set_face_region_embedding_bumps_version(tmp_path):
         assert row["region_embedding"] is None and row["region_dim"] is None
     finally:
         conn.close()
+
+
+# -- region geometry --------------------------------------------------------
+def test_region_box_expands_around_face_with_torso_bias():
+    # A face well inside a large frame: the region grows sideways and (more)
+    # downward to take in the torso, and never leaves the image.
+    x, y, w, h = region_box((400, 300, 100, 100), 1000, 1000)
+    # Wider than the face and biased so the box extends below it.
+    assert w > 100 and h > 100
+    assert x < 400 and x + w > 500
+    assert y <= 300
+    assert y + h > 400 + 100  # reaches well below the face (torso)
+    # Stays in bounds.
+    assert 0 <= x and 0 <= y and x + w <= 1000 and y + h <= 1000
+
+
+def test_region_box_clamps_at_edges():
+    # A face in the top-left corner can't grow off the image.
+    x, y, w, h = region_box((0, 0, 50, 50), 200, 200)
+    assert x == 0 and y == 0
+    assert x + w <= 200 and y + h <= 200
+
+    # A face in the bottom-right corner likewise stays inside.
+    x, y, w, h = region_box((150, 150, 50, 50), 200, 200)
+    assert x >= 0 and y >= 0
+    assert x + w <= 200 and y + h <= 200
+    assert w > 0 and h > 0
+
+
+def test_region_box_full_frame_face_is_the_whole_image():
+    # A face filling the frame yields the whole image (everything clamps).
+    assert region_box((0, 0, 64, 64), 64, 64) == (0, 0, 64, 64)
 
 
 def test_region_columns_added_to_legacy_faces_table(tmp_path):
