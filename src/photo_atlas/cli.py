@@ -20,6 +20,7 @@ from .config import AtlasConfig
 from .indexer import (
     backfill_phashes,
     cluster_library,
+    embed_face_regions,
     embed_library,
     index_path,
     prune_library,
@@ -136,9 +137,18 @@ def _cmd_embed(args) -> int:
         sys.stdout.write(f"\r  embedded {done}/{total}")
         sys.stdout.flush()
 
+    def region_progress(done: int, total: int) -> None:
+        sys.stdout.write(f"\r  grounded {done}/{total}")
+        sys.stdout.flush()
+
     print("Computing SigLIP image embeddings for semantic search ...")
     try:
         n = embed_library(config, recompute=args.recompute, progress=progress)
+        print(f"\nDone: {n} photo(s) embedded.")
+        # Per-person grounding: also embed the region around each named/unnamed face
+        # so a hybrid query ("Stefano eating food") can score the person's region.
+        print("Computing per-face region embeddings for per-person grounding ...")
+        m = embed_face_regions(config, recompute=args.recompute, progress=region_progress)
     except Exception as exc:  # noqa: BLE001 - surface a clean message, not a traceback
         print(
             f"\nerror: could not build embeddings ({type(exc).__name__}: {exc}). "
@@ -147,7 +157,10 @@ def _cmd_embed(args) -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"\nDone: {n} photo(s) embedded. Semantic search is now available in `serve`.")
+    print(
+        f"\nDone: {m} face region(s) embedded. Semantic search + grounding are now "
+        "available in `serve`."
+    )
     return 0
 
 

@@ -133,6 +133,11 @@ class _PreparedFace:
     crop_jpeg: bytes | None
     person_id: int | None
     confidence: float
+    #: SigLIP embedding of the *region* around the face (for per-person grounding),
+    #: as raw float32 bytes so it crosses a process boundary. ``None`` unless
+    #: embeddings were requested (the same ``image_encoder`` that embeds the photo).
+    region_embedding_blob: bytes | None = None
+    region_dim: int | None = None
 
 
 @dataclass
@@ -172,6 +177,40 @@ class _PreparedPhoto:
     #: Perceptual hash (dHash, hex) for near-duplicate / burst grouping. Always
     #: computed (it's cheap), so even non-embedded libraries get duplicate detection.
     phash: str | None = None
+
+
+# Per-person grounding crops a *region* around each face (not the tight face box)
+# so the SigLIP embedding captures what the person is doing / surrounded by — the
+# context a query like "eating food" keys on. The face box is grown sideways and,
+# more, downward to take in the torso; everything is clamped to the image.
+_REGION_SIDE = 0.5   # grow left/right by this fraction of the face width each
+_REGION_UP = 0.3     # grow up by this fraction of the face height (a little headroom)
+_REGION_DOWN = 1.5   # grow down by this fraction of the face height (the torso)
+
+
+def region_box(
+    bbox: tuple[int, int, int, int], img_w: int, img_h: int
+) -> tuple[int, int, int, int]:
+    """Expand a face ``bbox`` into a person-region box, clamped to the image.
+
+    Returns ``(x, y, w, h)`` ints. The box is grown sideways by
+    :data:`_REGION_SIDE` of the face width and biased downward
+    (:data:`_REGION_UP` / :data:`_REGION_DOWN` of the face height) so it captures
+    the torso/surroundings the SigLIP grounding query keys on, then clamped so it
+    never leaves the ``img_w``×``img_h`` frame. A face filling the frame yields the
+    whole image.
+    """
+
+    x, y, w, h = bbox
+    left = x - _REGION_SIDE * w
+    right = x + w + _REGION_SIDE * w
+    top = y - _REGION_UP * h
+    bottom = y + h + _REGION_DOWN * h
+    nx = max(0, int(round(left)))
+    ny = max(0, int(round(top)))
+    nr = min(img_w, int(round(right)))
+    nb = min(img_h, int(round(bottom)))
+    return nx, ny, max(1, nr - nx), max(1, nb - ny)
 
 
 def _encode_face_crop(img: Image.Image, bbox: tuple[int, int, int, int]) -> bytes | None:
@@ -332,6 +371,17 @@ def _prepare_photo(
                     k=config.recognition_k, threshold=config.face_match_threshold,
                 )
             x, y, w, h = obs.bbox
+            # Per-person grounding: embed the region around this face in the same
+            # SigLIP space as the photo/text embeddings, so a hybrid query can score
+            # *this person's* region. Only when embeddings are on (same encoder).
+            region_blob: bytes | None = None
+            region_dim: int | None = None
+            if image_encoder is not None:
+                rx, ry, rw, rh = region_box(obs.bbox, img.width, img.height)
+                region_img = img.convert("RGB").crop((rx, ry, rx + rw, ry + rh))
+                region_vec = image_encoder.embed_image(region_img)
+                region_blob = db.embedding_to_blob(region_vec)
+                region_dim = int(region_vec.shape[0])
             faces.append(
                 _PreparedFace(
                     bbox=(int(x), int(y), int(w), int(h)),
@@ -340,6 +390,8 @@ def _prepare_photo(
                     crop_jpeg=_encode_face_crop(img, obs.bbox),
                     person_id=person_id,
                     confidence=confidence,
+                    region_embedding_blob=region_blob,
+                    region_dim=region_dim,
                 )
             )
 
@@ -517,6 +569,8 @@ def _commit_prepared(
                 "embedding": face.embedding_blob,
                 "crop_path": str(crop_path) if crop_saved else None,
                 "confidence": face.confidence,
+                "region_embedding": face.region_embedding_blob,
+                "region_dim": face.region_dim,
             }
         )
 
@@ -1179,6 +1233,70 @@ def embed_library(
                 continue
             db.set_photo_embedding(conn, int(row["id"]), vector)
             embedded += 1
+            if progress is not None:
+                progress(i + 1, total)
+        conn.commit()
+    finally:
+        conn.close()
+    return embedded
+
+
+def embed_face_regions(
+    config: AtlasConfig,
+    *,
+    image_encoder: SigLipImageEncoder | None = None,
+    recompute: bool = False,
+    progress: Callable[[int, int], None] | None = None,
+) -> int:
+    """Backfill per-face region embeddings for grounding, without a re-index.
+
+    Decodes each still-present photo that has a face missing a region embedding
+    (or every photo with faces when ``recompute``), crops the :func:`region_box`
+    around each stored face bbox off the same EXIF-upright pixels detection used,
+    and stores its SigLIP embedding via :func:`db.set_face_region_embedding`. No
+    face re-detection. Returns the number of faces embedded.
+    """
+
+    encoder = image_encoder or SigLipImageEncoder.from_config(config)
+    conn = db.connect(config.db_path)
+    embedded = 0
+    try:
+        # Photos that have at least one face needing a region embedding (or all
+        # photos with faces under ``recompute``). One decode per photo.
+        face_filter = "" if recompute else " AND f.region_embedding IS NULL"
+        rows = conn.execute(
+            "SELECT DISTINCT p.id, p.path FROM photos p JOIN faces f ON f.photo_id = p.id "
+            f"WHERE p.is_video = 0{face_filter}"
+        ).fetchall()
+        total = len(rows)
+        for i, row in enumerate(rows):
+            path = Path(row["path"])
+            if not path.exists():
+                continue
+            face_where = "photo_id=?" if recompute else "photo_id=? AND region_embedding IS NULL"
+            faces = conn.execute(
+                f"SELECT id, bbox_x, bbox_y, bbox_w, bbox_h FROM faces WHERE {face_where}",
+                (int(row["id"]),),
+            ).fetchall()
+            if not faces:
+                continue
+            try:
+                with Image.open(path) as raw:
+                    raw.load()
+                    img = (ImageOps.exif_transpose(raw) or raw).convert("RGB")
+            except Exception as exc:
+                print(f"warning: could not embed regions for {path}: {exc}", file=sys.stderr)
+                continue
+            for face in faces:
+                bbox = (face["bbox_x"], face["bbox_y"], face["bbox_w"], face["bbox_h"])
+                if any(v is None for v in bbox):
+                    continue
+                rx, ry, rw, rh = region_box(
+                    cast(tuple[int, int, int, int], bbox), img.width, img.height
+                )
+                region_vec = encoder.embed_image(img.crop((rx, ry, rx + rw, ry + rh)))
+                db.set_face_region_embedding(conn, int(face["id"]), region_vec)
+                embedded += 1
             if progress is not None:
                 progress(i + 1, total)
         conn.commit()

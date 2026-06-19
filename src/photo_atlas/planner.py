@@ -13,9 +13,10 @@ must not be fed wholesale to the image encoder. Instead we **decompose** it:
 
 The structured legs are then AND-ed with the visual ranking by the search layer,
 so "Stefano eating food" becomes *a photo containing Stefano that looks like
-eating food*. (The visual score is whole-image, so it means "containing" rather
-than "Stefano is the one eating" — true per-person grounding is a heavier
-follow-up.)
+eating food*. When the named person has region embeddings, the API grounds the
+residual on *their* region (``search.grounded_search``) so the score is about the
+person rather than the whole frame; for an unnamed/un-embedded query it falls back
+to the whole-image score (so it still means "containing").
 
 This module is deliberately a small, dependency-free heuristic planner so it is
 fully unit-testable without any model.

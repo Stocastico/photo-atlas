@@ -61,15 +61,15 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 | `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `export-labels`, `demo`) |
 | `config.py` | `AtlasConfig` — library paths + tunables (`~/.photo_atlas`, `PHOTO_ATLAS_HOME`) |
 | `db.py` | SQLite schema, additive migrations (`_migrate`), embedding (de)serialisation. `PHOTO_COLUMNS` is the single source of truth for writable photo columns |
-| `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Also `embed_library`, `backfill_phashes`, `retag_scenes`, `prune_library`, `delete_photos` (hard delete: rows + files + derivatives), `export_photos` (copy a selection's originals to a folder), `cluster_library` |
+| `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Also `embed_library`, `embed_face_regions` (per-person grounding backfill), `region_box` (face→person-region geometry), `backfill_phashes`, `retag_scenes`, `prune_library`, `delete_photos` (hard delete: rows + files + derivatives), `export_photos` (copy a selection's originals to a folder), `cluster_library` |
 | `metadata.py` | EXIF/dimensions/thumbnails, `cached_resized` derivatives (atomic temp+replace), HEIF opener. Resolves `taken_at` as **exif → filename → mtime** (folder hint slots in via the indexer) |
 | `filename_date.py` | `parse_filename_date` — ordered regex registry mining a capture date/time from real filename conventions (Android/iOS/WP/WhatsApp/`YYYY-MM-DD HH.MM.SS`/bare compact/Italian text), validated against a sane calendar range so counters/resolutions aren't misread |
 | `video.py` | optional ffmpeg/ffprobe poster-frame + capture-date/GPS extraction for videos (`index_video`); pure `_parse_probe` is the offline-testable seam |
 | `faces.py` | shared `_YuNetBackend` detection + `YuNetArcFaceBackend` (default, 512-d via onnxruntime, 5-pt `norm_crop` alignment) / `YuNetSFaceBackend` (legacy 128-d) embed backends, DBSCAN clustering, negative-aware k-NN recognition (`Enrollment` carries positives + "not this person" negatives) |
 | `classify.py` | scene tagging: SigLIP 2-only `ZeroShotSceneTagger` (shares the vision encoder with embeddings) |
 | `embed.py` | `SigLipImageEncoder` / `SigLipTextEncoder` for semantic search; `configure_text_tokenizer` honours the tokenizer's embedded pad config (SigLIP 2 Gemma) |
-| `search.py` | filter dict → SQL (`_where`), facets, plus `SemanticIndex`/`semantic_search` (cosine ranking ANDed with filters), `FaceIndex`/`similar_faces` ("more like this person" over ArcFace embeddings), trip/memory grouping, and `find_burst_groups` (perceptual+temporal near-duplicate detection) |
-| `planner.py` | model-free decomposition of NL queries → person/people filters + residual visual text |
+| `search.py` | filter dict → SQL (`_where`), facets, plus `SemanticIndex`/`semantic_search` (cosine ranking ANDed with filters), `RegionIndex`/`grounded_search` (per-person grounding: rank a named person's photos by *their* region embedding), `FaceIndex`/`similar_faces` ("more like this person" over ArcFace embeddings), trip/memory grouping, and `find_burst_groups` (perceptual+temporal near-duplicate detection) |
+| `planner.py` | model-free decomposition of NL queries → person/people filters + residual visual text (the API grounds the residual on the named person's region when available) |
 | `geocode.py` / `folder_meta.py` | GPS→city/country; year/place mined from folder names (incl. a month from a yearless named-month subfolder, e.g. `2026/01-gennaio`) |
 | `library.py` | person/cluster management (rename/merge/cover/assign) |
 | `api.py` | FastAPI app (`create_app`); media + JSON endpoints; cross-origin write guard; caches the semantic index + text encoder |
@@ -90,6 +90,18 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   keyed on `(count, max_id, embeddings_version)`, so an in-place `embed`/`index --embed
   --recompute` (same count + max id) still invalidates the cache and a running `serve`
   reloads it.
+- **Per-person grounding embeddings live on `faces.region_embedding`/`region_dim`.**
+  A SigLIP embedding of the region *around* each face (`indexer.region_box`), in the
+  **same joint image/text space** as `photos.embedding` (so a text query is comparable
+  to it) — distinct from the face row's `embedding`, which is the ArcFace **recognition**
+  vector in a different space. Computed at index time when embeddings are on (same
+  encoder as the photo embedding, in `_prepare_photo` → carried via `replace_faces`) and
+  backfillable on an existing catalog with `indexer.embed_face_regions` (run by
+  `photo-atlas embed` after the photo pass). `db.set_face_region_embedding` bumps
+  `meta['face_regions_version']`; the API caches `RegionIndex` keyed on
+  `(count, max_face_id, face_regions_version)` so an in-place backfill still reloads it.
+  `grounded_search` is used by `GET /api/photos?text=` only when the planner names a
+  person who *has* region embeddings (else it falls back to whole-image semantic search).
 - **The perceptual hash (`photos.phash`, dHash hex) is also out of `PHOTO_COLUMNS`**
   (written via `db.set_phash`, kept off `_LIST_COLUMNS`), but unlike embeddings it's
   *always* computed at index time (it's cheap) — `_commit_prepared` refreshes it on

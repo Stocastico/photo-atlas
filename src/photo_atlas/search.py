@@ -414,6 +414,130 @@ def similar_photos(
     return _rows_for_ranked(conn, ranked[offset : offset + limit]), total
 
 
+class RegionIndex:
+    """In-memory matrix of per-face *region* embeddings for grounded ranking.
+
+    Where :class:`SemanticIndex` ranks a whole photo against a text query, this
+    ranks the **region around a named person's face** — so "Stefano eating food"
+    scores Stefano's region rather than the whole frame (per-person grounding).
+    Loaded only for faces that both carry a region embedding *and* are assigned to
+    a person (an unnamed face can't be addressed by name). ``matrix`` is ``(N, D)``
+    of L2-normalised region embeddings, with parallel ``face_ids``, ``photo_ids``
+    and ``person_ids`` ``(N,)`` arrays. Cached by the web layer like the others.
+    """
+
+    def __init__(
+        self,
+        face_ids: np.ndarray,
+        photo_ids: np.ndarray,
+        person_ids: np.ndarray,
+        matrix: np.ndarray,
+    ):
+        self.face_ids = face_ids
+        self.photo_ids = photo_ids
+        self.person_ids = person_ids
+        self.matrix = matrix
+
+    @classmethod
+    def load(cls, conn: sqlite3.Connection) -> RegionIndex:
+        rows = conn.execute(
+            "SELECT id, photo_id, person_id, region_embedding FROM faces "
+            "WHERE region_embedding IS NOT NULL AND person_id IS NOT NULL ORDER BY id"
+        ).fetchall()
+        face_ids = np.array([int(r["id"]) for r in rows], dtype=np.int64)
+        photo_ids = np.array([int(r["photo_id"]) for r in rows], dtype=np.int64)
+        person_ids = np.array([int(r["person_id"]) for r in rows], dtype=np.int64)
+        vectors = [db.blob_to_embedding(r["region_embedding"]) for r in rows]
+        if not vectors:
+            return cls(face_ids, photo_ids, person_ids, np.empty((0, 0), dtype=np.float32))
+        matrix = np.vstack([_normalize(v) for v in vectors]).astype(np.float32)
+        return cls(face_ids, photo_ids, person_ids, matrix)
+
+    @property
+    def size(self) -> int:
+        return int(self.face_ids.shape[0])
+
+    def has_any(self, person_ids: set[int] | list[int]) -> bool:
+        """True when at least one loaded region belongs to one of ``person_ids``.
+
+        Lets the caller decide whether grounding is even possible for a query
+        before reaching for the (heavier) ranking path; falls back to whole-image
+        semantic search when it isn't.
+        """
+
+        if self.size == 0:
+            return False
+        targets = {int(p) for p in person_ids}
+        return any(int(pid) in targets for pid in self.person_ids)
+
+    def rank_photos(
+        self,
+        query_vec: np.ndarray,
+        *,
+        person_ids: set[int] | list[int] | None = None,
+        allowed_ids: set[int] | None = None,
+        top_k: int | None = None,
+    ) -> list[tuple[int, float]]:
+        """Rank photos by their best matching region for one of ``person_ids``.
+
+        Each photo's score is the maximum cosine similarity between ``query_vec``
+        and any region of a target person in that photo (so a photo wins on its
+        *most* relevant person-region). ``allowed_ids`` masks to the photos that
+        also pass the structured filters; ``top_k`` caps the count. Returns
+        ``(photo_id, score)`` sorted by descending score.
+        """
+
+        if self.size == 0:
+            return []
+        targets = None if person_ids is None else {int(p) for p in person_ids}
+        scores = self.matrix @ _normalize(query_vec)
+        order = np.argsort(-scores, kind="stable")
+        best: dict[int, float] = {}
+        for idx in order:
+            if targets is not None and int(self.person_ids[idx]) not in targets:
+                continue
+            pid = int(self.photo_ids[idx])
+            if allowed_ids is not None and pid not in allowed_ids:
+                continue
+            if pid in best:  # first time seen (descending order) is its best region
+                continue
+            best[pid] = float(scores[idx])
+            if top_k is not None and len(best) >= top_k:
+                break
+        return list(best.items())
+
+
+def grounded_search(
+    conn: sqlite3.Connection,
+    filters: dict[str, Any],
+    query_vec: np.ndarray,
+    index: RegionIndex,
+    person_ids: list[int],
+    *,
+    top_k: int = 200,
+    limit: int = 60,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    """Rank a named person's photos by how well *their* region matches ``query_vec``.
+
+    The structured ``filters`` (which already include the person filter from the
+    planner) form a hard mask; within that set each photo is scored by its best
+    region embedding for one of ``person_ids``. Returns ``(rows, total)`` in ranked
+    order, each row carrying its ``score``. ``([], 0)`` when nothing qualifies.
+    """
+
+    sub = {k: v for k, v in filters.items() if k != "text"}
+    where, params = _where(sub)
+    allowed = {
+        int(r[0]) for r in conn.execute(f"SELECT p.id FROM photos p{where}", params).fetchall()
+    }
+    ranked = index.rank_photos(
+        query_vec, person_ids=person_ids, allowed_ids=allowed, top_k=top_k
+    )
+    total = len(ranked)
+    return _rows_for_ranked(conn, ranked[offset : offset + limit]), total
+
+
 class FaceIndex:
     """In-memory matrix of face (SFace) embeddings for cosine ranking.
 
