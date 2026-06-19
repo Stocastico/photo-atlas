@@ -91,9 +91,11 @@ CREATE TABLE IF NOT EXISTS faces (
     bbox_w      INTEGER,
     bbox_h      INTEGER,
     dim         INTEGER,
-    embedding   BLOB,
+    embedding   BLOB,           -- face-recognition embedding (ArcFace/SFace)
     crop_path   TEXT,
-    confidence  REAL
+    confidence  REAL,
+    region_embedding BLOB,      -- SigLIP embedding of the person region (for grounding)
+    region_dim       INTEGER    -- length of ``region_embedding`` (NULL when not embedded)
 );
 
 -- Face active-learning: a "not this person" negative recorded when the user
@@ -205,6 +207,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
                     "UPDATE photos SET named_face_count = (SELECT COUNT(*) FROM faces f "
                     "WHERE f.photo_id = photos.id AND f.person_id IS NOT NULL)"
                 )
+    if "faces" in tables:
+        fcols = {r["name"] for r in conn.execute("PRAGMA table_info(faces)")}
+        # Per-person semantic grounding (added 2026-06): a SigLIP embedding of the
+        # region around each face, in the same joint space as the photo/text
+        # embeddings, so a hybrid query can score *the person's* region rather than
+        # the whole frame. Additive, so older catalogs gain them empty and fill them
+        # in via a re-index (``index --embed``) or the ``embed`` backfill.
+        if "region_embedding" not in fcols:
+            conn.execute("ALTER TABLE faces ADD COLUMN region_embedding BLOB")
+        if "region_dim" not in fcols:
+            conn.execute("ALTER TABLE faces ADD COLUMN region_dim INTEGER")
     # Drop single-column indexes that the new composite indexes (added to the
     # schema below) fully supersede on their leading column, so existing catalogs
     # don't carry redundant indexes that only cost extra on every write.
@@ -341,6 +354,29 @@ def set_photo_embedding_blob(
         "UPDATE photos SET embedding=?, embed_dim=? WHERE id=?", (blob, dim, photo_id)
     )
     bump_meta(conn, "embeddings_version")
+
+
+def set_face_region_embedding(
+    conn: sqlite3.Connection, face_id: int, vector: np.ndarray | None
+) -> None:
+    """Persist (or clear) a face's SigLIP *region* embedding for grounding.
+
+    The region embedding lives in the joint image/text space (unlike the face row's
+    recognition ``embedding``), so it's comparable to a text query — that's what
+    lets "Stefano eating food" score Stefano's region. It's the backfill write seam
+    (``indexer.embed_face_regions``); the index pipeline writes it inline via
+    :func:`replace_faces`. Bumps ``face_regions_version`` so a running server's
+    cached :class:`~photo_atlas.search.RegionIndex` reloads after an in-place
+    backfill (unchanged face count + max id).
+    """
+
+    blob = embedding_to_blob(vector)
+    dim = None if vector is None else int(np.asarray(vector).reshape(-1).shape[0])
+    conn.execute(
+        "UPDATE faces SET region_embedding=?, region_dim=? WHERE id=?",
+        (blob, dim, face_id),
+    )
+    bump_meta(conn, "face_regions_version")
 
 
 def set_phash(conn: sqlite3.Connection, photo_id: int, phash: str | None) -> None:
@@ -498,8 +534,9 @@ def replace_faces(conn: sqlite3.Connection, photo_id: int, faces: Iterable[dict]
     for f in rows:
         conn.execute(
             "INSERT INTO faces (photo_id, person_id, cluster_id, bbox_x, bbox_y, "
-            "bbox_w, bbox_h, dim, embedding, crop_path, confidence) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "bbox_w, bbox_h, dim, embedding, crop_path, confidence, "
+            "region_embedding, region_dim) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 photo_id,
                 f.get("person_id"),
@@ -509,6 +546,8 @@ def replace_faces(conn: sqlite3.Connection, photo_id: int, faces: Iterable[dict]
                 f.get("embedding"),
                 f.get("crop_path"),
                 f.get("confidence"),
+                f.get("region_embedding"),
+                f.get("region_dim"),
             ),
         )
     conn.execute("UPDATE photos SET face_count=? WHERE id=?", (len(rows), photo_id))
