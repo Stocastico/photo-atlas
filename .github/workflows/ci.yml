@@ -19,10 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Install uv via its official standalone script (a shell step, no Node) so
+      # CI carries no Node-20-era actions. uv lands in ~/.local/bin.
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Sync dependencies (app + dev tooling)
         run: uv sync
@@ -43,9 +45,9 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Sync dependencies (app + dev tooling)
         run: uv sync --python ${{ matrix.python-version }}
