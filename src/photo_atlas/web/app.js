@@ -837,8 +837,13 @@ function renderSearchPlan(plan) {
   else if (people.includes("2-4") && people.includes("5+")) bits.push("with others");
   else people.forEach((t) => bits.push(PEOPLE_LABELS[t] || t));
   if (plan.text) bits.push(`“${plan.text}”`);
+  // A 🎯 marks that the visual residual was scored against the named person's own
+  // region (per-person grounding) rather than the whole photo.
+  if (plan.grounded && plan.text) bits.push("🎯 focused on the person");
   el.textContent = bits.length ? `Interpreting: ${bits.join(" · ")}` : "";
-  el.title = "How your words were split into people/scene filters and a visual query";
+  el.title = plan.grounded
+    ? "Scored the region around the named person, not the whole photo (grounding)"
+    : "How your words were split into people/scene filters and a visual query";
 }
 
 function nearBottom() {
