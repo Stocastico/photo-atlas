@@ -541,6 +541,18 @@ the next slice is easy to pick. Ordered by value-per-effort.
   same-origin guard, empty-dest 400). A "⬇ Export…" selection-bar action prompts for the
   destination. Unit + API tested (`tests/test_bulk_export.py`). *Bulk **assign-a-person**
   stays dropped — ambiguous at the photo level, since faces are the unit.*
+- [ ] **One-click installable app (no terminal / no `uv`).** Wrap the existing
+  FastAPI/uvicorn server in a native desktop window so a non-technical user can
+  install and run Photo Atlas without a terminal or Python toolchain. Recommended
+  first slice: a **pywebview** launcher that boots uvicorn on a localhost port and
+  shows the current `web/` UI unchanged, frozen with **PyInstaller** into a `.app`/
+  `.exe` (distributed as `.dmg` + Inno Setup), behind an optional `app`/`desktop`
+  extra so it never touches the core install. Key challenges: large native-dep
+  bundle (onnxruntime/opencv ⇒ 300–600 MB+), on-demand model downloads (needs a
+  first-run progress screen or pre-bundling), optional system ffmpeg, and code
+  signing / notarization to clear Gatekeeper/SmartScreen. Briefcase (signed
+  installers) or a Tauri sidecar are the graduation paths. Full investigation:
+  [`PACKAGING.md`](PACKAGING.md). *Optional — not started.*
 - [x] **Semantic-index cache freshness.** **Done:** `api._embed_signature` now includes a
   `meta['embeddings_version']` counter (`db.bump_meta`, bumped by `db.set_photo_embedding`),
   so an in-place `embed --recompute` — unchanged row count + max id — invalidates the cached
