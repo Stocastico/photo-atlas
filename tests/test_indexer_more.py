@@ -342,3 +342,15 @@ def test_reindex_reuses_content_addressed_thumb(tmp_path):
     from pathlib import Path
 
     assert Path(thumb).exists()
+
+
+def test_index_stats_add_error_caps_preview_but_keeps_full_log():
+    from photo_atlas.indexer import _MAX_ERRORS, IndexStats
+
+    stats = IndexStats()
+    for i in range(_MAX_ERRORS + 25):
+        stats.add_error(f"/p/{i}.jpg", ValueError("boom"))
+    assert stats.failed == _MAX_ERRORS + 25
+    assert len(stats.errors) == _MAX_ERRORS  # bounded preview
+    assert len(stats.error_log) == _MAX_ERRORS + 25  # nothing lost
+    assert stats.error_log[0] == "/p/0.jpg: ValueError: boom"

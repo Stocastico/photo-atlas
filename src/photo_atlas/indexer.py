@@ -73,6 +73,20 @@ class IndexStats:
     #: bad file is diagnosable instead of vanishing into the ``failed`` count.
     #: Capped (see ``_MAX_ERRORS``) to stay bounded on huge libraries.
     errors: list[str] = field(default_factory=list)
+    #: Every failure (uncapped), for the CLI's ``index_errors.log``.
+    error_log: list[str] = field(default_factory=list)
+
+    def add_error(self, path: Path | str, exc: BaseException) -> None:
+        """Count a failed file and record why (preview is capped, log is not)."""
+
+        self.add_error_text(path, f"{type(exc).__name__}: {exc}")
+
+    def add_error_text(self, path: Path | str, message: str) -> None:
+        self.failed += 1
+        line = f"{path}: {message}"
+        self.error_log.append(line)
+        if len(self.errors) < _MAX_ERRORS:
+            self.errors.append(line)
 
 
 _MAX_ERRORS = 50
@@ -866,9 +880,7 @@ def _index_parallel(
                         conn.commit()
                         since_commit = 0
                 else:
-                    stats.failed += 1
-                    if len(stats.errors) < _MAX_ERRORS:
-                        stats.errors.append(f"{path_str}: {payload}")
+                    stats.add_error_text(path_str, str(payload))
                 if progress is not None:
                     progress(Path(path_str), stats)
                 submit_one()
@@ -962,9 +974,7 @@ def index_path(
             try:
                 sha1 = sha1_of(path)
             except Exception as exc:
-                stats.failed += 1
-                if len(stats.errors) < _MAX_ERRORS:
-                    stats.errors.append(f"{path}: {type(exc).__name__}: {exc}")
+                stats.add_error(path, exc)
                 return None
             if not recompute and sha1 in seen_sha1:
                 stats.duplicates += 1
@@ -1027,9 +1037,7 @@ def index_path(
                     stats.indexed += 1
                     conn.commit()
                 except Exception as exc:
-                    stats.failed += 1
-                    if len(stats.errors) < _MAX_ERRORS:
-                        stats.errors.append(f"{path}: {type(exc).__name__}: {exc}")
+                    stats.add_error(path, exc)
                 if progress is not None:
                     progress(path, stats)
             conn.commit()
@@ -1042,9 +1050,7 @@ def index_path(
                 index_video(conn, config, path, sha1=sha1, geocoder=geocoder, stats=stats)
                 conn.commit()
             except Exception as exc:
-                stats.failed += 1
-                if len(stats.errors) < _MAX_ERRORS:
-                    stats.errors.append(f"{path}: {type(exc).__name__}: {exc}")
+                stats.add_error(path, exc)
             if progress is not None:
                 progress(path, stats)
         if stats.videos and not ffmpeg_ok:

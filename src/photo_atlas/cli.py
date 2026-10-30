@@ -86,6 +86,9 @@ def _cmd_index(args) -> int:
         print(f"{stats.failed} file(s) failed; first errors:", file=sys.stderr)
         for line in stats.errors[:10]:
             print(f"  - {line}", file=sys.stderr)
+        log = config.home / "index_errors.log"
+        log.write_text("\n".join(stats.error_log) + "\n", encoding="utf-8")
+        print(f"Full list of {len(stats.error_log)} error(s): {log}", file=sys.stderr)
     if stats.faces:
         print("Tip: run `photo-atlas cluster` then name people in the web UI.")
     if getattr(args, "prune", False):
