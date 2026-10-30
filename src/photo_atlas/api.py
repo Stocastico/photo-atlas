@@ -86,6 +86,16 @@ class ExportRequest(BaseModel):
     dest: str
 
 
+# Derivatives (thumbs/previews/crops) are content-addressed on disk but served by
+# photo id, so allow a day of browser caching (ETag still revalidates after that)
+# rather than ``immutable``.
+_DERIVATIVE_CACHE = {"Cache-Control": "private, max-age=86400"}
+
+
+def _derivative(path) -> FileResponse:
+    return FileResponse(path, headers=_DERIVATIVE_CACHE)
+
+
 # ``Host`` values accepted unless the server is deliberately exposed (``testserver``
 # is Starlette's TestClient default).
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "testserver"})
@@ -604,7 +614,7 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
             # A video without a poster yet (e.g. a pre-ffmpeg row) falls back to its
             # stored thumbnail so the lightbox still shows something.
             if row["thumb_path"] and Path(row["thumb_path"]).exists():
-                return FileResponse(row["thumb_path"])
+                return _derivative(row["thumb_path"])
             raise HTTPException(404, "image not found")
         sha1 = row["sha1"] or metadata.sha1_of(src)
         try:
@@ -614,8 +624,8 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
         except Exception:
             # Any decode/encode failure (corrupt or exotic format) falls back to
             # streaming the still source so the lightbox still works.
-            return FileResponse(src)
-        return FileResponse(dest)
+            return _derivative(src)
+        return _derivative(dest)
 
     @app.get("/api/thumb/{photo_id}")
     def api_thumb(
@@ -635,15 +645,15 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
             if src is not None:
                 sha1 = row["sha1"] or metadata.sha1_of(src)
                 try:
-                    return FileResponse(metadata.cached_resized(config.thumbs_dir, src, sha1, size))
+                    return _derivative(metadata.cached_resized(config.thumbs_dir, src, sha1, size))
                 except Exception:
                     pass  # fall back to the pre-generated default thumb
         thumb = row["thumb_path"]
         if thumb and Path(thumb).exists():
-            return FileResponse(thumb)
+            return _derivative(thumb)
         src = _still_source(row)
         if src is not None:
-            return FileResponse(src)
+            return _derivative(src)
         raise HTTPException(404, "thumbnail not found")
 
     @app.get("/api/face/{face_id}")
@@ -660,7 +670,7 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
             crop = indexer.regenerate_face_crop(conn, config, face_id)
             if not crop:
                 raise HTTPException(404, "face crop not found")
-        return FileResponse(crop)
+        return _derivative(crop)
 
     # -- smart albums (saved searches) ------------------------------------
     @app.get("/api/albums")

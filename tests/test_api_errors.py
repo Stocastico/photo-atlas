@@ -292,3 +292,23 @@ def test_any_host_allowed_when_opted_in(tmp_path):
 
     client = TestClient(create_app(AtlasConfig(home=tmp_path), allow_any_host=True))
     assert client.get("/api/capabilities", headers={"host": "nas.lan:8000"}).status_code == 200
+
+
+def test_derivative_media_is_browser_cacheable(client):
+    pid = _first_photo_id(client)
+    for url in (f"/api/thumb/{pid}", f"/api/thumb/{pid}?size=640", f"/api/preview/{pid}"):
+        r = client.get(url)
+        assert r.status_code == 200, url
+        assert "max-age" in r.headers["cache-control"], url
+        assert r.headers["etag"], url
+
+
+def test_face_crop_is_browser_cacheable(client, indexed):
+    conn = db.connect(indexed.db_path)
+    try:
+        row = _a_face_with_crop(conn)
+    finally:
+        conn.close()
+    r = client.get(f"/api/face/{row['id']}")
+    assert r.status_code == 200
+    assert "max-age" in r.headers["cache-control"]
