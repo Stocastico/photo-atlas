@@ -5,8 +5,8 @@ thumbnail, face crop) and serves the single-page web UI from
 :mod:`photo_atlas.web`.
 
 Create the app with :func:`create_app` (used by the CLI ``serve`` command) so a
-custom :class:`~photo_atlas.config.AtlasConfig` can be injected; importing
-``app`` uses the default library location.
+custom :class:`~photo_atlas.config.AtlasConfig` can be injected. Nothing is created at
+import time.
 """
 
 from __future__ import annotations
@@ -85,13 +85,33 @@ class ExportRequest(BaseModel):
     dest: str
 
 
-def create_app(config: AtlasConfig | None = None) -> FastAPI:
+# ``Host`` values accepted unless the server is deliberately exposed (``testserver``
+# is Starlette's TestClient default).
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "testserver"})
+
+
+def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = False) -> FastAPI:
+    """Build the app. ``allow_any_host`` disables the loopback-only ``Host`` check
+    (set by ``serve --host`` when the user deliberately binds off-loopback)."""
+
     config = (config or AtlasConfig()).ensure_dirs()
     app = FastAPI(title="Photo Atlas", version="0.1.0")
 
     # Create / migrate the schema once, here, so the per-request connections below
     # can skip the (idempotent but not free) DDL script on every single call.
     db.connect(config.db_path).close()
+
+    @app.middleware("http")
+    async def _local_host_only(request, call_next):
+        # DNS-rebinding guard: a hostile page can make its own domain resolve to
+        # 127.0.0.1, which makes its requests same-origin (so the Origin check below
+        # passes) and lets it read the whole library. Its ``Host`` is still the
+        # attacker's name, so refuse any Host that isn't loopback.
+        if not allow_any_host:
+            host = urlparse("//" + request.headers.get("host", "")).hostname
+            if host not in _LOCAL_HOSTS:
+                return JSONResponse({"detail": "host not allowed"}, 403)
+        return await call_next(request)
 
     @app.middleware("http")
     async def _same_origin_writes(request, call_next):
@@ -756,6 +776,3 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
     return app
-
-
-app = create_app()

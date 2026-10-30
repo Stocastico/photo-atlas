@@ -256,3 +256,39 @@ def test_assign_cluster_without_name_is_400(client):
         return
     r = client.post(f"/api/clusters/{clusters[0]['cluster_id']}/assign", json={})
     assert r.status_code == 400
+
+
+def test_import_has_no_side_effects(tmp_path):
+    """Importing the api module must not create the default library on disk."""
+
+    import subprocess
+    import sys
+
+    env = {**__import__("os").environ, "PHOTO_ATLAS_HOME": str(tmp_path / "lib")}
+    subprocess.run([sys.executable, "-c", "import photo_atlas.api"], check=True, env=env)
+    assert not (tmp_path / "lib").exists()
+
+
+def test_foreign_host_header_rejected(tmp_path):
+    """DNS-rebinding guard: a non-loopback Host is refused on GETs too."""
+
+    from fastapi.testclient import TestClient
+
+    from photo_atlas.api import create_app
+    from photo_atlas.config import AtlasConfig
+
+    client = TestClient(create_app(AtlasConfig(home=tmp_path)))
+    assert client.get("/api/capabilities", headers={"host": "evil.example"}).status_code == 403
+    assert client.get("/api/capabilities", headers={"host": "localhost:8000"}).status_code == 200
+    assert client.get("/api/capabilities", headers={"host": "127.0.0.1:1"}).status_code == 200
+    assert client.get("/api/capabilities", headers={"host": "[::1]:8000"}).status_code == 200
+
+
+def test_any_host_allowed_when_opted_in(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from photo_atlas.api import create_app
+    from photo_atlas.config import AtlasConfig
+
+    client = TestClient(create_app(AtlasConfig(home=tmp_path), allow_any_host=True))
+    assert client.get("/api/capabilities", headers={"host": "nas.lan:8000"}).status_code == 200

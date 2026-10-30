@@ -261,7 +261,7 @@ def _cmd_serve(args) -> int:
     from .api import create_app
 
     config = _config(args)
-    app = create_app(config)
+    app = create_app(config, allow_any_host=not _is_loopback(args.host))
     if not _is_loopback(args.host):
         # The API has no authentication; writes are same-origin-guarded but every
         # GET (photos, thumbnails, metadata) is open. Binding off-loopback exposes
