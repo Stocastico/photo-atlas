@@ -142,3 +142,22 @@ def test_signature_queries_use_partial_indexes(tmp_path):
             assert conn.execute(sql).fetchone()[0] == 0
     finally:
         conn.close()
+
+
+def test_bump_meta_is_a_single_atomic_statement(tmp_path):
+    """A read-then-write bump loses increments when `index` and `serve` race; the
+    increment must happen inside one SQL statement."""
+
+    from photo_atlas import db
+
+    conn = db.connect(tmp_path / "m.db")
+    try:
+        seen: list[str] = []
+        conn.set_trace_callback(seen.append)
+        assert db.bump_meta(conn, "k") == 1
+        assert db.bump_meta(conn, "k") == 2
+        conn.set_trace_callback(None)
+        assert db.get_meta(conn, "k") == "2"
+        assert not any(q.lstrip().upper().startswith("SELECT") for q in seen), seen
+    finally:
+        conn.close()

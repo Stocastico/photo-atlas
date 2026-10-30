@@ -288,16 +288,19 @@ def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
 
 
 def bump_meta(conn: sqlite3.Connection, key: str) -> int:
-    """Increment the integer counter at ``key`` (starting from 0) and return it."""
+    """Increment the integer counter at ``key`` (starting from 0) and return it.
 
-    current = get_meta(conn, key)
-    nxt = (int(current) if current is not None else 0) + 1
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        (key, str(nxt)),
-    )
-    return nxt
+    One ``UPSERT ... RETURNING`` statement, so a concurrent `index` and `serve`
+    can't both read the same value and lose an increment.
+    """
+
+    row = conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, '1') "
+        "ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1 "
+        "RETURNING CAST(value AS INTEGER)",
+        (key,),
+    ).fetchone()
+    return int(row[0])
 
 
 # -- embedding (de)serialisation ------------------------------------------
