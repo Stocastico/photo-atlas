@@ -939,7 +939,7 @@ def index_path(
             d.resolve()
             for d in (
                 config.thumbs_dir, config.faces_dir, config.previews_dir,
-                config.posters_dir, config.models_dir,
+                config.posters_dir, config.models_dir, config.trash_dir,
             )
         )
 
@@ -1348,11 +1348,39 @@ def backfill_phashes(
     return hashed
 
 
-def delete_photos(config: AtlasConfig, ids: list[int]) -> dict[str, int]:
-    """Hard-delete photos: their catalog rows *and* source files + derivatives.
+def _move_to_trash(config: AtlasConfig, photo_id: int, src: Path) -> None:
+    """Move ``src`` into the library trash and log where it came from."""
 
-    Irreversible. For each id this removes the source file on disk, the photo's
-    thumbnail and face-crop directory, then the catalog row (faces cascade); a
+    import json
+    import shutil
+
+    config.trash_dir.mkdir(parents=True, exist_ok=True)
+    dest = config.trash_dir / f"{photo_id}_{src.name}"
+    shutil.move(str(src), dest)
+    with (config.trash_dir / "manifest.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"id": photo_id, "original": str(src), "trashed": dest.name}) + "\n")
+
+
+def empty_trash(config: AtlasConfig) -> int:
+    """Permanently delete everything in the trash; returns the files removed."""
+
+    if not config.trash_dir.exists():
+        return 0
+    removed = 0
+    for entry in config.trash_dir.iterdir():
+        if entry.name != "manifest.jsonl" and entry.is_file():
+            entry.unlink()
+            removed += 1
+    (config.trash_dir / "manifest.jsonl").unlink(missing_ok=True)
+    return removed
+
+
+def delete_photos(config: AtlasConfig, ids: list[int]) -> dict[str, int]:
+    """Delete photos from the catalog and move their source files to the trash.
+
+    For each id this moves the source file into ``config.trash_dir`` (recoverable
+    until ``empty-trash``; ``manifest.jsonl`` records the original path), removes the
+    photo's thumbnail and face-crop directory, then the catalog row (faces cascade); a
     final sweep reclaims any remaining content-addressed derivatives (preview /
     retina variants, video posters) the deleted rows owned. Returns
     ``{rows, files, orphans}`` — rows removed from the catalog, source files
@@ -1375,10 +1403,10 @@ def delete_photos(config: AtlasConfig, ids: list[int]) -> dict[str, int]:
                 src = Path(row["path"]) if row["path"] else None
                 if src is not None and src.exists():
                     try:
-                        src.unlink()
+                        _move_to_trash(config, row["id"], src)
                         files_removed += 1
                     except OSError as exc:  # surface, don't crash the whole batch
-                        print(f"warning: could not delete {src}: {exc}", file=sys.stderr)
+                        print(f"warning: could not trash {src}: {exc}", file=sys.stderr)
                 if row["thumb_path"]:
                     Path(row["thumb_path"]).unlink(missing_ok=True)
                 crop_dir = config.faces_dir / str(row["id"])

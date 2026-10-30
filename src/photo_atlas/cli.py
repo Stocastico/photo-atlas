@@ -117,6 +117,13 @@ def _cmd_prune(args) -> int:
     return 0
 
 
+def _cmd_empty_trash(args) -> int:
+    from .indexer import empty_trash
+
+    print(f"Permanently deleted {empty_trash(_config(args))} trashed file(s).")
+    return 0
+
+
 def _cmd_retag_scenes(args) -> int:
     config = _config(args)
 
@@ -310,6 +317,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_prune = sub.add_parser("prune", help="Remove catalog entries for deleted files")
     p_prune.set_defaults(func=_cmd_prune)
+
+    p_trash = sub.add_parser(
+        "empty-trash", help="Permanently delete files removed via the web UI (kept in trash)"
+    )
+    p_trash.set_defaults(func=_cmd_empty_trash)
 
     p_retag = sub.add_parser("retag-scenes", help="Recompute scene tags in place (no re-index)")
     p_retag.set_defaults(func=_cmd_retag_scenes)

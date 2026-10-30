@@ -131,6 +131,12 @@ class AtlasConfig:
 
         return self.home / "posters"
 
+    @property
+    def trash_dir(self) -> Path:
+        """Where hard-deleted originals are moved (recoverable until emptied)."""
+
+        return self.home / "trash"
+
     def ensure_dirs(self) -> AtlasConfig:
         """Create the library directory tree if it does not exist yet."""
 
