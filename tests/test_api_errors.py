@@ -312,3 +312,14 @@ def test_face_crop_is_browser_cacheable(client, indexed):
     r = client.get(f"/api/face/{row['id']}")
     assert r.status_code == 200
     assert "max-age" in r.headers["cache-control"]
+
+
+def test_filter_params_shared_by_facets_photos_and_map(client):
+    from photo_atlas.api import common_filters
+
+    spec = client.get("/openapi.json").json()["paths"]
+    shared = set(common_filters.__code__.co_varnames[: common_filters.__code__.co_argcount])
+    for path in ("/api/facets", "/api/photos", "/api/map"):
+        names = {p["name"] for p in spec[path]["get"]["parameters"]}
+        assert shared <= names, (path, shared - names)
+        assert client.get(path, params={"date_from": "nope"}).status_code == 422

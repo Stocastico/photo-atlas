@@ -46,6 +46,39 @@ def _union(existing, derived: list) -> list:
 _DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
 
 
+def common_filters(
+    person_id: list[int] | None = Query(None),
+    person_mode: str | None = None,
+    scene: list[str] | None = Query(None),
+    country: list[str] | None = Query(None),
+    city: list[str] | None = Query(None),
+    place: list[str] | None = Query(None),
+    year: list[str] | None = Query(None),
+    date_from: str | None = Query(None, pattern=_DATE_PATTERN),
+    date_to: str | None = Query(None, pattern=_DATE_PATTERN),
+    camera: list[str] | None = Query(None),
+    people: list[str] | None = Query(None),
+    known: list[str] | None = Query(None),
+    kind: list[str] | None = Query(None),
+    has_faces: bool | None = None,
+    favorite: bool | None = None,
+    hidden: bool = False,
+    q: str | None = None,
+) -> dict:
+    """The structured filter set shared by facets, photos and map.
+
+    Declared once so adding a filter is a single edit here (plus ``search._where``).
+    """
+
+    return {
+        "person_id": person_id, "person_mode": person_mode, "scene": scene,
+        "country": country, "city": city, "place": place, "year": year,
+        "date_from": date_from, "date_to": date_to, "camera": camera,
+        "people": people, "known": known, "kind": kind, "has_faces": has_faces,
+        "favorite": favorite, "hidden": hidden, "q": q,
+    }
+
+
 class AssignRequest(BaseModel):
     name: str | None = None
     person_id: int | None = None
@@ -231,68 +264,20 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
     @app.get("/api/facets")
     def api_facets(
         conn: sqlite3.Connection = Depends(get_conn),
-        person_id: list[int] | None = Query(None),
-        person_mode: str | None = None,
-        scene: list[str] | None = Query(None),
-        country: list[str] | None = Query(None),
-        city: list[str] | None = Query(None),
-        place: list[str] | None = Query(None),
-        year: list[str] | None = Query(None),
-        date_from: str | None = Query(None, pattern=_DATE_PATTERN),
-        date_to: str | None = Query(None, pattern=_DATE_PATTERN),
-        camera: list[str] | None = Query(None),
-        people: list[str] | None = Query(None),
-        known: list[str] | None = Query(None),
-        kind: list[str] | None = Query(None),
-        has_faces: bool | None = None,
-        favorite: bool | None = None,
-        hidden: bool = False,
-        q: str | None = None,
+        filters: dict = Depends(common_filters),
     ):
-        filters = {
-            "person_id": person_id, "person_mode": person_mode,
-            "scene": scene, "country": country,
-            "city": city, "place": place, "year": year, "date_from": date_from,
-            "date_to": date_to, "camera": camera, "people": people, "known": known,
-            "kind": kind,
-            "has_faces": has_faces, "favorite": favorite, "hidden": hidden, "q": q,
-        }
         return search.facets(conn, filters)
 
     @app.get("/api/photos")
     def api_photos(
         conn: sqlite3.Connection = Depends(get_conn),
-        person_id: list[int] | None = Query(None),
-        person_mode: str | None = None,
-        scene: list[str] | None = Query(None),
-        country: list[str] | None = Query(None),
-        city: list[str] | None = Query(None),
-        place: list[str] | None = Query(None),
-        year: list[str] | None = Query(None),
-        date_from: str | None = Query(None, pattern=_DATE_PATTERN),
-        date_to: str | None = Query(None, pattern=_DATE_PATTERN),
-        camera: list[str] | None = Query(None),
-        people: list[str] | None = Query(None),
-        known: list[str] | None = Query(None),
-        kind: list[str] | None = Query(None),
-        has_faces: bool | None = None,
-        favorite: bool | None = None,
-        hidden: bool = False,
-        q: str | None = None,
+        filters: dict = Depends(common_filters),
         text: str | None = None,
         sort: str | None = None,
         limit: int = Query(60, ge=1, le=500),
         offset: int = Query(0, ge=0),
     ):
-        filters = {
-            "person_id": person_id, "person_mode": person_mode,
-            "scene": scene, "country": country,
-            "city": city, "place": place, "year": year, "date_from": date_from,
-            "date_to": date_to, "camera": camera, "people": people, "known": known,
-            "kind": kind,
-            "has_faces": has_faces, "favorite": favorite, "hidden": hidden,
-            "q": q, "text": text, "sort": sort,
-        }
+        filters = {**filters, "text": text, "sort": sort}
         # A natural-language ``text`` query switches to semantic ranking (by image
         # embedding), ANDed with the structured filters. It supersedes ``sort`` —
         # results come back in relevance order — and returns its own (top-k) total.
@@ -450,32 +435,8 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
     @app.get("/api/map")
     def api_map(
         conn: sqlite3.Connection = Depends(get_conn),
-        person_id: list[int] | None = Query(None),
-        person_mode: str | None = None,
-        scene: list[str] | None = Query(None),
-        country: list[str] | None = Query(None),
-        city: list[str] | None = Query(None),
-        place: list[str] | None = Query(None),
-        year: list[str] | None = Query(None),
-        date_from: str | None = Query(None, pattern=_DATE_PATTERN),
-        date_to: str | None = Query(None, pattern=_DATE_PATTERN),
-        camera: list[str] | None = Query(None),
-        people: list[str] | None = Query(None),
-        known: list[str] | None = Query(None),
-        kind: list[str] | None = Query(None),
-        has_faces: bool | None = None,
-        favorite: bool | None = None,
-        hidden: bool = False,
-        q: str | None = None,
+        filters: dict = Depends(common_filters),
     ):
-        filters = {
-            "person_id": person_id, "person_mode": person_mode,
-            "scene": scene, "country": country,
-            "city": city, "place": place, "year": year, "date_from": date_from,
-            "date_to": date_to, "camera": camera, "people": people, "known": known,
-            "kind": kind,
-            "has_faces": has_faces, "favorite": favorite, "hidden": hidden, "q": q,
-        }
         return {"points": search.map_points(conn, filters, limit=config.map_point_limit)}
 
     @app.get("/api/photos/{photo_id}")
