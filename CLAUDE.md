@@ -68,7 +68,10 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 | `faces.py` | shared `_YuNetBackend` detection + `YuNetArcFaceBackend` (default, 512-d via onnxruntime, 5-pt `norm_crop` alignment) / `YuNetSFaceBackend` (legacy 128-d) embed backends, DBSCAN clustering, negative-aware k-NN recognition (`Enrollment` carries positives + "not this person" negatives) |
 | `classify.py` | scene tagging: SigLIP 2-only `ZeroShotSceneTagger` (shares the vision encoder with embeddings) |
 | `embed.py` | `SigLipImageEncoder` / `SigLipTextEncoder` for semantic search; `configure_text_tokenizer` honours the tokenizer's embedded pad config (SigLIP 2 Gemma) |
-| `search.py` | filter dict → SQL (`_where`), facets, plus `SemanticIndex`/`semantic_search` (cosine ranking ANDed with filters), `RegionIndex`/`grounded_search` (per-person grounding: rank a named person's photos by *their* region embedding), `FaceIndex`/`similar_faces` ("more like this person" over ArcFace embeddings), trip/memory grouping, and `find_burst_groups` (perceptual+temporal near-duplicate detection) |
+| `search.py` | public search entry point: `search_photos`, `facets`, `map_points`, `photo_detail`; re-exports the three modules below so `photo_atlas.search.X` keeps working |
+| `filters.py` | filter dict → SQL (`_where`), `_LIST_COLUMNS`, sort/bucket/picture-type tables |
+| `semantic.py` | `SemanticIndex`/`semantic_search` (cosine ranking ANDed with filters), `RegionIndex`/`grounded_search` (per-person grounding), `FaceIndex`/`similar_faces`, `similar_photos` |
+| `groups.py` | derived groupings: `on_this_day`, `detect_trips`, `find_burst_groups` (perceptual+temporal near-duplicate detection) |
 | `planner.py` | model-free decomposition of NL queries → person/people filters + residual visual text (the API grounds the residual on the named person's region when available) |
 | `geocode.py` / `folder_meta.py` | GPS→city/country; year/place mined from folder names (incl. a month from a yearless named-month subfolder, e.g. `2026/01-gennaio`) |
 | `library.py` | person/cluster management (rename/merge/cover/assign) |
