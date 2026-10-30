@@ -14,7 +14,7 @@ this module convert to and from :class:`numpy.ndarray`.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC
 from pathlib import Path
 
@@ -179,10 +179,11 @@ REGION_SIGNATURE_SQL = (
 )
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
-    """Apply additive migrations to catalogs created by older versions.
+def _migrate_to_v1(conn: sqlite3.Connection) -> None:
+    """Additive migrations for every catalog created before versioning existed.
 
-    Runs before the schema script so that columns referenced by ``CREATE INDEX``
+    Idempotent column checks (so any pre-1 catalog, however old, converges). Runs
+    before the schema script so that columns referenced by ``CREATE INDEX``
     statements (e.g. ``folder_place``) exist on pre-existing tables.
     """
 
@@ -246,6 +247,28 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # don't carry redundant indexes that only cost extra on every write.
     for name in ("idx_photos_scene", "idx_photos_folder", "idx_faces_person"):
         conn.execute(f"DROP INDEX IF EXISTS {name}")
+
+
+#: Ordered ``(version, fn)`` catalog migrations, applied once each and recorded in
+#: ``PRAGMA user_version``. Append new entries (and bump ``SCHEMA_VERSION``) instead
+#: of adding ad-hoc column probes. A migration runs *before* the schema script, so on
+#: a brand-new file its tables may not exist yet — guard accordingly.
+MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [(1, _migrate_to_v1)]
+SCHEMA_VERSION = 1
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    current = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if current > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"This catalog was created by a newer Photo Atlas (schema v{current}, this "
+            f"version understands v{SCHEMA_VERSION}); upgrade Photo Atlas to open it."
+        )
+    for version, step in MIGRATIONS:
+        if version > current:
+            step(conn)
+    if current < SCHEMA_VERSION:
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 def connect(db_path: Path, *, ensure_schema: bool = True) -> sqlite3.Connection:

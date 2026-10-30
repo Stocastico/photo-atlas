@@ -55,6 +55,7 @@ def test_embedding_columns_are_migrated_onto_old_catalogs(tmp_path):
 
     path = tmp_path / "old.db"
     conn = db.connect(path)
+    conn.execute("PRAGMA user_version = 0")  # an old catalog predates versioning
     conn.execute("DROP INDEX idx_photos_embedded")  # indexes block DROP COLUMN
     conn.execute("ALTER TABLE photos DROP COLUMN embedding")
     conn.execute("ALTER TABLE photos DROP COLUMN embed_dim")
