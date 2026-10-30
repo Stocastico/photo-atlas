@@ -161,3 +161,41 @@ def test_bump_meta_is_a_single_atomic_statement(tmp_path):
         assert not any(q.lstrip().upper().startswith("SELECT") for q in seen), seen
     finally:
         conn.close()
+
+
+def test_concurrent_first_requests_build_index_once(tmp_path, monkeypatch):
+    """Simultaneous cold requests must share one index build (not N copies of the
+    embedding matrix in memory)."""
+
+    import threading
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from photo_atlas import search
+    from photo_atlas.api import create_app
+
+    config = AtlasConfig(home=tmp_path).ensure_dirs()
+    conn = db.connect(config.db_path)
+    pid = db.upsert_photo(conn, {"path": "/a.jpg", "filename": "a.jpg"})
+    db.set_photo_embedding(conn, pid, _unit(1, 0, 0))
+    conn.commit()
+    conn.close()
+
+    real_load = search.SemanticIndex.load
+    calls: list[int] = []
+
+    def slow_load(c):
+        calls.append(1)
+        time.sleep(0.2)
+        return real_load(c)
+
+    monkeypatch.setattr(search.SemanticIndex, "load", staticmethod(slow_load))
+    client = TestClient(create_app(config))
+    threads = [
+        threading.Thread(target=lambda: client.get(f"/api/photos/{pid}/similar"))
+        for _ in range(6)
+    ]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert len(calls) == 1

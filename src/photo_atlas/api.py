@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime
 import sqlite3
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import urlparse
@@ -139,6 +140,10 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
     # photos changes (a concurrent `index`/`embed` run); the text encoder is built
     # once on first use (it downloads the SigLIP text model + tokenizer).
     _semantic: dict = {"index": None, "sig": None, "encoder": None, "encoder_tried": False}
+    # Sync endpoints run on a threadpool, so two cold requests could otherwise both
+    # build the (large) matrix / load the model. One lock per cache serialises that.
+    _semantic_lock = threading.Lock()
+    _encoder_lock = threading.Lock()
 
     def _embed_signature(conn: sqlite3.Connection) -> tuple[int, int, str]:
         row = conn.execute(db.PHOTO_EMBED_SIGNATURE_SQL).fetchone()
@@ -148,14 +153,16 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
 
     def _semantic_index(conn: sqlite3.Connection):
         sig = _embed_signature(conn)
-        if _semantic["sig"] != sig:
-            _semantic["index"] = search.SemanticIndex.load(conn)
-            _semantic["sig"] = sig
-        return _semantic["index"]
+        with _semantic_lock:
+            if _semantic["sig"] != sig:
+                _semantic["index"] = search.SemanticIndex.load(conn)
+                _semantic["sig"] = sig
+            return _semantic["index"]
 
     # Face-embedding index for "more like this person" (SFace cosine over faces),
     # cached and rebuilt only when the set of embedded faces changes.
     _faces: dict = {"index": None, "sig": None}
+    _faces_lock = threading.Lock()
 
     def _face_signature(conn: sqlite3.Connection) -> tuple[int, int]:
         row = conn.execute(db.FACE_SIGNATURE_SQL).fetchone()
@@ -163,15 +170,17 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
 
     def _face_index(conn: sqlite3.Connection):
         sig = _face_signature(conn)
-        if _faces["sig"] != sig:
-            _faces["index"] = search.FaceIndex.load(conn)
-            _faces["sig"] = sig
-        return _faces["index"]
+        with _faces_lock:
+            if _faces["sig"] != sig:
+                _faces["index"] = search.FaceIndex.load(conn)
+                _faces["sig"] = sig
+            return _faces["index"]
 
     # Per-face region-embedding index for per-person grounding, cached and rebuilt
     # only when the set of named, region-embedded faces changes (a re-embed bumps
     # ``face_regions_version`` so an in-place backfill also invalidates it).
     _regions: dict = {"index": None, "sig": None}
+    _regions_lock = threading.Lock()
 
     def _region_signature(conn: sqlite3.Connection) -> tuple[int, int, str]:
         row = conn.execute(db.REGION_SIGNATURE_SQL).fetchone()
@@ -179,21 +188,23 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
 
     def _region_index(conn: sqlite3.Connection):
         sig = _region_signature(conn)
-        if _regions["sig"] != sig:
-            _regions["index"] = search.RegionIndex.load(conn)
-            _regions["sig"] = sig
-        return _regions["index"]
+        with _regions_lock:
+            if _regions["sig"] != sig:
+                _regions["index"] = search.RegionIndex.load(conn)
+                _regions["sig"] = sig
+            return _regions["index"]
 
     def _text_encoder():
-        if _semantic["encoder"] is None and not _semantic["encoder_tried"]:
-            _semantic["encoder_tried"] = True
-            try:
-                from .embed import SigLipTextEncoder
+        with _encoder_lock:
+            if _semantic["encoder"] is None and not _semantic["encoder_tried"]:
+                _semantic["encoder_tried"] = True
+                try:
+                    from .embed import SigLipTextEncoder
 
-                _semantic["encoder"] = SigLipTextEncoder.from_config(config)
-            except Exception:
-                _semantic["encoder"] = None  # extra/model unavailable
-        return _semantic["encoder"]
+                    _semantic["encoder"] = SigLipTextEncoder.from_config(config)
+                except Exception:
+                    _semantic["encoder"] = None  # extra/model unavailable
+            return _semantic["encoder"]
 
     @app.get("/api/capabilities")
     def api_capabilities(conn: sqlite3.Connection = Depends(get_conn)):
