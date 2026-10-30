@@ -132,6 +132,22 @@ these items are the genuinely new pieces.
   need a collapsible drawer. The target is a desktop browser only, so this is out of
   scope.
 
+## Review pass (2026-10-30)
+
+### Done
+- [x] **Concurrent requests 500'd** (`sqlite3.ProgrammingError`: connection pinned to its creating thread) — `check_same_thread=False`; 600/600 OK in a 40-thread repro.
+- [x] **DNS-rebinding guard** (non-loopback `Host` → 403; `serve --host` off-loopback opts out) and no import-time `create_app()`.
+- [x] **Recoverable delete** — originals go to `~/.photo_atlas/trash` (+ `manifest.jsonl`); `photo-atlas empty-trash` purges.
+- [x] Cache signatures via partial indexes; locks on lazily-built indexes/encoder; atomic `bump_meta`; `argpartition` top-k ranking; `Cache-Control` on derivatives.
+- [x] `common_filters` dependency (one filter list for facets/photos/map); `index_errors.log` (uncapped); versioned migrations (`PRAGMA user_version`, newer catalogs refused).
+- [x] `reverse_geocoder` is a core dependency (real town labels by default).
+- [x] `search.py` → `filters`/`semantic`/`groups`; `indexer.py` → `housekeeping`. Coverage 93.5% → 95.6% (faces 73→90, embed 65→99).
+
+### Open
+- [ ] Split `web/app.js` (1.8k lines) into native ES modules (no build step); needs a browser smoke test and updating `tests/js` harnesses.
+- [ ] `restore` command for the trash (manifest already records original paths).
+- [ ] `bump_meta` uses `UPSERT … RETURNING` (SQLite ≥ 3.35); add a fallback if older system SQLite builds matter.
+
 ## Correctness / scale / quality (2026-06-15 final review)
 
 A full-app review at ~27k images + ~600 videos drove a round of hardening.
