@@ -141,9 +141,7 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
     _semantic: dict = {"index": None, "sig": None, "encoder": None, "encoder_tried": False}
 
     def _embed_signature(conn: sqlite3.Connection) -> tuple[int, int, str]:
-        row = conn.execute(
-            "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM photos WHERE embedding IS NOT NULL"
-        ).fetchone()
+        row = conn.execute(db.PHOTO_EMBED_SIGNATURE_SQL).fetchone()
         # Include the embeddings version so an in-place re-embed (`embed --recompute`,
         # unchanged count/max id) still invalidates the cached index.
         return int(row[0]), int(row[1]), str(db.get_meta(conn, "embeddings_version"))
@@ -160,9 +158,7 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
     _faces: dict = {"index": None, "sig": None}
 
     def _face_signature(conn: sqlite3.Connection) -> tuple[int, int]:
-        row = conn.execute(
-            "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM faces WHERE embedding IS NOT NULL"
-        ).fetchone()
+        row = conn.execute(db.FACE_SIGNATURE_SQL).fetchone()
         return int(row[0]), int(row[1])
 
     def _face_index(conn: sqlite3.Connection):
@@ -178,10 +174,7 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
     _regions: dict = {"index": None, "sig": None}
 
     def _region_signature(conn: sqlite3.Connection) -> tuple[int, int, str]:
-        row = conn.execute(
-            "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM faces "
-            "WHERE region_embedding IS NOT NULL AND person_id IS NOT NULL"
-        ).fetchone()
+        row = conn.execute(db.REGION_SIGNATURE_SQL).fetchone()
         return int(row[0]), int(row[1]), str(db.get_meta(conn, "face_regions_version"))
 
     def _region_index(conn: sqlite3.Connection):

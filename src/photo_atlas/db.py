@@ -129,6 +129,13 @@ CREATE INDEX IF NOT EXISTS idx_photos_scene_taken  ON photos(scene_type, taken_a
 CREATE INDEX IF NOT EXISTS idx_photos_folder_taken ON photos(folder_place, taken_at);
 CREATE INDEX IF NOT EXISTS idx_faces_person_photo  ON faces(person_id, photo_id);
 CREATE INDEX IF NOT EXISTS idx_photos_favorite     ON photos(favorite);
+-- Partial indexes over the embedded rows only. They exist so the API's per-request
+-- cache signatures (COUNT/MAX over embedded rows, see ``*_SIGNATURE_SQL``) are
+-- answered from a tiny covering index instead of walking every photo/face row.
+CREATE INDEX IF NOT EXISTS idx_photos_embedded ON photos(id) WHERE embedding IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_faces_embedded  ON faces(id) WHERE embedding IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_faces_region_named
+    ON faces(id) WHERE region_embedding IS NOT NULL AND person_id IS NOT NULL;
 
 -- ``photos.named_face_count`` denormalises "how many of this photo's faces are
 -- assigned to a named person" so the Known-people facet is a plain column read
@@ -156,6 +163,20 @@ BEGIN
      WHERE id = NEW.photo_id;
 END;
 """
+
+
+# (count, max id) of the rows each cached in-memory index is built from. The
+# predicates match the partial indexes above exactly so SQLite can use them.
+PHOTO_EMBED_SIGNATURE_SQL = (
+    "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM photos WHERE embedding IS NOT NULL"
+)
+FACE_SIGNATURE_SQL = (
+    "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM faces WHERE embedding IS NOT NULL"
+)
+REGION_SIGNATURE_SQL = (
+    "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM faces "
+    "WHERE region_embedding IS NOT NULL AND person_id IS NOT NULL"
+)
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -214,6 +235,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # embeddings, so a hybrid query can score *the person's* region rather than
         # the whole frame. Additive, so older catalogs gain them empty and fill them
         # in via a re-index (``index --embed``) or the ``embed`` backfill.
+        if "embedding" not in fcols:
+            conn.execute("ALTER TABLE faces ADD COLUMN embedding BLOB")
         if "region_embedding" not in fcols:
             conn.execute("ALTER TABLE faces ADD COLUMN region_embedding BLOB")
         if "region_dim" not in fcols:

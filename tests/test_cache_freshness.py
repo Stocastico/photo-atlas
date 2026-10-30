@@ -125,3 +125,20 @@ def test_connection_usable_across_threads(tmp_path):
     t.start()
     t.join()
     assert not errors
+
+
+def test_signature_queries_use_partial_indexes(tmp_path):
+    """The per-request cache signatures must not scan the embedding BLOB rows."""
+
+    from photo_atlas import db
+
+    conn = db.connect(tmp_path / "sig.db")
+    try:
+        for sql in (
+            db.PHOTO_EMBED_SIGNATURE_SQL, db.FACE_SIGNATURE_SQL, db.REGION_SIGNATURE_SQL
+        ):
+            plan = " ".join(r[3] for r in conn.execute("EXPLAIN QUERY PLAN " + sql))
+            assert "USING INDEX idx_" in plan or "USING COVERING INDEX" in plan, plan
+            assert conn.execute(sql).fetchone()[0] == 0
+    finally:
+        conn.close()
