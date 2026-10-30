@@ -84,7 +84,6 @@ search (ONNX Runtime + tokenizers are core dependencies — **no PyTorch anywher
 Some formats and backends are opt-in to keep the base install lean:
 
 ```bash
-uv sync --extra geo         # high-resolution offline reverse geocoding (~150k cities)
 uv sync --extra heic        # HEIC/HEIF decoding — the default iPhone format
 uv sync --extra dlib        # legacy face_recognition (dlib) backend (needs CMake/C++)
 ```
@@ -95,12 +94,11 @@ uv sync --extra dlib        # legacy face_recognition (dlib) backend (needs CMak
 
 ### The everything-ready setup
 
-To enable **every feature at once** — high-resolution geocoding, HEIC decoding and
-the dlib backend — combine the extras and add `ffmpeg` for video support:
+To enable **every feature at once** — HEIC decoding and the dlib backend — combine the extras and add `ffmpeg` for video support:
 
 ```bash
 # 1. all optional Python features
-uv sync --extra geo --extra heic --extra dlib
+uv sync --extra heic --extra dlib
 
 # 2. video support (poster frames + capture date/GPS) — system package, not pip:
 #    macOS:        brew install ffmpeg
@@ -153,8 +151,9 @@ tab. Useful flags:
   `--workers 1` for serial). Every database write still funnels through one
   connection, so there's no contention.
 
-> **City labels need the `geo` extra.** Without `reverse_geocoder`, GPS is matched
-> against a tiny bundled table and `index` warns that city/country labels will be coarse.
+> **City labels** use the offline `reverse_geocoder` (~150k towns, installed by default).
+> If it's missing, GPS is matched against a tiny bundled table and `index` warns that
+> city/country labels will be coarse.
 
 After indexing you can keep the catalog fresh without a full re-index:
 

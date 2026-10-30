@@ -18,7 +18,7 @@ ruff, mypy) is installed by default.
 
 ```bash
 uv sync                       # core app + dev tooling into .venv (incl. SigLIP/ONNX)
-uv sync --extra geo|heic|dlib # other optional features
+uv sync --extra heic|dlib     # other optional features (offline ~150k-city geocoding is core)
 uv run pytest -q              # full test suite (coverage gate: --cov-fail-under=80)
 uv run ruff check src tests   # lint (must pass)
 uv run mypy                   # type check, src only (must pass)

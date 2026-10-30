@@ -114,14 +114,16 @@ def test_unavailable_backend_warns_and_indexes_without_faces(tmp_path, capsys):
     assert stats.faces == 0
 
 
-def test_index_warns_when_geocoder_is_low_resolution(tmp_path):
-    from photo_atlas import demo
+def test_index_warns_when_geocoder_is_low_resolution(tmp_path, monkeypatch):
+    from photo_atlas import demo, geocode
+
+    # Simulate reverse_geocoder being unavailable (it is a core dependency now).
+    monkeypatch.setattr(geocode.Geocoder, "high_resolution", property(lambda self: False))
 
     photos = tmp_path / "p"
     demo.generate(photos, count=2, seed=1)
     cfg = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
-    # reverse_geocoder isn't installed in the test env, so geocoding falls back
-    # to the coarse bundled table — the user should be told.
+    # Falling back to the coarse bundled table — the user should be told.
     import contextlib
     import io
 
@@ -129,7 +131,7 @@ def test_index_warns_when_geocoder_is_low_resolution(tmp_path):
     with contextlib.redirect_stderr(err):
         indexer.index_path(cfg, photos, backend_name="none", geocode=True)
     msg = err.getvalue()
-    assert "reverse_geocoder" in msg or "--extra geo" in msg
+    assert "reverse_geocoder" in msg
 
 
 def test_no_geocode_run_does_not_warn_about_resolution(tmp_path):

@@ -239,3 +239,24 @@ def test_models_accepts_complete_download(monkeypatch, tmp_path):
     monkeypatch.setattr(models.urllib.request, "urlretrieve", fake)
     got = models._resolve("m.onnx", models.YUNET_URL, tmp_path, "NOPE_ENV", download=True)
     assert got.exists() and got.read_bytes() == payload
+
+
+def test_high_resolution_geocoder_is_a_core_dependency():
+    """Real city labels are the default experience, not an opt-in extra."""
+
+    import tomllib
+    from pathlib import Path
+
+    meta = tomllib.loads(
+        (Path(__file__).parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]
+    assert any(d.lower().startswith("reverse") for d in meta["dependencies"])
+
+
+def test_default_geocoder_resolves_a_real_town():
+    from photo_atlas.geocode import Geocoder
+
+    geo = Geocoder()
+    assert geo.high_resolution
+    place = geo.lookup(45.4642, 9.19)
+    assert place is not None and place.country == "Italy"

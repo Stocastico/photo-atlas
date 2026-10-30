@@ -930,7 +930,7 @@ def index_path(
         print(
             "warning: reverse geocoding is using the bundled ~120-city table, so "
             "city/country labels will be coarse and often wrong. Install the "
-            "high-resolution backend with `uv sync --extra geo` (reverse_geocoder).",
+            "high-resolution backend with `pip install reverse_geocoder`.",
             file=sys.stderr,
         )
     stats = IndexStats()
