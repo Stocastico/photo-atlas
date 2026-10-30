@@ -238,7 +238,11 @@ def connect(db_path: Path, *, ensure_schema: bool = True) -> sqlite3.Connection:
     """
 
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
+    # ``check_same_thread=False``: the web app opens a connection in a sync FastAPI
+    # dependency and uses/closes it from the endpoint, which the threadpool may run
+    # on a different worker. Each connection serves exactly one request, so it is
+    # never shared concurrently.
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # WAL lets a reader (the web UI) and a writer (a concurrent `index` run)

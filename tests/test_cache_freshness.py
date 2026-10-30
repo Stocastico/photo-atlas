@@ -101,3 +101,27 @@ def test_similar_reflects_in_place_recompute(tmp_path):
 
     second = client.get(f"/api/photos/{a}/similar").json()
     assert [p["id"] for p in second["photos"]] == [c, b]  # cache reloaded
+
+
+def test_connection_usable_across_threads(tmp_path):
+    """FastAPI runs a sync dependency and its endpoint on different threadpool
+    workers, so a request connection must not be pinned to its creating thread."""
+
+    import threading
+
+    from photo_atlas import db
+
+    conn = db.connect(tmp_path / "t.db")
+    errors: list[BaseException] = []
+
+    def use() -> None:
+        try:
+            conn.execute("SELECT 1").fetchone()
+            conn.close()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    t = threading.Thread(target=use)
+    t.start()
+    t.join()
+    assert not errors
