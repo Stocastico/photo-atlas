@@ -306,16 +306,21 @@ class SemanticIndex:
         if self.size == 0:
             return []
         scores = self.matrix @ _normalize(query_vec)
-        order = np.argsort(-scores, kind="stable")
-        out: list[tuple[int, float]] = []
-        for idx in order:
-            pid = int(self.ids[idx])
-            if allowed_ids is not None and pid not in allowed_ids:
-                continue
-            out.append((pid, float(scores[idx])))
-            if top_k is not None and len(out) >= top_k:
-                break
-        return out
+        if allowed_ids is None:
+            cand = np.arange(self.size)
+        else:
+            cand = np.flatnonzero(np.isin(self.ids, np.fromiter(allowed_ids, dtype=np.int64)))
+        sub = scores[cand]
+        if top_k is not None and 0 < top_k < sub.shape[0]:
+            # Keep everything >= the k-th best score (so ties at the cut aren't
+            # dropped arbitrarily), then stable-sort only that small set.
+            threshold = np.partition(sub, -top_k)[-top_k]
+            keep = np.flatnonzero(sub >= threshold)
+            cand, sub = cand[keep], sub[keep]
+        order = np.argsort(-sub, kind="stable")
+        if top_k is not None:
+            order = order[:top_k]
+        return [(int(self.ids[cand[i]]), float(sub[i])) for i in order]
 
 
 def _normalize(vec: np.ndarray | None) -> np.ndarray:
