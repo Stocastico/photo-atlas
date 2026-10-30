@@ -1255,14 +1255,14 @@ async function dupAction(section, action) {
   if (!ids.length) { toast("Nothing selected to remove."); return; }
   if (action === "delete") {
     const ok = window.confirm(
-      `Permanently delete ${ids.length} file${ids.length === 1 ? "" : "s"} from disk? `
-      + "This cannot be undone.");
+      `Delete ${ids.length} file${ids.length === 1 ? "" : "s"} from the library? `
+      + "Originals are moved to the Photo Atlas trash (empty it with `photo-atlas empty-trash`).");
     if (!ok) return;
     await api("/api/photos/delete", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids }),
     });
-    toast(`Deleted ${ids.length} file${ids.length === 1 ? "" : "s"}.`);
+    toast(`Moved ${ids.length} file${ids.length === 1 ? "" : "s"} to trash.`);
   } else {
     await api("/api/photos/bulk", {
       method: "POST", headers: { "Content-Type": "application/json" },

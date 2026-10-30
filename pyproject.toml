@@ -24,13 +24,17 @@ dependencies = [
   # scene tagging is now always SigLIP.
   "onnxruntime>=1.17",
   "tokenizers>=0.19",
+  # High-resolution offline reverse geocoding (~150k cities, dataset bundled, no
+  # network). Core so photo place labels are real towns by default, not the nearest
+  # of ~120 bundled world cities.
+  "reverse_geocoder>=1.5",
 ]
 
 [project.optional-dependencies]
 # High-accuracy alternative face embeddings via dlib.
 dlib = ["face-recognition>=1.3"]
-# High-resolution offline reverse geocoding (~150k cities).
-geo = ["reverse_geocoder>=1.5"]
+# Kept so `uv sync --extra geo` still works; reverse_geocoder is now a core dependency.
+geo = []
 # Decode HEIC/HEIF (default iPhone format) via the pillow-heif plugin.
 heic = ["pillow-heif>=0.16"]
 

@@ -55,6 +55,8 @@ def test_embedding_columns_are_migrated_onto_old_catalogs(tmp_path):
 
     path = tmp_path / "old.db"
     conn = db.connect(path)
+    conn.execute("PRAGMA user_version = 0")  # an old catalog predates versioning
+    conn.execute("DROP INDEX idx_photos_embedded")  # indexes block DROP COLUMN
     conn.execute("ALTER TABLE photos DROP COLUMN embedding")
     conn.execute("ALTER TABLE photos DROP COLUMN embed_dim")
     conn.commit()
@@ -259,3 +261,36 @@ def test_api_capabilities_reports_semantic(tmp_path):
     # Truthy iff embeddings exist AND the runtime libs are importable; the value
     # depends on whether the optional extra is installed, so just assert the shape.
     assert set(caps) == {"semantic"} and isinstance(caps["semantic"], bool)
+
+
+def _brute_rank(index, query, allowed, top_k):
+    """Reference: full stable sort, then filter, then cut."""
+
+    import numpy as np
+
+    scores = index.matrix @ (query / np.linalg.norm(query))
+    out = []
+    for i in np.argsort(-scores, kind="stable"):
+        pid = int(index.ids[i])
+        if allowed is None or pid in allowed:
+            out.append((pid, float(scores[i])))
+    return out if top_k is None else out[:top_k]
+
+
+def test_rank_matches_bruteforce_including_ties():
+    import numpy as np
+
+    from photo_atlas.search import SemanticIndex
+
+    rng = np.random.default_rng(0)
+    base = rng.normal(size=(40, 8)).astype(np.float32)
+    base[10:20] = base[0]  # exact ties
+    matrix = base / np.linalg.norm(base, axis=1, keepdims=True)
+    index = SemanticIndex(np.arange(100, 140, dtype=np.int64), matrix)
+    query = rng.normal(size=8).astype(np.float32)
+    for allowed in (None, set(range(100, 140, 3)), set(), {105}):
+        for top_k in (None, 1, 5, 12, 200):
+            got = index.rank(query, allowed_ids=allowed, top_k=top_k)
+            want = _brute_rank(index, query, allowed, top_k)
+            assert [p for p, _ in got] == [p for p, _ in want]
+            assert np.allclose([s for _, s in got], [s for _, s in want])

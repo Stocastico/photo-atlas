@@ -232,3 +232,16 @@ def test_serve_invokes_uvicorn(tmp_path, monkeypatch, capsys):
     assert calls["host"] == "127.0.0.1"
     assert calls["app"] is not None
     assert "Serving Photo Atlas" in capsys.readouterr().out
+
+
+def test_index_writes_full_error_log(tmp_path, capsys):
+    pics = tmp_path / "pics"
+    pics.mkdir()
+    (pics / "broken.jpg").write_bytes(b"not a real jpeg")
+    home = tmp_path / "lib"
+    cli.main(["--home", str(home), "index", str(pics), "--faces", "none", "--no-geocode",
+              "--workers", "1"])
+    err = capsys.readouterr().err
+    log = AtlasConfig(home=home).home / "index_errors.log"
+    assert str(log) in err
+    assert "broken.jpg" in log.read_text()

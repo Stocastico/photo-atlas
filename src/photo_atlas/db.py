@@ -14,7 +14,7 @@ this module convert to and from :class:`numpy.ndarray`.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC
 from pathlib import Path
 
@@ -129,6 +129,13 @@ CREATE INDEX IF NOT EXISTS idx_photos_scene_taken  ON photos(scene_type, taken_a
 CREATE INDEX IF NOT EXISTS idx_photos_folder_taken ON photos(folder_place, taken_at);
 CREATE INDEX IF NOT EXISTS idx_faces_person_photo  ON faces(person_id, photo_id);
 CREATE INDEX IF NOT EXISTS idx_photos_favorite     ON photos(favorite);
+-- Partial indexes over the embedded rows only. They exist so the API's per-request
+-- cache signatures (COUNT/MAX over embedded rows, see ``*_SIGNATURE_SQL``) are
+-- answered from a tiny covering index instead of walking every photo/face row.
+CREATE INDEX IF NOT EXISTS idx_photos_embedded ON photos(id) WHERE embedding IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_faces_embedded  ON faces(id) WHERE embedding IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_faces_region_named
+    ON faces(id) WHERE region_embedding IS NOT NULL AND person_id IS NOT NULL;
 
 -- ``photos.named_face_count`` denormalises "how many of this photo's faces are
 -- assigned to a named person" so the Known-people facet is a plain column read
@@ -158,10 +165,25 @@ END;
 """
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
-    """Apply additive migrations to catalogs created by older versions.
+# (count, max id) of the rows each cached in-memory index is built from. The
+# predicates match the partial indexes above exactly so SQLite can use them.
+PHOTO_EMBED_SIGNATURE_SQL = (
+    "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM photos WHERE embedding IS NOT NULL"
+)
+FACE_SIGNATURE_SQL = (
+    "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM faces WHERE embedding IS NOT NULL"
+)
+REGION_SIGNATURE_SQL = (
+    "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM faces "
+    "WHERE region_embedding IS NOT NULL AND person_id IS NOT NULL"
+)
 
-    Runs before the schema script so that columns referenced by ``CREATE INDEX``
+
+def _migrate_to_v1(conn: sqlite3.Connection) -> None:
+    """Additive migrations for every catalog created before versioning existed.
+
+    Idempotent column checks (so any pre-1 catalog, however old, converges). Runs
+    before the schema script so that columns referenced by ``CREATE INDEX``
     statements (e.g. ``folder_place``) exist on pre-existing tables.
     """
 
@@ -214,6 +236,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # embeddings, so a hybrid query can score *the person's* region rather than
         # the whole frame. Additive, so older catalogs gain them empty and fill them
         # in via a re-index (``index --embed``) or the ``embed`` backfill.
+        if "embedding" not in fcols:
+            conn.execute("ALTER TABLE faces ADD COLUMN embedding BLOB")
         if "region_embedding" not in fcols:
             conn.execute("ALTER TABLE faces ADD COLUMN region_embedding BLOB")
         if "region_dim" not in fcols:
@@ -223,6 +247,28 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # don't carry redundant indexes that only cost extra on every write.
     for name in ("idx_photos_scene", "idx_photos_folder", "idx_faces_person"):
         conn.execute(f"DROP INDEX IF EXISTS {name}")
+
+
+#: Ordered ``(version, fn)`` catalog migrations, applied once each and recorded in
+#: ``PRAGMA user_version``. Append new entries (and bump ``SCHEMA_VERSION``) instead
+#: of adding ad-hoc column probes. A migration runs *before* the schema script, so on
+#: a brand-new file its tables may not exist yet — guard accordingly.
+MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [(1, _migrate_to_v1)]
+SCHEMA_VERSION = 1
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    current = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if current > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"This catalog was created by a newer Photo Atlas (schema v{current}, this "
+            f"version understands v{SCHEMA_VERSION}); upgrade Photo Atlas to open it."
+        )
+    for version, step in MIGRATIONS:
+        if version > current:
+            step(conn)
+    if current < SCHEMA_VERSION:
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 def connect(db_path: Path, *, ensure_schema: bool = True) -> sqlite3.Connection:
@@ -238,7 +284,11 @@ def connect(db_path: Path, *, ensure_schema: bool = True) -> sqlite3.Connection:
     """
 
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
+    # ``check_same_thread=False``: the web app opens a connection in a sync FastAPI
+    # dependency and uses/closes it from the endpoint, which the threadpool may run
+    # on a different worker. Each connection serves exactly one request, so it is
+    # never shared concurrently.
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # WAL lets a reader (the web UI) and a writer (a concurrent `index` run)
@@ -261,16 +311,19 @@ def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
 
 
 def bump_meta(conn: sqlite3.Connection, key: str) -> int:
-    """Increment the integer counter at ``key`` (starting from 0) and return it."""
+    """Increment the integer counter at ``key`` (starting from 0) and return it.
 
-    current = get_meta(conn, key)
-    nxt = (int(current) if current is not None else 0) + 1
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        (key, str(nxt)),
-    )
-    return nxt
+    One ``UPSERT ... RETURNING`` statement, so a concurrent `index` and `serve`
+    can't both read the same value and lose an increment.
+    """
+
+    row = conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, '1') "
+        "ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1 "
+        "RETURNING CAST(value AS INTEGER)",
+        (key,),
+    ).fetchone()
+    return int(row[0])
 
 
 # -- embedding (de)serialisation ------------------------------------------

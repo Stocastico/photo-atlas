@@ -107,3 +107,11 @@ def test_index_prune_flag_reconciles(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Pruned" in out  # reconciliation ran as part of index
     assert not orphan.exists()
+
+
+def test_indexer_reexports_housekeeping():
+    from photo_atlas import housekeeping, indexer
+
+    for name in ("sweep_orphan_derivatives", "prune_library", "empty_trash",
+                 "delete_photos", "export_photos", "cluster_library"):
+        assert getattr(indexer, name) is getattr(housekeeping, name), name

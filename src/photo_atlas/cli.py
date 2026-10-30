@@ -86,6 +86,9 @@ def _cmd_index(args) -> int:
         print(f"{stats.failed} file(s) failed; first errors:", file=sys.stderr)
         for line in stats.errors[:10]:
             print(f"  - {line}", file=sys.stderr)
+        log = config.home / "index_errors.log"
+        log.write_text("\n".join(stats.error_log) + "\n", encoding="utf-8")
+        print(f"Full list of {len(stats.error_log)} error(s): {log}", file=sys.stderr)
     if stats.faces:
         print("Tip: run `photo-atlas cluster` then name people in the web UI.")
     if getattr(args, "prune", False):
@@ -114,6 +117,13 @@ def _cmd_prune(args) -> int:
         f"({result['kept']} still present); swept {result['orphans']} "
         "orphaned derivative file(s)."
     )
+    return 0
+
+
+def _cmd_empty_trash(args) -> int:
+    from .indexer import empty_trash
+
+    print(f"Permanently deleted {empty_trash(_config(args))} trashed file(s).")
     return 0
 
 
@@ -261,7 +271,7 @@ def _cmd_serve(args) -> int:
     from .api import create_app
 
     config = _config(args)
-    app = create_app(config)
+    app = create_app(config, allow_any_host=not _is_loopback(args.host))
     if not _is_loopback(args.host):
         # The API has no authentication; writes are same-origin-guarded but every
         # GET (photos, thumbnails, metadata) is open. Binding off-loopback exposes
@@ -310,6 +320,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_prune = sub.add_parser("prune", help="Remove catalog entries for deleted files")
     p_prune.set_defaults(func=_cmd_prune)
+
+    p_trash = sub.add_parser(
+        "empty-trash", help="Permanently delete files removed via the web UI (kept in trash)"
+    )
+    p_trash.set_defaults(func=_cmd_empty_trash)
 
     p_retag = sub.add_parser("retag-scenes", help="Recompute scene tags in place (no re-index)")
     p_retag.set_defaults(func=_cmd_retag_scenes)

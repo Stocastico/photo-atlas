@@ -160,3 +160,19 @@ def test_order_by_falls_back_to_newest():
     assert _order_by(None) == search.SORTS["newest"]
     assert _order_by("bogus") == search.SORTS["newest"]
     assert _order_by("oldest") == search.SORTS["oldest"]
+
+
+def test_search_reexports_split_modules():
+    """`photo_atlas.search` stays the one public entry point after the split."""
+
+    from photo_atlas import filters, groups, search, semantic
+
+    for mod, names in (
+        (filters, ["PEOPLE_BUCKETS", "KNOWN_BUCKETS", "PICTURE_TYPES", "SORTS"]),
+        (groups, ["detect_trips", "find_burst_groups", "on_this_day", "phash_distance"]),
+        (semantic, ["SemanticIndex", "RegionIndex", "FaceIndex", "semantic_search",
+                    "grounded_search", "similar_photos", "similar_faces"]),
+    ):
+        for name in names:
+            assert getattr(search, name) is getattr(mod, name), name
+    assert search._where is filters._where

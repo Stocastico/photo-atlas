@@ -101,3 +101,101 @@ def test_similar_reflects_in_place_recompute(tmp_path):
 
     second = client.get(f"/api/photos/{a}/similar").json()
     assert [p["id"] for p in second["photos"]] == [c, b]  # cache reloaded
+
+
+def test_connection_usable_across_threads(tmp_path):
+    """FastAPI runs a sync dependency and its endpoint on different threadpool
+    workers, so a request connection must not be pinned to its creating thread."""
+
+    import threading
+
+    from photo_atlas import db
+
+    conn = db.connect(tmp_path / "t.db")
+    errors: list[BaseException] = []
+
+    def use() -> None:
+        try:
+            conn.execute("SELECT 1").fetchone()
+            conn.close()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    t = threading.Thread(target=use)
+    t.start()
+    t.join()
+    assert not errors
+
+
+def test_signature_queries_use_partial_indexes(tmp_path):
+    """The per-request cache signatures must not scan the embedding BLOB rows."""
+
+    from photo_atlas import db
+
+    conn = db.connect(tmp_path / "sig.db")
+    try:
+        for sql in (
+            db.PHOTO_EMBED_SIGNATURE_SQL, db.FACE_SIGNATURE_SQL, db.REGION_SIGNATURE_SQL
+        ):
+            plan = " ".join(r[3] for r in conn.execute("EXPLAIN QUERY PLAN " + sql))
+            assert "USING INDEX idx_" in plan or "USING COVERING INDEX" in plan, plan
+            assert conn.execute(sql).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_bump_meta_is_a_single_atomic_statement(tmp_path):
+    """A read-then-write bump loses increments when `index` and `serve` race; the
+    increment must happen inside one SQL statement."""
+
+    from photo_atlas import db
+
+    conn = db.connect(tmp_path / "m.db")
+    try:
+        seen: list[str] = []
+        conn.set_trace_callback(seen.append)
+        assert db.bump_meta(conn, "k") == 1
+        assert db.bump_meta(conn, "k") == 2
+        conn.set_trace_callback(None)
+        assert db.get_meta(conn, "k") == "2"
+        assert not any(q.lstrip().upper().startswith("SELECT") for q in seen), seen
+    finally:
+        conn.close()
+
+
+def test_concurrent_first_requests_build_index_once(tmp_path, monkeypatch):
+    """Simultaneous cold requests must share one index build (not N copies of the
+    embedding matrix in memory)."""
+
+    import threading
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from photo_atlas import search
+    from photo_atlas.api import create_app
+
+    config = AtlasConfig(home=tmp_path).ensure_dirs()
+    conn = db.connect(config.db_path)
+    pid = db.upsert_photo(conn, {"path": "/a.jpg", "filename": "a.jpg"})
+    db.set_photo_embedding(conn, pid, _unit(1, 0, 0))
+    conn.commit()
+    conn.close()
+
+    real_load = search.SemanticIndex.load
+    calls: list[int] = []
+
+    def slow_load(c):
+        calls.append(1)
+        time.sleep(0.2)
+        return real_load(c)
+
+    monkeypatch.setattr(search.SemanticIndex, "load", staticmethod(slow_load))
+    client = TestClient(create_app(config))
+    threads = [
+        threading.Thread(target=lambda: client.get(f"/api/photos/{pid}/similar"))
+        for _ in range(6)
+    ]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert len(calls) == 1

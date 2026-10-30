@@ -5,14 +5,15 @@ thumbnail, face crop) and serves the single-page web UI from
 :mod:`photo_atlas.web`.
 
 Create the app with :func:`create_app` (used by the CLI ``serve`` command) so a
-custom :class:`~photo_atlas.config.AtlasConfig` can be injected; importing
-``app`` uses the default library location.
+custom :class:`~photo_atlas.config.AtlasConfig` can be injected. Nothing is created at
+import time.
 """
 
 from __future__ import annotations
 
 import datetime
 import sqlite3
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import urlparse
@@ -43,6 +44,39 @@ def _union(existing, derived: list) -> list:
 # reject anything that isn't that shape (a malformed value would otherwise compare
 # lexically and silently mis-filter). Applied to date_from/date_to everywhere.
 _DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
+
+
+def common_filters(
+    person_id: list[int] | None = Query(None),
+    person_mode: str | None = None,
+    scene: list[str] | None = Query(None),
+    country: list[str] | None = Query(None),
+    city: list[str] | None = Query(None),
+    place: list[str] | None = Query(None),
+    year: list[str] | None = Query(None),
+    date_from: str | None = Query(None, pattern=_DATE_PATTERN),
+    date_to: str | None = Query(None, pattern=_DATE_PATTERN),
+    camera: list[str] | None = Query(None),
+    people: list[str] | None = Query(None),
+    known: list[str] | None = Query(None),
+    kind: list[str] | None = Query(None),
+    has_faces: bool | None = None,
+    favorite: bool | None = None,
+    hidden: bool = False,
+    q: str | None = None,
+) -> dict:
+    """The structured filter set shared by facets, photos and map.
+
+    Declared once so adding a filter is a single edit here (plus ``search._where``).
+    """
+
+    return {
+        "person_id": person_id, "person_mode": person_mode, "scene": scene,
+        "country": country, "city": city, "place": place, "year": year,
+        "date_from": date_from, "date_to": date_to, "camera": camera,
+        "people": people, "known": known, "kind": kind, "has_faces": has_faces,
+        "favorite": favorite, "hidden": hidden, "q": q,
+    }
 
 
 class AssignRequest(BaseModel):
@@ -85,13 +119,43 @@ class ExportRequest(BaseModel):
     dest: str
 
 
-def create_app(config: AtlasConfig | None = None) -> FastAPI:
+# Derivatives (thumbs/previews/crops) are content-addressed on disk but served by
+# photo id, so allow a day of browser caching (ETag still revalidates after that)
+# rather than ``immutable``.
+_DERIVATIVE_CACHE = {"Cache-Control": "private, max-age=86400"}
+
+
+def _derivative(path) -> FileResponse:
+    return FileResponse(path, headers=_DERIVATIVE_CACHE)
+
+
+# ``Host`` values accepted unless the server is deliberately exposed (``testserver``
+# is Starlette's TestClient default).
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "testserver"})
+
+
+def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = False) -> FastAPI:
+    """Build the app. ``allow_any_host`` disables the loopback-only ``Host`` check
+    (set by ``serve --host`` when the user deliberately binds off-loopback)."""
+
     config = (config or AtlasConfig()).ensure_dirs()
     app = FastAPI(title="Photo Atlas", version="0.1.0")
 
     # Create / migrate the schema once, here, so the per-request connections below
     # can skip the (idempotent but not free) DDL script on every single call.
     db.connect(config.db_path).close()
+
+    @app.middleware("http")
+    async def _local_host_only(request, call_next):
+        # DNS-rebinding guard: a hostile page can make its own domain resolve to
+        # 127.0.0.1, which makes its requests same-origin (so the Origin check below
+        # passes) and lets it read the whole library. Its ``Host`` is still the
+        # attacker's name, so refuse any Host that isn't loopback.
+        if not allow_any_host:
+            host = urlparse("//" + request.headers.get("host", "")).hostname
+            if host not in _LOCAL_HOSTS:
+                return JSONResponse({"detail": "host not allowed"}, 403)
+        return await call_next(request)
 
     @app.middleware("http")
     async def _same_origin_writes(request, call_next):
@@ -119,68 +183,71 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
     # photos changes (a concurrent `index`/`embed` run); the text encoder is built
     # once on first use (it downloads the SigLIP text model + tokenizer).
     _semantic: dict = {"index": None, "sig": None, "encoder": None, "encoder_tried": False}
+    # Sync endpoints run on a threadpool, so two cold requests could otherwise both
+    # build the (large) matrix / load the model. One lock per cache serialises that.
+    _semantic_lock = threading.Lock()
+    _encoder_lock = threading.Lock()
 
     def _embed_signature(conn: sqlite3.Connection) -> tuple[int, int, str]:
-        row = conn.execute(
-            "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM photos WHERE embedding IS NOT NULL"
-        ).fetchone()
+        row = conn.execute(db.PHOTO_EMBED_SIGNATURE_SQL).fetchone()
         # Include the embeddings version so an in-place re-embed (`embed --recompute`,
         # unchanged count/max id) still invalidates the cached index.
         return int(row[0]), int(row[1]), str(db.get_meta(conn, "embeddings_version"))
 
     def _semantic_index(conn: sqlite3.Connection):
         sig = _embed_signature(conn)
-        if _semantic["sig"] != sig:
-            _semantic["index"] = search.SemanticIndex.load(conn)
-            _semantic["sig"] = sig
-        return _semantic["index"]
+        with _semantic_lock:
+            if _semantic["sig"] != sig:
+                _semantic["index"] = search.SemanticIndex.load(conn)
+                _semantic["sig"] = sig
+            return _semantic["index"]
 
     # Face-embedding index for "more like this person" (SFace cosine over faces),
     # cached and rebuilt only when the set of embedded faces changes.
     _faces: dict = {"index": None, "sig": None}
+    _faces_lock = threading.Lock()
 
     def _face_signature(conn: sqlite3.Connection) -> tuple[int, int]:
-        row = conn.execute(
-            "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM faces WHERE embedding IS NOT NULL"
-        ).fetchone()
+        row = conn.execute(db.FACE_SIGNATURE_SQL).fetchone()
         return int(row[0]), int(row[1])
 
     def _face_index(conn: sqlite3.Connection):
         sig = _face_signature(conn)
-        if _faces["sig"] != sig:
-            _faces["index"] = search.FaceIndex.load(conn)
-            _faces["sig"] = sig
-        return _faces["index"]
+        with _faces_lock:
+            if _faces["sig"] != sig:
+                _faces["index"] = search.FaceIndex.load(conn)
+                _faces["sig"] = sig
+            return _faces["index"]
 
     # Per-face region-embedding index for per-person grounding, cached and rebuilt
     # only when the set of named, region-embedded faces changes (a re-embed bumps
     # ``face_regions_version`` so an in-place backfill also invalidates it).
     _regions: dict = {"index": None, "sig": None}
+    _regions_lock = threading.Lock()
 
     def _region_signature(conn: sqlite3.Connection) -> tuple[int, int, str]:
-        row = conn.execute(
-            "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM faces "
-            "WHERE region_embedding IS NOT NULL AND person_id IS NOT NULL"
-        ).fetchone()
+        row = conn.execute(db.REGION_SIGNATURE_SQL).fetchone()
         return int(row[0]), int(row[1]), str(db.get_meta(conn, "face_regions_version"))
 
     def _region_index(conn: sqlite3.Connection):
         sig = _region_signature(conn)
-        if _regions["sig"] != sig:
-            _regions["index"] = search.RegionIndex.load(conn)
-            _regions["sig"] = sig
-        return _regions["index"]
+        with _regions_lock:
+            if _regions["sig"] != sig:
+                _regions["index"] = search.RegionIndex.load(conn)
+                _regions["sig"] = sig
+            return _regions["index"]
 
     def _text_encoder():
-        if _semantic["encoder"] is None and not _semantic["encoder_tried"]:
-            _semantic["encoder_tried"] = True
-            try:
-                from .embed import SigLipTextEncoder
+        with _encoder_lock:
+            if _semantic["encoder"] is None and not _semantic["encoder_tried"]:
+                _semantic["encoder_tried"] = True
+                try:
+                    from .embed import SigLipTextEncoder
 
-                _semantic["encoder"] = SigLipTextEncoder.from_config(config)
-            except Exception:
-                _semantic["encoder"] = None  # extra/model unavailable
-        return _semantic["encoder"]
+                    _semantic["encoder"] = SigLipTextEncoder.from_config(config)
+                except Exception:
+                    _semantic["encoder"] = None  # extra/model unavailable
+            return _semantic["encoder"]
 
     @app.get("/api/capabilities")
     def api_capabilities(conn: sqlite3.Connection = Depends(get_conn)):
@@ -197,68 +264,20 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
     @app.get("/api/facets")
     def api_facets(
         conn: sqlite3.Connection = Depends(get_conn),
-        person_id: list[int] | None = Query(None),
-        person_mode: str | None = None,
-        scene: list[str] | None = Query(None),
-        country: list[str] | None = Query(None),
-        city: list[str] | None = Query(None),
-        place: list[str] | None = Query(None),
-        year: list[str] | None = Query(None),
-        date_from: str | None = Query(None, pattern=_DATE_PATTERN),
-        date_to: str | None = Query(None, pattern=_DATE_PATTERN),
-        camera: list[str] | None = Query(None),
-        people: list[str] | None = Query(None),
-        known: list[str] | None = Query(None),
-        kind: list[str] | None = Query(None),
-        has_faces: bool | None = None,
-        favorite: bool | None = None,
-        hidden: bool = False,
-        q: str | None = None,
+        filters: dict = Depends(common_filters),
     ):
-        filters = {
-            "person_id": person_id, "person_mode": person_mode,
-            "scene": scene, "country": country,
-            "city": city, "place": place, "year": year, "date_from": date_from,
-            "date_to": date_to, "camera": camera, "people": people, "known": known,
-            "kind": kind,
-            "has_faces": has_faces, "favorite": favorite, "hidden": hidden, "q": q,
-        }
         return search.facets(conn, filters)
 
     @app.get("/api/photos")
     def api_photos(
         conn: sqlite3.Connection = Depends(get_conn),
-        person_id: list[int] | None = Query(None),
-        person_mode: str | None = None,
-        scene: list[str] | None = Query(None),
-        country: list[str] | None = Query(None),
-        city: list[str] | None = Query(None),
-        place: list[str] | None = Query(None),
-        year: list[str] | None = Query(None),
-        date_from: str | None = Query(None, pattern=_DATE_PATTERN),
-        date_to: str | None = Query(None, pattern=_DATE_PATTERN),
-        camera: list[str] | None = Query(None),
-        people: list[str] | None = Query(None),
-        known: list[str] | None = Query(None),
-        kind: list[str] | None = Query(None),
-        has_faces: bool | None = None,
-        favorite: bool | None = None,
-        hidden: bool = False,
-        q: str | None = None,
+        filters: dict = Depends(common_filters),
         text: str | None = None,
         sort: str | None = None,
         limit: int = Query(60, ge=1, le=500),
         offset: int = Query(0, ge=0),
     ):
-        filters = {
-            "person_id": person_id, "person_mode": person_mode,
-            "scene": scene, "country": country,
-            "city": city, "place": place, "year": year, "date_from": date_from,
-            "date_to": date_to, "camera": camera, "people": people, "known": known,
-            "kind": kind,
-            "has_faces": has_faces, "favorite": favorite, "hidden": hidden,
-            "q": q, "text": text, "sort": sort,
-        }
+        filters = {**filters, "text": text, "sort": sort}
         # A natural-language ``text`` query switches to semantic ranking (by image
         # embedding), ANDed with the structured filters. It supersedes ``sort`` —
         # results come back in relevance order — and returns its own (top-k) total.
@@ -416,32 +435,8 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
     @app.get("/api/map")
     def api_map(
         conn: sqlite3.Connection = Depends(get_conn),
-        person_id: list[int] | None = Query(None),
-        person_mode: str | None = None,
-        scene: list[str] | None = Query(None),
-        country: list[str] | None = Query(None),
-        city: list[str] | None = Query(None),
-        place: list[str] | None = Query(None),
-        year: list[str] | None = Query(None),
-        date_from: str | None = Query(None, pattern=_DATE_PATTERN),
-        date_to: str | None = Query(None, pattern=_DATE_PATTERN),
-        camera: list[str] | None = Query(None),
-        people: list[str] | None = Query(None),
-        known: list[str] | None = Query(None),
-        kind: list[str] | None = Query(None),
-        has_faces: bool | None = None,
-        favorite: bool | None = None,
-        hidden: bool = False,
-        q: str | None = None,
+        filters: dict = Depends(common_filters),
     ):
-        filters = {
-            "person_id": person_id, "person_mode": person_mode,
-            "scene": scene, "country": country,
-            "city": city, "place": place, "year": year, "date_from": date_from,
-            "date_to": date_to, "camera": camera, "people": people, "known": known,
-            "kind": kind,
-            "has_faces": has_faces, "favorite": favorite, "hidden": hidden, "q": q,
-        }
         return {"points": search.map_points(conn, filters, limit=config.map_point_limit)}
 
     @app.get("/api/photos/{photo_id}")
@@ -580,7 +575,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             # A video without a poster yet (e.g. a pre-ffmpeg row) falls back to its
             # stored thumbnail so the lightbox still shows something.
             if row["thumb_path"] and Path(row["thumb_path"]).exists():
-                return FileResponse(row["thumb_path"])
+                return _derivative(row["thumb_path"])
             raise HTTPException(404, "image not found")
         sha1 = row["sha1"] or metadata.sha1_of(src)
         try:
@@ -590,8 +585,8 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         except Exception:
             # Any decode/encode failure (corrupt or exotic format) falls back to
             # streaming the still source so the lightbox still works.
-            return FileResponse(src)
-        return FileResponse(dest)
+            return _derivative(src)
+        return _derivative(dest)
 
     @app.get("/api/thumb/{photo_id}")
     def api_thumb(
@@ -611,15 +606,15 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             if src is not None:
                 sha1 = row["sha1"] or metadata.sha1_of(src)
                 try:
-                    return FileResponse(metadata.cached_resized(config.thumbs_dir, src, sha1, size))
+                    return _derivative(metadata.cached_resized(config.thumbs_dir, src, sha1, size))
                 except Exception:
                     pass  # fall back to the pre-generated default thumb
         thumb = row["thumb_path"]
         if thumb and Path(thumb).exists():
-            return FileResponse(thumb)
+            return _derivative(thumb)
         src = _still_source(row)
         if src is not None:
-            return FileResponse(src)
+            return _derivative(src)
         raise HTTPException(404, "thumbnail not found")
 
     @app.get("/api/face/{face_id}")
@@ -636,7 +631,7 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
             crop = indexer.regenerate_face_crop(conn, config, face_id)
             if not crop:
                 raise HTTPException(404, "face crop not found")
-        return FileResponse(crop)
+        return _derivative(crop)
 
     # -- smart albums (saved searches) ------------------------------------
     @app.get("/api/albums")
@@ -756,6 +751,3 @@ def create_app(config: AtlasConfig | None = None) -> FastAPI:
         app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
     return app
-
-
-app = create_app()

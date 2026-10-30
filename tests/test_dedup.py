@@ -295,3 +295,32 @@ def test_api_hide_rest_via_bulk(tmp_path):
     assert hidden.json()["updated"] == 2
     # Hidden shots drop out of the group, leaving the lone cover → no group.
     assert client.get("/api/duplicates").json()["count"] == 0
+
+
+def test_delete_moves_to_trash_and_empty_trash_purges(tmp_path):
+    import json
+
+    config = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    photos = _photos_dir(tmp_path)
+    indexer.index_path(config, photos, backend_name="none", geocode=False)
+    conn = db.connect(config.db_path)
+    target = conn.execute("SELECT id FROM photos WHERE filename='a.jpg'").fetchone()[0]
+    conn.close()
+    original = str(photos / "a.jpg")
+
+    indexer.delete_photos(config, [target])
+    assert not (photos / "a.jpg").exists()
+    trashed = [p for p in config.trash_dir.iterdir() if p.name != "manifest.jsonl"]
+    assert len(trashed) == 1 and trashed[0].name.endswith("a.jpg")  # recoverable
+    entry = json.loads((config.trash_dir / "manifest.jsonl").read_text().splitlines()[0])
+    assert entry["original"] == original
+
+    # The trash is inside the library home, so re-indexing must not ingest it.
+    indexer.index_path(config, tmp_path / "lib", backend_name="none", geocode=False)
+    conn = db.connect(config.db_path)
+    names = [r[0] for r in conn.execute("SELECT filename FROM photos")]
+    conn.close()
+    assert not any(n.endswith("a.jpg") for n in names)
+
+    assert indexer.empty_trash(config) == 1
+    assert not config.trash_dir.exists() or not list(config.trash_dir.iterdir())
