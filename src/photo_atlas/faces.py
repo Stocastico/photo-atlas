@@ -267,11 +267,11 @@ class YuNetArcFaceBackend(_YuNetBackend):
     def _setup(self, model_dir: Path, *, download: bool) -> Path:
         import onnxruntime as ort  # noqa: PLC0415
 
-        from .models import ensure_arcface_models  # noqa: PLC0415
+        from .models import ensure_arcface_models, onnx_providers  # noqa: PLC0415
 
         yunet_path, arcface_path = ensure_arcface_models(model_dir, download=download)
         self._session = ort.InferenceSession(
-            str(arcface_path), providers=["CPUExecutionProvider"]
+            str(arcface_path), providers=onnx_providers()
         )
         self._input = self._session.get_inputs()[0].name
         self._output = self._session.get_outputs()[0].name

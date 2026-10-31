@@ -64,6 +64,38 @@ SCENE_TOKENIZER_URL = f"https://huggingface.co/{SCENE_HF_REPO}/resolve/main/toke
 _MIN_MODEL_BYTES = 50_000
 
 
+_PROVIDER_ALIASES = {
+    "cpu": "CPUExecutionProvider",
+    "cuda": "CUDAExecutionProvider",
+    "dml": "DmlExecutionProvider",
+    "directml": "DmlExecutionProvider",
+    "coreml": "CoreMLExecutionProvider",
+}
+
+
+def onnx_providers() -> list[str]:
+    """Execution providers for onnxruntime sessions, best first, CPU always last.
+
+    Auto mode picks CUDA / DirectML when the installed onnxruntime offers them and
+    otherwise stays on CPU. CoreML is opt-in (it misbehaves on Intel Macs). Set
+    ``PHOTO_ATLAS_PROVIDERS`` (comma list: ``cpu``, ``cuda``, ``dml``, ``coreml``) to
+    force a choice; names the runtime doesn't offer are dropped. With parallel
+    indexing every worker loads its own session, so on a GPU consider ``--workers``
+    small (or ``PHOTO_ATLAS_PROVIDERS=cpu``).
+    """
+
+    import onnxruntime as ort  # noqa: PLC0415
+
+    available = set(ort.get_available_providers())
+    override = os.environ.get("PHOTO_ATLAS_PROVIDERS")
+    if override:
+        wanted = [_PROVIDER_ALIASES.get(p.strip().lower(), "") for p in override.split(",")]
+    else:
+        wanted = ["CUDAExecutionProvider", "DmlExecutionProvider"]
+    chosen = [p for p in wanted if p and p in available and p != "CPUExecutionProvider"]
+    return [*chosen, "CPUExecutionProvider"]
+
+
 def _resolve(name: str, url: str, model_dir: Path, env: str, download: bool) -> Path:
     override = os.environ.get(env)
     if override:
