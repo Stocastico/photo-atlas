@@ -7,6 +7,7 @@ Chromium aren't available, like the other front-end tests.
 
 from __future__ import annotations
 
+import os
 import shutil
 import socket
 import subprocess
@@ -29,8 +30,12 @@ def _playwright_available() -> bool:
     return probe.returncode == 0
 
 
-@pytest.mark.skipif(not _playwright_available(), reason="Node + Playwright not installed")
 def test_ui_smoke_in_real_browser(indexed):
+    if not _playwright_available():
+        # CI sets REQUIRE_BROWSER_TESTS so a missing browser can't skip silently.
+        if os.environ.get("REQUIRE_BROWSER_TESTS"):
+            pytest.fail("REQUIRE_BROWSER_TESTS is set but Node + Playwright are unavailable")
+        pytest.skip("Node + Playwright not installed")
     import uvicorn
 
     from photo_atlas.api import create_app
