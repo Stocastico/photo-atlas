@@ -111,12 +111,18 @@ package. The first `index` run downloads the model weights (below) on demand.
 
 ### Models (downloaded on first use)
 
+Downloads from Hugging Face are pinned to a commit and verified by SHA-256. The ArcFace
+weights come from InsightFace's `antelopev2`, whose terms limit the pretrained models to
+**non-commercial research use** — fine for a personal library, but check upstream before
+redistributing. The catalog remembers which model built its embeddings and refuses to mix
+them (see [MODELS.md](MODELS.md) for swapping and `photo-atlas calibrate-faces`).
+
 | Models | Size | Cached to | Offline override |
 | --- | --- | --- | --- |
 | YuNet detector + **ArcFace R100** | ~260 MB | `~/.photo_atlas/models` | `PHOTO_ATLAS_YUNET`, `PHOTO_ATLAS_ARCFACE` |
 | Legacy YuNet + **SFace** (`--faces sface`) | ~38 MB | ″ | `PHOTO_ATLAS_SFACE` |
 | **SigLIP 2** vision tower (scenes + image embeddings) | ~90 MB | ″ | `PHOTO_ATLAS_SCENE_MODEL` |
-| **SigLIP 2** text tower + tokenizer (query-time semantic search) | text tower + tokenizer | ″ | `PHOTO_ATLAS_TEXT_MODEL`, `PHOTO_ATLAS_SCENE_TOKENIZER` |
+| **SigLIP 2** text tower + tokenizer (query-time semantic search) | text tower + tokenizer | ″ | `PHOTO_ATLAS_SCENE_TEXT_MODEL`, `PHOTO_ATLAS_SCENE_TOKENIZER` |
 
 For air-gapped machines, point the env vars at local copies and everything runs
 offline. (Plain `pip install -e .` also works if you'd rather manage your own
@@ -279,10 +285,14 @@ embeddings add a little more for grounding.
 
 ```text
 photo-atlas index PATH [--embed] [--prune] [--recompute] [--faces …] [--workers N]
+                       [--accept-model-change]
 photo-atlas cluster                 # group unnamed faces into nameable clusters
-photo-atlas embed [--recompute]     # backfill semantic-search + grounding embeddings
+photo-atlas embed [--recompute] [--accept-model-change]   # backfill semantic-search embeddings
 photo-atlas dedup [--recompute]     # backfill perceptual hashes (Duplicates tab)
-photo-atlas retag-scenes            # recompute scene tags in place (no re-index)
+photo-atlas retag-scenes            # recompute scene tags in place (from stored embeddings)
+photo-atlas calibrate-faces         # suggest face-match thresholds from people you named
+photo-atlas empty-trash             # permanently delete files removed via the web UI
+photo-atlas restore [IDS…]          # put trashed originals back (never overwrites)
 photo-atlas prune                   # drop dead rows + sweep orphaned derivatives
 photo-atlas export-labels [--dest]  # write names to portable XMP sidecars
 photo-atlas stats                   # catalog summary + date-source provenance
@@ -364,7 +374,10 @@ recognition/clustering thresholds, trip & duplicate parameters, `semantic_top_k`
 | `PHOTO_ATLAS_HOME` | library directory (default `~/.photo_atlas`) |
 | `PHOTO_ATLAS_YUNET` / `PHOTO_ATLAS_ARCFACE` / `PHOTO_ATLAS_SFACE` | local face-model paths (offline) |
 | `PHOTO_ATLAS_SCENE_MODEL` / `PHOTO_ATLAS_SCENE_INPUT_SIZE` | SigLIP 2 vision ONNX + its input resolution |
-| `PHOTO_ATLAS_TEXT_MODEL` / `PHOTO_ATLAS_SCENE_TOKENIZER` | SigLIP 2 text tower + tokenizer (query-time search) |
+| `PHOTO_ATLAS_SCENE_TEXT_MODEL` / `PHOTO_ATLAS_SCENE_TOKENIZER` | SigLIP 2 text tower + tokenizer (query-time search) |
+| `PHOTO_ATLAS_FACE_THRESHOLD` / `PHOTO_ATLAS_CLUSTER_EPS` / `PHOTO_ATLAS_REVIEW_CONFIDENCE` | face-match tunables (get values from `photo-atlas calibrate-faces`) |
+| `PHOTO_ATLAS_FACE_SCORE` / `PHOTO_ATLAS_DETECT_MAX_SIDE` / `PHOTO_ATLAS_MIN_FACE_PX` | face detection: YuNet score, detection resolution cap, smallest face kept (px) |
+| `PHOTO_ATLAS_PROVIDERS` | onnxruntime providers (`cpu`, `cuda`, `dml`, `coreml`); auto picks CUDA/DirectML |
 | `PHOTO_ATLAS_FFMPEG` / `PHOTO_ATLAS_FFPROBE` | ffmpeg/ffprobe binaries if not on `PATH` |
 
 To swap in a different scene/semantic encoder, rebuild the bundled label matrix with

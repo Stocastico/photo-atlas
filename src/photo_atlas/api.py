@@ -345,7 +345,7 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
                         501,
                         "Semantic search could not load the SigLIP text encoder — "
                         "check the model can be downloaded (or set "
-                        "PHOTO_ATLAS_TEXT_MODEL to a local file).",
+                        "PHOTO_ATLAS_SCENE_TEXT_MODEL to a local file).",
                     )
                 query_vec = encoder.embed_text(plan.text)
                 if grounded:

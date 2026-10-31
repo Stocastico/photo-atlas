@@ -8,6 +8,37 @@
 > proves the limiter) and **AdaFace** (low-quality faces). The survey below is kept
 > as the rationale + the evaluation method for any further swap.
 
+> **Update (2026-10-31): safe swapping, calibration and licences.**
+>
+> - **Swapping is now guarded.** The catalog records which model produced its
+>   embeddings (`meta['embedding_model']`, `meta['face_model']`). Pointing
+>   `PHOTO_ATLAS_SCENE_MODEL` / `PHOTO_ATLAS_ARCFACE` at a different file makes
+>   `index` / `embed` stop with a clear error instead of silently mixing vector
+>   spaces (a same-dimension swap, e.g. ArcFace R50 ↔ R100, would otherwise go
+>   unnoticed). Rebuild with `photo-atlas embed --recompute` (photo/region
+>   embeddings) or `photo-atlas index <folder> --recompute` (faces), adding
+>   `--accept-model-change`. A new SigLIP variant also needs its label matrix
+>   rebuilt (`scripts/build_scene_embeddings.py`); text search is disabled (409)
+>   until the stored embeddings match the configured model.
+> - **Thresholds are data-driven.** `photo-atlas calibrate-faces` derives the match
+>   threshold, clustering epsilon and review cut-off from the people you named by
+>   hand; apply them with `PHOTO_ATLAS_FACE_THRESHOLD`, `PHOTO_ATLAS_CLUSTER_EPS`,
+>   `PHOTO_ATLAS_REVIEW_CONFIDENCE`. Detection is tunable too (`PHOTO_ATLAS_FACE_SCORE`,
+>   `PHOTO_ATLAS_DETECT_MAX_SIDE`, `PHOTO_ATLAS_MIN_FACE_PX`).
+> - **Downloads are pinned.** The Hugging Face models (SigLIP 2 vision/text/tokenizer,
+>   ArcFace) are fetched at a fixed commit and checked against a SHA-256. YuNet/SFace
+>   (OpenCV Zoo) are still only size-checked.
+> - **Hardware.** onnxruntime now uses CUDA/DirectML when the installed build offers
+>   them (`PHOTO_ATLAS_PROVIDERS=cpu` to force CPU; `coreml` is opt-in).
+> - **Licence caveat.** The ArcFace weights come from InsightFace's model zoo
+>   (`antelopev2`), which states its pretrained models are for **non-commercial
+>   research use only**. That is fine for a personal library; check the upstream terms
+>   before distributing a bundled app (see `PACKAGING.md`) or using it commercially.
+>   YuNet is MIT; SigLIP 2 is Apache-2.0.
+> - **Not done: a model bake-off.** Higher-accuracy options (fp16/fp32 SigLIP instead
+>   of int8, a larger SigLIP 2, ArcFace R50 for speed) need measuring on a real slice of
+>   *your* library first — see the evaluation method below.
+
 Investigation deliverable for the TODO item *"Investigate newer / better models
 everywhere a deep-learning net is used."* This is a **written comparison to inform
 a future swap**, not a code change. It deliberately makes no swap yet — each

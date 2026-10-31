@@ -144,8 +144,21 @@ these items are the genuinely new pieces.
 - [x] `web/app.js` → 19 native ES modules (`web/js/`), with a real-Chromium smoke test and harnesses importing the real modules; `web/js/*` added to package-data.
 - [x] `search.py` → `filters`/`semantic`/`groups`; `indexer.py` → `housekeeping`. Coverage 93.5% → 95.6% (faces 73→90, embed 65→99).
 
+### Models review (2026-10-31)
+- [x] ONNX providers (CUDA/DirectML auto, CoreML opt-in, `PHOTO_ATLAS_PROVIDERS`).
+- [x] Text queries lowercased (SigLIP 2 trained on lowercase text).
+- [x] `retag-scenes` scores from stored embeddings (no decode).
+- [x] Italian count phrases / preambles / connectives in the planner; a bare "photo of" is no longer a visual query.
+- [x] Configurable face detection (score, max side, min face size 32 px) + env overrides for thresholds.
+- [x] `calibrate-faces`: thresholds from human-named faces.
+- [x] Embeddings stamped with their model; mixing refused (`--accept-model-change`); text search 409s when stale.
+- [x] Hugging Face downloads pinned to a commit + SHA-256 (verified live on the tokenizer). Fixed docs/messages citing a dead `PHOTO_ATLAS_TEXT_MODEL` env var.
+
 ### Open
-_(nothing queued from this review pass)_
+- [ ] Pin YuNet / SFace (OpenCV Zoo) by SHA-256 — GitHub was unreachable from the dev sandbox.
+- [ ] Model bake-off on a real slice of the library (fp16/fp32 vs int8 SigLIP, larger SigLIP 2, ArcFace R50 speed/accuracy) following `MODELS.md`; needs the user's photos + named people as ground truth.
+- [ ] Query-time prompt template ("this is a photo of …") for short semantic queries — measure before adopting.
+- [ ] Verify the InsightFace licence text upstream before any redistribution (`PACKAGING.md`).
 
 ## Correctness / scale / quality (2026-06-15 final review)
 

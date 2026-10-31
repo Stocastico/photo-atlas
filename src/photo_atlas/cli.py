@@ -221,7 +221,7 @@ def _cmd_embed(args) -> int:
         print(
             f"\nerror: could not build embeddings ({type(exc).__name__}: {exc}). "
             "Check that the SigLIP model can be downloaded (or set "
-            "PHOTO_ATLAS_SCENE_MODEL / PHOTO_ATLAS_TEXT_MODEL to local files).",
+            "PHOTO_ATLAS_SCENE_MODEL / PHOTO_ATLAS_SCENE_TEXT_MODEL to local files).",
             file=sys.stderr,
         )
         return 1

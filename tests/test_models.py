@@ -93,3 +93,16 @@ def test_huggingface_models_are_pinned_to_a_commit_and_checksum():
     for name, url in hf.items():
         assert re.search(r"/resolve/[0-9a-f]{40}/", url), f"{name} must pin a commit, not 'main'"
         assert re.fullmatch(r"[0-9a-f]{64}", models.MODEL_SHA256.get(name, "")), name
+
+
+def test_documented_env_var_names_are_the_ones_the_code_reads():
+    """Error messages / README once told users to set PHOTO_ATLAS_TEXT_MODEL, which
+    nothing reads (the real name is PHOTO_ATLAS_SCENE_TEXT_MODEL)."""
+
+    from pathlib import Path
+
+    root = Path(__file__).parent.parent
+    files = [root / "README.md", *(root / "src" / "photo_atlas").glob("*.py")]
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        assert not re.search(r"PHOTO_ATLAS_TEXT_MODEL\b", text), f"{f.name} cites a dead env var"
