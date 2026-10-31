@@ -1074,10 +1074,11 @@ def retag_scenes(
 
     Scene tags are independent of faces/thumbnails, so switching tagger
     (heuristic <-> zero-shot) or tuning its hyperparameters shouldn't require
-    re-decoding + re-detecting the whole library. This decodes each still-present
-    source file once, re-runs the configured tagger (reusing the stored
-    ``face_count`` so the people bonus still applies), and upserts only the
-    ``scene_type``/``scene_scores`` columns. Returns the number of photos retagged.
+    re-decoding + re-detecting the whole library. Photos that already have a stored
+    embedding are re-scored straight from it (no file access, so it's near-instant and
+    works even if the original moved); the rest are decoded once. The stored
+    ``face_count`` is reused so the people bonus still applies, and only the
+    ``scene_type``/``scene_scores`` columns are upserted. Returns the number retagged.
     """
 
     tagger = tagger or get_tagger(config)
@@ -1086,15 +1087,28 @@ def retag_scenes(
     try:
         rows = conn.execute("SELECT id, path, face_count FROM photos").fetchall()
         total = len(rows)
+        # A stored SigLIP embedding is the tagger's whole input, so when the tagger can
+        # score one directly (``tag_embedding``) there's no need to touch the file.
+        from_embedding = hasattr(tagger, "tag_embedding")
         for i, row in enumerate(rows):
             path = Path(row["path"])
-            if not path.exists():
+            blob = None
+            if from_embedding:
+                blob = conn.execute(
+                    "SELECT embedding FROM photos WHERE id=?", (row["id"],)
+                ).fetchone()[0]
+            if blob is None and not path.exists():
                 continue
             try:
-                with Image.open(path) as raw:
-                    raw.load()
-                    img = ImageOps.exif_transpose(raw) or raw
-                    label, scores = tagger.tag_image(img, face_count=row["face_count"] or 0)
+                if blob is not None:
+                    label, scores = tagger.tag_embedding(  # type: ignore[attr-defined]
+                        db.blob_to_embedding(blob), face_count=row["face_count"] or 0
+                    )
+                else:
+                    with Image.open(path) as raw:
+                        raw.load()
+                        img = ImageOps.exif_transpose(raw) or raw
+                        label, scores = tagger.tag_image(img, face_count=row["face_count"] or 0)
             except Exception as exc:
                 # Skip an unreadable/corrupt file but don't fail silently — report
                 # which photo so a partial result is explainable.
