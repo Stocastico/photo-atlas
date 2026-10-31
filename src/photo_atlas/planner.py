@@ -29,30 +29,46 @@ from dataclasses import dataclass, field
 
 #: Count-phrase → number-of-people buckets (see :data:`search.PEOPLE_BUCKETS`).
 #: "alone" is a single-person (portrait) shot; "with others / group" is 2+.
+#: English and Italian phrasings (SigLIP 2 is multilingual, so the residual
+#: visual query can be in either language).
 _GROUP_RE = re.compile(
     r"\b(with (other |more )?(people|friends|others|family|guests)"
-    r"|in a group|group (photo|picture|shot|of)|crowd|together)\b",
+    r"|in a group|group (photo|picture|shot|of)|crowd|together"
+    r"|con (altre |più |altri )?(persone|amici|amiche|altri|altre|famiglia|ospiti|gente)"
+    r"|con la famiglia|tutti insieme|in gruppo"
+    r"|insieme( a(gli|lle|i|l|lla)?( (amici|amiche|altri|altre|persone|famiglia))?)?"
+    r"|(foto|fotografia|scatto|immagine) di gruppo|di gruppo|folla)\b",
     re.IGNORECASE,
 )
 _ALONE_RE = re.compile(
     r"\b(alone|solo|by (him|her|my|them)self|by themselves|on (my|his|her|their) own"
-    r"|just (me|him|her|them))\b",
+    r"|just (me|him|her|them)|sola|da sol[oa]|da soli|senza nessuno)\b",
     re.IGNORECASE,
 )
 
 #: A leading "a photo of / pictures showing / pics of" preamble carries no visual
 #: signal of its own; strip it so the residual is the actual subject.
+_PREAMBLE_WORDS = (
+    r"photos?|pictures?|pics?|images?|shots?|snaps?"
+    r"|foto|fotografi[ae]|immagin[ei]|scatt[oi]"
+)
 _PREAMBLE_RE = re.compile(
-    r"^\s*(a |an |the )?(photos?|pictures?|pics?|images?|shots?|snaps?)\s+"
-    r"(of|showing|with|containing)\s+",
+    rf"^\s*(a |an |the |una |un |le |delle |degli )?({_PREAMBLE_WORDS})\s+"
+    r"(of|showing|with|containing|di|con|che (mostra|mostrano|contiene|contengono))\s+",
     re.IGNORECASE,
 )
+#: What's left when a query was only a preamble ("photo of" after the people phrase
+#: was peeled off) — nothing visual, so it shouldn't reach SigLIP as text.
+_BARE_PREAMBLE_RE = re.compile(rf"^({_PREAMBLE_WORDS})$", re.IGNORECASE)
 
 #: Pure connective words trimmed from the residual's edges (kept internally so
 #: e.g. "cup of coffee" survives).
 _EDGE_WORDS = {
     "with", "and", "of", "the", "a", "an", "in", "on", "at", "is", "are",
     "to", "for", "&",
+    "con", "e", "di", "del", "della", "dei", "degli", "delle", "il", "lo", "la", "i",
+    "gli", "le", "un", "uno", "una", "su", "al", "allo", "alla", "ai", "agli", "alle",
+    "per", "da", "nel", "nella", "sul", "sulla", "ed",
 }
 
 
@@ -88,7 +104,8 @@ def _clean_residual(text: str) -> str:
         start += 1
     while end > start and (not lowered[end - 1] or lowered[end - 1] in _EDGE_WORDS):
         end -= 1
-    return " ".join(tokens[start:end]).strip(" ,.;:!?")
+    cleaned = " ".join(tokens[start:end]).strip(" ,.;:!?")
+    return "" if _BARE_PREAMBLE_RE.match(cleaned) else cleaned
 
 
 def plan_query(query: str, persons: list[dict]) -> QueryPlan:

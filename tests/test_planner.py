@@ -178,3 +178,42 @@ def test_api_hybrid_structured_only_needs_no_encoder(tmp_path, monkeypatch):
     assert [p["id"] for p in data["photos"]] == [ids["solo"]]
     assert data["plan"]["people"] == ["1"]
     assert data["plan"]["text"] == ""
+
+
+# -- Italian phrasing ------------------------------------------------------
+def test_italian_group_phrases_map_to_group_buckets():
+    for q in ("Stefano con altre persone", "Stefano in gruppo", "foto di gruppo",
+              "Stefano insieme agli amici", "Stefano con amici", "Stefano con la famiglia",
+              "Stefano tutti insieme"):
+        plan = plan_query(q, PERSONS)
+        assert plan.people == ["2-4", "5+"], q
+
+
+def test_italian_alone_phrases_map_to_portrait_bucket():
+    for q in ("Stefano da solo", "Anna da sola", "Stefano solo", "foto di Stefano sola"):
+        plan = plan_query(q, PERSONS)
+        assert plan.people == ["1"], q
+
+
+def test_italian_residual_is_trimmed_of_connectives_and_preamble():
+    assert plan_query("una foto di Stefano a cena", PERSONS).text == "cena"
+    assert plan_query("Stefano al mare con altre persone", PERSONS).text == "mare"
+    assert plan_query("foto di gruppo al tramonto", []).text == "tramonto"
+    # Internal connectives survive ("tazza di caffè").
+    assert plan_query("Stefano con una tazza di caffè", PERSONS).text == "tazza di caffè"
+
+
+def test_italian_query_without_triggers_is_left_alone():
+    plan = plan_query("tramonto sul lago", [])
+    assert plan.text == "tramonto sul lago" and plan.people == [] and plan.person_ids == []
+
+
+def test_bare_preamble_left_after_people_phrase_is_not_a_visual_query():
+    for q in ("photo of Stefano alone", "foto di Stefano da solo"):
+        plan = plan_query(q, PERSONS)
+        assert plan.text == "" and plan.is_structured_only, q
+
+
+def test_italian_group_phrase_leaves_no_stray_visual_text():
+    for q in ("Stefano insieme agli amici", "Stefano con altre persone", "Stefano in gruppo"):
+        assert plan_query(q, PERSONS).text == "", q
