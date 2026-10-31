@@ -331,7 +331,9 @@ def calibrate_faces(config: AtlasConfig) -> dict | None:
         return None
     dim = Counter(r["dim"] for r in rows).most_common(1)[0][0]
     rows = [r for r in rows if r["dim"] == dim]
-    embeddings = np.vstack([db.blob_to_embedding(r["embedding"]) for r in rows])
+    embeddings = np.vstack(
+        [cast(np.ndarray, db.blob_to_embedding(r["embedding"])) for r in rows]
+    )
     person_ids = np.array([r["person_id"] for r in rows])
     result = faces_module.calibrate_threshold(embeddings, person_ids)
     if result is None:
