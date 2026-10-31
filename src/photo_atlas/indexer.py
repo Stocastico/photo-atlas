@@ -1272,5 +1272,6 @@ from .housekeeping import (  # noqa: E402, F401
     empty_trash,
     export_photos,
     prune_library,
+    restore_trash,
     sweep_orphan_derivatives,
 )

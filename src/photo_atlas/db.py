@@ -313,17 +313,18 @@ def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
 def bump_meta(conn: sqlite3.Connection, key: str) -> int:
     """Increment the integer counter at ``key`` (starting from 0) and return it.
 
-    One ``UPSERT ... RETURNING`` statement, so a concurrent `index` and `serve`
-    can't both read the same value and lose an increment.
+    The increment is a single ``UPSERT`` *write first*: it takes SQLite's write lock,
+    so a concurrent `index` and `serve` can't both read the same value and lose an
+    increment, and the follow-up read (same transaction) sees our own value. (No
+    ``RETURNING``, so this works on SQLite older than 3.35.)
     """
 
-    row = conn.execute(
+    conn.execute(
         "INSERT INTO meta (key, value) VALUES (?, '1') "
-        "ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1 "
-        "RETURNING CAST(value AS INTEGER)",
+        "ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
         (key,),
-    ).fetchone()
-    return int(row[0])
+    )
+    return int(conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()[0])
 
 
 # -- embedding (de)serialisation ------------------------------------------

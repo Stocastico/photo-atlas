@@ -133,6 +133,51 @@ def empty_trash(config: AtlasConfig) -> int:
     return removed
 
 
+def restore_trash(config: AtlasConfig, ids: list[int] | None = None) -> dict[str, int]:
+    """Move trashed originals back to where they came from.
+
+    Restores every manifest entry, or only those whose photo id is in ``ids``. A file
+    is never overwritten: if something now lives at the original path it counts as a
+    ``conflict`` and stays in the trash (and in the manifest). An entry whose trashed
+    file has vanished is ``missing`` and is dropped. Restored files are plain files
+    again — run ``photo-atlas index`` to catalogue them. Returns
+    ``{restored, missing, conflicts}``.
+    """
+
+    import shutil
+
+    manifest = config.trash_dir / "manifest.jsonl"
+    result = {"restored": 0, "missing": 0, "conflicts": 0}
+    if not manifest.exists():
+        return result
+    wanted = None if ids is None else {int(i) for i in ids}
+    kept: list[dict] = []
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue  # a corrupt line can't be restored; drop it
+        if wanted is not None and entry.get("id") not in wanted:
+            kept.append(entry)
+            continue
+        trashed = config.trash_dir / entry["trashed"]
+        original = Path(entry["original"])
+        if not trashed.exists():
+            result["missing"] += 1
+        elif original.exists():
+            result["conflicts"] += 1
+            kept.append(entry)
+        else:
+            original.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(trashed), original)
+            result["restored"] += 1
+    if kept:
+        manifest.write_text("".join(json.dumps(e) + "\n" for e in kept), encoding="utf-8")
+    else:
+        manifest.unlink()
+    return result
+
+
 def delete_photos(config: AtlasConfig, ids: list[int]) -> dict[str, int]:
     """Delete photos from the catalog and move their source files to the trash.
 

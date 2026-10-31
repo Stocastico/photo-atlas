@@ -144,9 +144,10 @@ def test_signature_queries_use_partial_indexes(tmp_path):
         conn.close()
 
 
-def test_bump_meta_is_a_single_atomic_statement(tmp_path):
+def test_bump_meta_writes_before_it_reads(tmp_path):
     """A read-then-write bump loses increments when `index` and `serve` race; the
-    increment must happen inside one SQL statement."""
+    increment must be a single write that precedes any read (so it holds the write
+    lock), and must not need `RETURNING` (SQLite < 3.35)."""
 
     from photo_atlas import db
 
@@ -158,7 +159,9 @@ def test_bump_meta_is_a_single_atomic_statement(tmp_path):
         assert db.bump_meta(conn, "k") == 2
         conn.set_trace_callback(None)
         assert db.get_meta(conn, "k") == "2"
-        assert not any(q.lstrip().upper().startswith("SELECT") for q in seen), seen
+        verbs = [q.lstrip().split()[0].upper() for q in seen if q.strip() != "BEGIN"]
+        assert verbs == ["INSERT", "SELECT", "INSERT", "SELECT"], seen
+        assert not any("RETURNING" in q.upper() for q in seen), seen
     finally:
         conn.close()
 

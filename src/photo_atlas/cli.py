@@ -127,6 +127,22 @@ def _cmd_empty_trash(args) -> int:
     return 0
 
 
+def _cmd_restore(args) -> int:
+    from .indexer import restore_trash
+
+    result = restore_trash(_config(args), args.ids or None)
+    msg = f"Restored {result['restored']} file(s)"
+    if result["conflicts"]:
+        msg += (f"; skipped {result['conflicts']} because the original path is taken "
+                "(left in the trash)")
+    if result["missing"]:
+        msg += f"; {result['missing']} trashed file(s) were already gone"
+    print(msg + ".")
+    if result["restored"]:
+        print("Run `photo-atlas index <folder>` to add them back to the catalog.")
+    return 1 if result["conflicts"] else 0
+
+
 def _cmd_retag_scenes(args) -> int:
     config = _config(args)
 
@@ -325,6 +341,14 @@ def build_parser() -> argparse.ArgumentParser:
         "empty-trash", help="Permanently delete files removed via the web UI (kept in trash)"
     )
     p_trash.set_defaults(func=_cmd_empty_trash)
+
+    p_restore = sub.add_parser(
+        "restore", help="Move trashed originals back to their original location"
+    )
+    p_restore.add_argument(
+        "ids", nargs="*", type=int, help="Photo ids to restore (default: everything in the trash)"
+    )
+    p_restore.set_defaults(func=_cmd_restore)
 
     p_retag = sub.add_parser("retag-scenes", help="Recompute scene tags in place (no re-index)")
     p_retag.set_defaults(func=_cmd_retag_scenes)

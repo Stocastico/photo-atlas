@@ -137,7 +137,7 @@ these items are the genuinely new pieces.
 ### Done
 - [x] **Concurrent requests 500'd** (`sqlite3.ProgrammingError`: connection pinned to its creating thread) — `check_same_thread=False`; 600/600 OK in a 40-thread repro.
 - [x] **DNS-rebinding guard** (non-loopback `Host` → 403; `serve --host` off-loopback opts out) and no import-time `create_app()`.
-- [x] **Recoverable delete** — originals go to `~/.photo_atlas/trash` (+ `manifest.jsonl`); `photo-atlas empty-trash` purges.
+- [x] **Recoverable delete** — originals go to `~/.photo_atlas/trash` (+ `manifest.jsonl`); `photo-atlas empty-trash` purges, `photo-atlas restore [ids]` puts files back (never overwrites; re-run `index` to re-catalogue).
 - [x] Cache signatures via partial indexes; locks on lazily-built indexes/encoder; atomic `bump_meta`; `argpartition` top-k ranking; `Cache-Control` on derivatives.
 - [x] `common_filters` dependency (one filter list for facets/photos/map); `index_errors.log` (uncapped); versioned migrations (`PRAGMA user_version`, newer catalogs refused).
 - [x] `reverse_geocoder` is a core dependency (real town labels by default).
@@ -145,8 +145,7 @@ these items are the genuinely new pieces.
 - [x] `search.py` → `filters`/`semantic`/`groups`; `indexer.py` → `housekeeping`. Coverage 93.5% → 95.6% (faces 73→90, embed 65→99).
 
 ### Open
-- [ ] `restore` command for the trash (manifest already records original paths).
-- [ ] `bump_meta` uses `UPSERT … RETURNING` (SQLite ≥ 3.35); add a fallback if older system SQLite builds matter.
+_(nothing queued from this review pass)_
 
 ## Correctness / scale / quality (2026-06-15 final review)
 
