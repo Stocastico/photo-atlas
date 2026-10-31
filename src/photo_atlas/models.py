@@ -31,7 +31,12 @@ SFACE_URL = f"{ZOO}/face_recognition_sface/{SFACE_NAME}"
 # embedding is stored per-row (faces.dim), so no schema change is needed. Override
 # with ``PHOTO_ATLAS_ARCFACE`` for an offline / swapped-in recogniser.
 ARCFACE_NAME = "arcface_glint360k_r100.onnx"
-ARCFACE_URL = "https://huggingface.co/immich-app/antelopev2/resolve/main/recognition/model.onnx"
+# Pinned to a commit (the mirror is a third party's; ``main`` could change or vanish)
+# and verified by SHA-256 below.
+ARCFACE_REVISION = "51ca7e153bccebdbae224779e23c9c243e2fec85"
+ARCFACE_URL = (
+    f"https://huggingface.co/immich-app/antelopev2/resolve/{ARCFACE_REVISION}/recognition/model.onnx"
+)
 
 # Zero-shot scene tagging: the SigLIP 2 *vision* encoder, exported to ONNX and
 # quantised (~90 MB) by the onnx-community project. Only the vision tower runs at
@@ -40,8 +45,11 @@ ARCFACE_URL = "https://huggingface.co/immich-app/antelopev2/resolve/main/recogni
 # drop-in architecture upgrade over the original SigLIP base — same dual-encoder /
 # 768-dim space, strictly better zero-shot + retrieval (see SIGLIP2_MIGRATION.md).
 SCENE_HF_REPO = "onnx-community/siglip2-base-patch16-256-ONNX"
+#: Commit of that repo the checksums below were taken from; bump both together.
+SCENE_HF_REVISION = "d1114256522a37ffa257a0a58017348ab0058db2"
+_SCENE_BASE = f"https://huggingface.co/{SCENE_HF_REPO}/resolve/{SCENE_HF_REVISION}"
 SCENE_NAME = "siglip2_base_patch16_256_vision_quantized.onnx"
-SCENE_URL = f"https://huggingface.co/{SCENE_HF_REPO}/resolve/main/onnx/vision_model_quantized.onnx"
+SCENE_URL = f"{_SCENE_BASE}/onnx/vision_model_quantized.onnx"
 #: SigLIP 2's vision ONNX advertises a fully *dynamic* input shape but is trained
 #: at a fixed resolution (256² for base-patch16-256), so it can't be auto-detected
 #: from the model and must be configured. Override for a 384/512 variant via
@@ -54,9 +62,21 @@ SCENE_INPUT_SIZE = 256
 # tower above so image and text embeddings are comparable. SigLIP 2's text tower
 # uses the Gemma tokenizer (~33 MB) — the encoder reads its embedded pad config.
 SCENE_TEXT_NAME = "siglip2_base_patch16_256_text_quantized.onnx"
-SCENE_TEXT_URL = f"https://huggingface.co/{SCENE_HF_REPO}/resolve/main/onnx/text_model_quantized.onnx"
+SCENE_TEXT_URL = f"{_SCENE_BASE}/onnx/text_model_quantized.onnx"
 SCENE_TOKENIZER_NAME = "siglip2_base_patch16_256_tokenizer.json"
-SCENE_TOKENIZER_URL = f"https://huggingface.co/{SCENE_HF_REPO}/resolve/main/tokenizer.json"
+SCENE_TOKENIZER_URL = f"{_SCENE_BASE}/tokenizer.json"
+
+#: Expected SHA-256 per downloaded file (the Hugging Face LFS object ids), checked
+#: right after download so a truncated, tampered or silently-changed model is
+#: rejected instead of cached. YuNet/SFace come from the OpenCV Zoo's moving
+#: ``main`` branch and are not pinned here (add their digests when you can fetch
+#: them); an unpinned model is only size-checked.
+MODEL_SHA256: dict[str, str] = {
+    ARCFACE_NAME: "4ab1d6435d639628a6f3e5008dd4f929edf4c4124b1a7169e1048f9fef534cdf",
+    SCENE_NAME: "f2eb8ccfa3dc0b3761d9ea9a39554fe0f2be71b247ad7f68a80720ec88895650",
+    SCENE_TEXT_NAME: "6f59b39d880c413042314b79302b74d0dd93b273caf8fbfdb1eb2df61a7fefd4",
+    SCENE_TOKENIZER_NAME: "cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322",
+}
 
 # A sanity floor: the face weights are far larger (YuNet ~230 KB, SFace ~37 MB)
 # and the scene vision tower ~95 MB, so anything tiny is a truncated download or
@@ -96,6 +116,16 @@ def onnx_providers() -> list[str]:
     return [*chosen, "CPUExecutionProvider"]
 
 
+def _sha256_of(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _resolve(name: str, url: str, model_dir: Path, env: str, download: bool) -> Path:
     override = os.environ.get(env)
     if override:
@@ -125,6 +155,14 @@ def _resolve(name: str, url: str, model_dir: Path, env: str, download: bool) -> 
             f"Download of {name} looks incomplete ({size} bytes"
             + (f", expected {expected}" if expected is not None else "")
             + "); please retry."
+        )
+    expected_sha = MODEL_SHA256.get(name)
+    if expected_sha is not None and _sha256_of(tmp) != expected_sha:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Download of {name} failed its checksum (SHA-256 mismatch); the file was "
+            "discarded. Retry, or if the upstream file legitimately changed, update "
+            "models.MODEL_SHA256."
         )
     tmp.replace(dest)
     return dest
