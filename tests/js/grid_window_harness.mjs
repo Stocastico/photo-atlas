@@ -1,42 +1,14 @@
-// Headless harness for the virtualised-grid math in ``photo_atlas/web/app.js``
+// Headless harness for the virtualised-grid math in ``photo_atlas/web/js/*.js``
 // (gridLayout / cardOffset / windowRange). These are pure functions, so we load
 // the script in a tiny fake DOM and assert the layout/window arithmetic that
 // keeps only a bounded window of cards in the DOM.
 //
 // Run via ``node tests/js/grid_window_harness.mjs`` or the pytest wrapper
 // (``tests/test_web_js.py``), which skips when Node isn't installed.
-import fs from "fs";
-import path from "path";
-import url from "url";
-import vm from "vm";
+import { installDom, webModule } from "./fake_dom.mjs";
 
-const here = path.dirname(url.fileURLToPath(import.meta.url));
-const appjs = path.resolve(here, "../../src/photo_atlas/web/app.js");
-
-const noop = () => {};
-function fakeEl() {
-  return {
-    style: {}, dataset: {}, classList: { add: noop, remove: noop, toggle: noop, contains: () => false },
-    setAttribute: noop, getAttribute: () => null, appendChild: noop, querySelector: () => fakeEl(),
-    querySelectorAll: () => [], addEventListener: noop, getBoundingClientRect: () => ({ top: 0 }),
-    clientWidth: 1000, value: "", textContent: "", innerHTML: "", onclick: null, onkeydown: null,
-  };
-}
-const sandbox = {
-  document: {
-    querySelector: () => fakeEl(), querySelectorAll: () => [], addEventListener: noop,
-    createElement: () => fakeEl(), body: { offsetHeight: 1000 }, activeElement: { tagName: "BODY" },
-  },
-  window: { addEventListener: noop, innerHeight: 800, scrollY: 0 },
-  location: { pathname: "/", search: "" }, history: { pushState: noop },
-  URLSearchParams, console, fetch: async () => ({ ok: true, json: async () => ({}) }),
-  setTimeout: () => 0, clearTimeout: noop, requestAnimationFrame: noop,
-};
-vm.createContext(sandbox);
-const src = fs.readFileSync(appjs, "utf8") +
-  "\nthis.__gridLayout=gridLayout;this.__cardOffset=cardOffset;this.__windowRange=windowRange;";
-vm.runInContext(src, sandbox);
-const { __gridLayout: gridLayout, __cardOffset: cardOffset, __windowRange: windowRange } = sandbox;
+installDom();
+const { gridLayout, cardOffset, windowRange } = await import(webModule("grid.js"));
 
 let pass = 0, fail = 0;
 const check = (name, cond) => { cond ? pass++ : (fail++, console.error("FAIL:", name)); };
