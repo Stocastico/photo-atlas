@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from photo_atlas import cli, db, demo, indexer
+from photo_atlas.config import AtlasConfig
 
 
 class _FixedTagger:
@@ -71,3 +72,48 @@ def test_retag_scenes_cli_runs(tmp_path, capsys):
     assert rc == 0
     assert "retagged" in capsys.readouterr().out
 
+
+
+class _EmbeddingTagger:
+    """Tags from a stored embedding; blows up if asked to decode an image."""
+
+    def __init__(self):
+        self.from_embedding = []
+
+    def tag_embedding(self, embedding, face_count=0):
+        self.from_embedding.append(tuple(embedding))
+        return "food", {"food": 1.0}
+
+    def tag_image(self, img, face_count=0):
+        raise AssertionError("must not decode when an embedding is stored")
+
+    def tag(self, path, face_count=0):
+        raise AssertionError("must not decode when an embedding is stored")
+
+
+def test_retag_uses_stored_embeddings_without_decoding(tmp_path):
+    import numpy as np
+
+    config = AtlasConfig(home=tmp_path).ensure_dirs()
+    conn = db.connect(config.db_path)
+    # Source files don't even exist: the stored embedding is all that's needed.
+    for i in range(3):
+        pid = db.upsert_photo(conn, {"path": f"/gone/{i}.jpg", "filename": f"{i}.jpg",
+                                     "scene_type": "other", "face_count": 0})
+        db.set_photo_embedding(conn, pid, np.array([1.0, 0.0, float(i)], dtype=np.float32))
+    conn.commit()
+    conn.close()
+
+    tagger = _EmbeddingTagger()
+    assert indexer.retag_scenes(config, tagger=tagger) == 3
+    assert len(tagger.from_embedding) == 3
+    conn = db.connect(config.db_path)
+    assert {r[0] for r in conn.execute("SELECT scene_type FROM photos")} == {"food"}
+    conn.close()
+
+
+def test_retag_falls_back_to_decoding_when_no_embedding(indexed):
+    """Photos without a stored embedding (or a tagger lacking tag_embedding) still work."""
+
+    n = indexer.retag_scenes(indexed, tagger=_FixedTagger())  # no tag_embedding at all
+    assert n > 0

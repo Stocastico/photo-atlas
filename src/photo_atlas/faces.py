@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 import numpy as np
 
@@ -180,6 +180,8 @@ class _YuNetBackend:
     available pixels.
     """
 
+    _min_face_px = 0  # shorter-side floor (full-res px); set from config in __init__
+
     def __init__(
         self,
         model_dir: Path | None = None,
@@ -188,8 +190,10 @@ class _YuNetBackend:
         score_threshold: float = 0.85,
         nms_threshold: float = 0.3,
         detect_max_side: int = 1280,
+        min_face_px: int = 0,
     ):
         self._detect_max_side = detect_max_side
+        self._min_face_px = min_face_px
         import cv2  # noqa: PLC0415
 
         if not hasattr(cv2, "FaceDetectorYN"):
@@ -245,6 +249,8 @@ class _YuNetBackend:
             if scale != 1.0:
                 full_row[:14] = row[:14] / scale
             x, y, bw, bh = full_row[:4]
+            if min(bw, bh) < self._min_face_px:
+                continue  # too small for a trustworthy embedding
             observations.append(
                 FaceObservation(
                     bbox=(int(x), int(y), int(bw), int(bh)),
@@ -267,11 +273,12 @@ class YuNetArcFaceBackend(_YuNetBackend):
     def _setup(self, model_dir: Path, *, download: bool) -> Path:
         import onnxruntime as ort  # noqa: PLC0415
 
-        from .models import ensure_arcface_models  # noqa: PLC0415
+        from .models import ensure_arcface_models, onnx_providers  # noqa: PLC0415
 
         yunet_path, arcface_path = ensure_arcface_models(model_dir, download=download)
+        self.model_id = arcface_path.name
         self._session = ort.InferenceSession(
-            str(arcface_path), providers=["CPUExecutionProvider"]
+            str(arcface_path), providers=onnx_providers()
         )
         self._input = self._session.get_inputs()[0].name
         self._output = self._session.get_outputs()[0].name
@@ -301,6 +308,7 @@ class YuNetSFaceBackend(_YuNetBackend):
                 "This OpenCV build lacks FaceRecognizerSF. Install opencv-python>=4.10."
             )
         yunet_path, sface_path = ensure_models(model_dir, download=download)
+        self.model_id = sface_path.name
         self._recognizer = self._cv2.FaceRecognizerSF.create(str(sface_path), "")
         return yunet_path
 
@@ -317,6 +325,8 @@ class SyntheticFaceBackend:
     its colour palette, giving deterministic, clusterable "identities". It is
     meant for the bundled demo and for tests -- not for real photographs.
     """
+
+    model_id = "synthetic"
 
     def __init__(self, min_area: int = 1500, max_area_frac: float = 0.2):
         import cv2  # noqa: PLC0415
@@ -365,6 +375,8 @@ class SyntheticFaceBackend:
 class DlibFaceBackend:  # pragma: no cover - optional heavy dependency
     """High quality 128-d embeddings via the ``face_recognition`` package."""
 
+    model_id = "dlib"
+
     def __init__(self):
         try:
             import face_recognition  # noqa: PLC0415
@@ -397,13 +409,31 @@ class DlibFaceBackend:  # pragma: no cover - optional heavy dependency
         return observations
 
 
-def get_backend(name: str = "auto", *, model_dir: Path | None = None) -> FaceBackend | None:
+def get_backend(
+    name: str = "auto",
+    *,
+    model_dir: Path | None = None,
+    score_threshold: float | None = None,
+    detect_max_side: int | None = None,
+    min_face_px: int | None = None,
+) -> FaceBackend | None:
     """Return a face backend by name, or ``None`` if none is available.
 
     ``auto`` prefers the deep YuNet + **ArcFace** pipeline, then dlib. ``yunet`` is
     an alias for that default deep backend; ``sface`` selects the legacy YuNet +
-    SFace (128-d) recogniser.
+    SFace (128-d) recogniser. The detection options (YuNet backends only) default to the
+    backend's own values when ``None``; ``AtlasConfig.face_detect_options()`` supplies them.
     """
+
+    detect_opts: dict[str, Any] = {
+        k: v
+        for k, v in (
+            ("score_threshold", score_threshold),
+            ("detect_max_side", detect_max_side),
+            ("min_face_px", min_face_px),
+        )
+        if v is not None
+    }
 
     order = {
         "auto": ["arcface", "dlib"],
@@ -418,9 +448,9 @@ def get_backend(name: str = "auto", *, model_dir: Path | None = None) -> FaceBac
     for choice in order:
         try:
             if choice == "arcface":
-                return YuNetArcFaceBackend(model_dir=model_dir)
+                return YuNetArcFaceBackend(model_dir=model_dir, **detect_opts)
             if choice == "sface":
-                return YuNetSFaceBackend(model_dir=model_dir)
+                return YuNetSFaceBackend(model_dir=model_dir, **detect_opts)
             if choice == "dlib":
                 return DlibFaceBackend()
             if choice == "synthetic":
@@ -428,6 +458,78 @@ def get_backend(name: str = "auto", *, model_dir: Path | None = None) -> FaceBac
         except (RuntimeError, ModuleNotFoundError, ImportError, OSError):
             continue
     return None
+
+
+# -- threshold calibration ------------------------------------------------
+def calibrate_threshold(
+    embeddings: np.ndarray,
+    person_ids: np.ndarray,
+    *,
+    max_pairs: int = 200_000,
+    seed: int = 0,
+    max_false_accept: float = 0.001,
+) -> dict | None:
+    """Derive recognition thresholds from faces whose identity is known.
+
+    Samples **genuine** pairs (two faces of the same person) and **impostor** pairs
+    (faces of different people), and measures their cosine distances. The match
+    threshold is the distance at which only ``max_false_accept`` of impostor pairs
+    would still be accepted (clamped to 0.2-0.7); ``recall`` is the share of genuine
+    pairs it keeps. ``review_confidence`` is set so only matches worse than ~90% of
+    genuine ones land in the "Review guesses" list. Returns ``None`` when there is no
+    genuine or no impostor pair to learn from. Deterministic for a given ``seed``.
+    """
+
+    emb = np.asarray(embeddings, dtype=np.float32)
+    emb = emb / np.maximum(np.linalg.norm(emb, axis=1, keepdims=True), 1e-8)
+    pid = np.asarray(person_ids)
+    rng = np.random.default_rng(seed)
+
+    groups = [np.flatnonzero(pid == p) for p in np.unique(pid)]
+    groups = [ix for ix in groups if ix.size >= 2]
+    if not groups or np.unique(pid).size < 2:
+        return None
+
+    per_cap = max(1, max_pairs // len(groups))
+    gi: list[np.ndarray] = []
+    gj: list[np.ndarray] = []
+    for ix in groups:
+        a, b = np.triu_indices(ix.size, 1)
+        if a.size > per_cap:
+            pick = rng.choice(a.size, per_cap, replace=False)
+            a, b = a[pick], b[pick]
+        gi.append(ix[a])
+        gj.append(ix[b])
+    genuine = _pair_distances(emb, np.concatenate(gi), np.concatenate(gj))
+
+    n = pid.size
+    i = rng.integers(0, n, size=3 * max_pairs)
+    j = rng.integers(0, n, size=3 * max_pairs)
+    keep = pid[i] != pid[j]
+    impostor = _pair_distances(emb, i[keep][:max_pairs], j[keep][:max_pairs])
+    if impostor.size == 0:
+        return None
+
+    threshold = float(np.clip(np.percentile(impostor, max_false_accept * 100), 0.2, 0.7))
+    genuine_p90 = float(np.percentile(genuine, 90))
+    return {
+        "threshold": round(threshold, 3),
+        "review_confidence": round(float(np.clip(1 - genuine_p90, 1 - threshold, 0.9)), 2),
+        "recall": float((genuine <= threshold).mean()),
+        "false_accept": float((impostor <= threshold).mean()),
+        "genuine_p50": float(np.percentile(genuine, 50)),
+        "genuine_p90": genuine_p90,
+        "impostor_p1": float(np.percentile(impostor, 1)),
+        "impostor_p50": float(np.percentile(impostor, 50)),
+        "genuine_pairs": int(genuine.size),
+        "impostor_pairs": int(impostor.size),
+    }
+
+
+def _pair_distances(emb: np.ndarray, i: np.ndarray, j: np.ndarray) -> np.ndarray:
+    """Cosine distance between ``emb[i]`` and ``emb[j]`` row-wise (unit vectors)."""
+
+    return 1.0 - np.einsum("ij,ij->i", emb[i], emb[j])
 
 
 # -- clustering & recognition ---------------------------------------------

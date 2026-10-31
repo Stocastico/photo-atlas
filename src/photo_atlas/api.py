@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, library, metadata, planner, search
+from . import db, library, metadata, models, planner, search
 from .config import AtlasConfig
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -253,6 +253,13 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
                     _semantic["encoder"] = None  # extra/model unavailable
             return _semantic["encoder"]
 
+    def _stale_embeddings(conn: sqlite3.Connection) -> bool:
+        """True when stored embeddings came from a different model than the one that
+        would embed a text query now (the two live in different spaces)."""
+
+        stamp = db.get_meta(conn, "embedding_model")
+        return stamp is not None and stamp != models.scene_model_id()
+
     @app.get("/api/capabilities")
     def api_capabilities(conn: sqlite3.Connection = Depends(get_conn)):
         # Semantic search needs both embedded photos and the runtime libraries to
@@ -262,7 +269,9 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
 
         has_embeddings = _embed_signature(conn)[0] > 0
         libs = all(importlib.util.find_spec(m) for m in ("onnxruntime", "tokenizers"))
-        return {"semantic": bool(has_embeddings and libs)}
+        stale = _stale_embeddings(conn)
+        return {"semantic": bool(has_embeddings and libs and not stale),
+                "stale_embeddings": stale}
 
     # -- discovery --------------------------------------------------------
     @app.get("/api/facets")
@@ -306,6 +315,14 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
             rows: list[dict]
             total: int | None
             if plan.text:
+                if _stale_embeddings(conn):
+                    raise HTTPException(
+                        409,
+                        "The stored embeddings were built with a different model than "
+                        "the one now configured, so text search would be meaningless — "
+                        "run `photo-atlas embed --recompute --accept-model-change` "
+                        "(or switch back to the old model).",
+                    )
                 # Per-person grounding: when the query named a person *and* that
                 # person has region embeddings, rank by how well *their* region
                 # matches the residual rather than the whole frame. Decide before
@@ -328,7 +345,7 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
                         501,
                         "Semantic search could not load the SigLIP text encoder — "
                         "check the model can be downloaded (or set "
-                        "PHOTO_ATLAS_TEXT_MODEL to a local file).",
+                        "PHOTO_ATLAS_SCENE_TEXT_MODEL to a local file).",
                     )
                 query_vec = encoder.embed_text(plan.text)
                 if grounded:

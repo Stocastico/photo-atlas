@@ -170,8 +170,10 @@ class SigLipImageEncoder:
     ):
         import onnxruntime as ort  # noqa: PLC0415
 
+        from .models import onnx_providers  # noqa: PLC0415
+
         self._session = ort.InferenceSession(
-            str(model_path), providers=["CPUExecutionProvider"]
+            str(model_path), providers=onnx_providers()
         )
         inp = self._session.get_inputs()[0]
         self._input = inp.name
@@ -217,6 +219,8 @@ class SigLipTextEncoder:
         import onnxruntime as ort  # noqa: PLC0415
         from tokenizers import Tokenizer  # noqa: PLC0415
 
+        from .models import onnx_providers  # noqa: PLC0415
+
         tok = Tokenizer.from_file(str(tokenizer_path))
         # Pad/truncate to SigLIP's fixed window, honouring the tokenizer's own
         # padding config when it has one (SigLIP 2's Gemma tokenizer) and falling
@@ -225,7 +229,7 @@ class SigLipTextEncoder:
         configure_text_tokenizer(tok, pad_len)
         self._tok = tok
         self._session = ort.InferenceSession(
-            str(model_path), providers=["CPUExecutionProvider"]
+            str(model_path), providers=onnx_providers()
         )
         self._input = self._session.get_inputs()[0].name
         self._output = _select_output_name(
@@ -242,6 +246,7 @@ class SigLipTextEncoder:
         )
 
     def embed_text(self, text: str) -> np.ndarray:
-        ids = np.array([self._tok.encode(text).ids], dtype=np.int64)
+        # SigLIP 2's text tower was trained on lowercased text, so match that.
+        ids = np.array([self._tok.encode(text.strip().lower()).ids], dtype=np.int64)
         (pooled,) = self._session.run([self._output], {self._input: ids})
         return l2_normalize(pooled[0])

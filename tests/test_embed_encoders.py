@@ -114,3 +114,17 @@ def test_text_encoder_embeds_and_from_config(monkeypatch, tmp_path):
     assert isinstance(
         embed.SigLipTextEncoder.from_config(AtlasConfig(home=tmp_path)), embed.SigLipTextEncoder
     )
+
+
+def test_text_queries_are_lowercased_before_tokenising(monkeypatch, tmp_path):
+    """SigLIP 2's text tower was trained on lowercased text (HF model docs)."""
+
+    import tokenizers
+
+    tok = _FakeTok()
+    monkeypatch.setattr(tokenizers.Tokenizer, "from_file", staticmethod(lambda p: tok))
+    monkeypatch.setattr(embed, "configure_text_tokenizer", lambda t, n: None)
+    _patch_ort(monkeypatch, out="text_embeds")
+    enc = embed.SigLipTextEncoder("text.onnx", "tok.json")
+    enc.embed_text("Sunset At VENICE  ")
+    assert tok.encoded == ["sunset at venice"]

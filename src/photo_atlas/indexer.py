@@ -52,6 +52,7 @@ from .metadata import (
     make_thumbnail_from_image,
     sha1_of,
 )
+from .models import scene_model_id
 
 
 @dataclass
@@ -763,7 +764,9 @@ def _worker_init(
     else:
         image_encoder = None
     _WORKER_STATE["backend"] = (
-        get_backend(backend_name, model_dir=model_dir) if backend_name != "none" else None
+        get_backend(backend_name, model_dir=model_dir, **config.face_detect_options())
+        if backend_name != "none"
+        else None
     )
     _WORKER_STATE["tagger"] = tagger
     _WORKER_STATE["image_encoder"] = image_encoder
@@ -897,6 +900,7 @@ def index_path(
     embed: bool = False,
     progress: Callable[[Path, IndexStats], None] | None = None,
     tagger: Tagger | None = None,
+    accept_model_change: bool = False,
 ) -> IndexStats:
     """Index every supported image under ``root`` into the library.
 
@@ -904,6 +908,10 @@ def index_path(
     larger value decodes and detects across that many worker processes (DB writes
     still funnel through the single main connection). ``embed`` additionally stores
     a SigLIP image embedding per photo for natural-language semantic search.
+
+    The catalog remembers which face/embedding models produced its vectors; indexing
+    with a different one raises :class:`db.ModelMismatchError` unless
+    ``accept_model_change`` (use it when deliberately rebuilding with ``recompute``).
 
     ``tagger`` injects a scene tagger instead of building the SigLIP one; it's the
     dependency-injection seam the offline test suite uses (a picklable stub tagger),
@@ -914,7 +922,7 @@ def index_path(
     config.ensure_dirs()
     conn = db.connect(config.db_path)
     backend = (
-        get_backend(backend_name, model_dir=config.models_dir)
+        get_backend(backend_name, model_dir=config.models_dir, **config.face_detect_options())
         if backend_name != "none"
         else None
     )
@@ -924,6 +932,20 @@ def index_path(
             "(missing models or OpenCV DNN support); indexing without faces.",
             file=sys.stderr,
         )
+    try:
+        if backend is not None:
+            db.claim_model(
+                conn, "face_model", getattr(backend, "model_id", type(backend).__name__),
+                replace=accept_model_change,
+            )
+        if embed:
+            db.claim_model(
+                conn, "embedding_model", scene_model_id(), replace=accept_model_change
+            )
+        conn.commit()
+    except db.ModelMismatchError:
+        conn.close()
+        raise
     geocoder = Geocoder() if geocode else None
     if geocoder is not None and not geocoder.high_resolution:
         print(
@@ -1074,10 +1096,11 @@ def retag_scenes(
 
     Scene tags are independent of faces/thumbnails, so switching tagger
     (heuristic <-> zero-shot) or tuning its hyperparameters shouldn't require
-    re-decoding + re-detecting the whole library. This decodes each still-present
-    source file once, re-runs the configured tagger (reusing the stored
-    ``face_count`` so the people bonus still applies), and upserts only the
-    ``scene_type``/``scene_scores`` columns. Returns the number of photos retagged.
+    re-decoding + re-detecting the whole library. Photos that already have a stored
+    embedding are re-scored straight from it (no file access, so it's near-instant and
+    works even if the original moved); the rest are decoded once. The stored
+    ``face_count`` is reused so the people bonus still applies, and only the
+    ``scene_type``/``scene_scores`` columns are upserted. Returns the number retagged.
     """
 
     tagger = tagger or get_tagger(config)
@@ -1086,15 +1109,28 @@ def retag_scenes(
     try:
         rows = conn.execute("SELECT id, path, face_count FROM photos").fetchall()
         total = len(rows)
+        # A stored SigLIP embedding is the tagger's whole input, so when the tagger can
+        # score one directly (``tag_embedding``) there's no need to touch the file.
+        from_embedding = hasattr(tagger, "tag_embedding")
         for i, row in enumerate(rows):
             path = Path(row["path"])
-            if not path.exists():
+            blob = None
+            if from_embedding:
+                blob = conn.execute(
+                    "SELECT embedding FROM photos WHERE id=?", (row["id"],)
+                ).fetchone()[0]
+            if blob is None and not path.exists():
                 continue
             try:
-                with Image.open(path) as raw:
-                    raw.load()
-                    img = ImageOps.exif_transpose(raw) or raw
-                    label, scores = tagger.tag_image(img, face_count=row["face_count"] or 0)
+                if blob is not None:
+                    label, scores = tagger.tag_embedding(  # type: ignore[attr-defined]
+                        db.blob_to_embedding(blob), face_count=row["face_count"] or 0
+                    )
+                else:
+                    with Image.open(path) as raw:
+                        raw.load()
+                        img = ImageOps.exif_transpose(raw) or raw
+                        label, scores = tagger.tag_image(img, face_count=row["face_count"] or 0)
             except Exception as exc:
                 # Skip an unreadable/corrupt file but don't fail silently — report
                 # which photo so a partial result is explainable.
@@ -1119,13 +1155,16 @@ def embed_library(
     image_encoder: SigLipImageEncoder | None = None,
     recompute: bool = False,
     progress: Callable[[int, int], None] | None = None,
+    accept_model_change: bool = False,
 ) -> int:
     """Backfill SigLIP image embeddings for semantic search, without a re-index.
 
     Embeddings are independent of faces/thumbnails, so an already-indexed library
     can gain semantic search by decoding each still-present photo once and storing
     only its image embedding — no face re-detection. By default only photos that
-    don't already have an embedding are processed (``recompute`` re-embeds all).
+    don't already have an embedding are processed (``recompute`` re-embeds all, and so
+    may switch the catalog to a new embedding model; a partial run on a different
+    model raises :class:`db.ModelMismatchError` unless ``accept_model_change``).
     Returns the number of photos embedded.
     """
 
@@ -1133,6 +1172,10 @@ def embed_library(
     conn = db.connect(config.db_path)
     embedded = 0
     try:
+        db.claim_model(
+            conn, "embedding_model", scene_model_id(),
+            replace=recompute or accept_model_change,
+        )
         where = "" if recompute else " WHERE embedding IS NULL"
         rows = conn.execute(f"SELECT id, path FROM photos{where}").fetchall()
         total = len(rows)
@@ -1164,6 +1207,7 @@ def embed_face_regions(
     image_encoder: SigLipImageEncoder | None = None,
     recompute: bool = False,
     progress: Callable[[int, int], None] | None = None,
+    accept_model_change: bool = False,
 ) -> int:
     """Backfill per-face region embeddings for grounding, without a re-index.
 
@@ -1171,13 +1215,18 @@ def embed_face_regions(
     (or every photo with faces when ``recompute``), crops the :func:`region_box`
     around each stored face bbox off the same EXIF-upright pixels detection used,
     and stores its SigLIP embedding via :func:`db.set_face_region_embedding`. No
-    face re-detection. Returns the number of faces embedded.
+    face re-detection. Region embeddings share the photo embeddings' space, so they
+    must come from the same model (:class:`db.ModelMismatchError` otherwise, unless
+    ``accept_model_change``). Returns the number of faces embedded.
     """
 
     encoder = image_encoder or SigLipImageEncoder.from_config(config)
     conn = db.connect(config.db_path)
     embedded = 0
     try:
+        db.claim_model(
+            conn, "embedding_model", scene_model_id(), replace=accept_model_change
+        )
         # Photos that have at least one face needing a region embedding (or all
         # photos with faces under ``recompute``). One decode per photo.
         face_filter = "" if recompute else " AND f.region_embedding IS NULL"
@@ -1272,5 +1321,6 @@ from .housekeeping import (  # noqa: E402, F401
     empty_trash,
     export_photos,
     prune_library,
+    restore_trash,
     sweep_orphan_derivatives,
 )

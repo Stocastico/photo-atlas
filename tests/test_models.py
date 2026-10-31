@@ -41,3 +41,68 @@ def test_ensure_scene_input_size_env_override(monkeypatch):
     # A higher-resolution SigLIP 2 variant (384/512) is selectable without code.
     monkeypatch.setenv("PHOTO_ATLAS_SCENE_INPUT_SIZE", "384")
     assert models.ensure_scene_input_size() == 384
+
+
+# -- download integrity -----------------------------------------------------
+import hashlib  # noqa: E402
+import re  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+def _fake_download(monkeypatch, payload: bytes):
+    def retrieve(url, dest):
+        from pathlib import Path
+
+        Path(dest).write_bytes(payload)
+        return str(dest), {"Content-Length": str(len(payload))}
+
+    monkeypatch.setattr(models.urllib.request, "urlretrieve", retrieve)
+
+
+def test_download_is_verified_against_the_pinned_sha256(tmp_path, monkeypatch):
+    payload = b"x" * 60_000
+    monkeypatch.setitem(models.MODEL_SHA256, "fake.onnx", hashlib.sha256(payload).hexdigest())
+    _fake_download(monkeypatch, payload)
+    got = models._resolve("fake.onnx", "http://x/fake", tmp_path, "PHOTO_ATLAS_NOPE", True)
+    assert got.read_bytes() == payload
+
+
+def test_checksum_mismatch_discards_the_download(tmp_path, monkeypatch):
+    monkeypatch.setitem(models.MODEL_SHA256, "fake.onnx", "0" * 64)
+    _fake_download(monkeypatch, b"y" * 60_000)
+    with pytest.raises(RuntimeError, match="checksum"):
+        models._resolve("fake.onnx", "http://x/fake", tmp_path, "PHOTO_ATLAS_NOPE", True)
+    assert not (tmp_path / "fake.onnx").exists()
+    assert not list(tmp_path.glob("*.part"))  # no half-trusted leftovers
+
+
+def test_unpinned_models_still_download(tmp_path, monkeypatch):
+    monkeypatch.delitem(models.MODEL_SHA256, "fake.onnx", raising=False)
+    _fake_download(monkeypatch, b"z" * 60_000)
+    assert models._resolve("fake.onnx", "http://x/f", tmp_path, "PHOTO_ATLAS_NOPE", True).exists()
+
+
+def test_huggingface_models_are_pinned_to_a_commit_and_checksum():
+    hf = {
+        models.ARCFACE_NAME: models.ARCFACE_URL,
+        models.SCENE_NAME: models.SCENE_URL,
+        models.SCENE_TEXT_NAME: models.SCENE_TEXT_URL,
+        models.SCENE_TOKENIZER_NAME: models.SCENE_TOKENIZER_URL,
+    }
+    for name, url in hf.items():
+        assert re.search(r"/resolve/[0-9a-f]{40}/", url), f"{name} must pin a commit, not 'main'"
+        assert re.fullmatch(r"[0-9a-f]{64}", models.MODEL_SHA256.get(name, "")), name
+
+
+def test_documented_env_var_names_are_the_ones_the_code_reads():
+    """Error messages / README once told users to set PHOTO_ATLAS_TEXT_MODEL, which
+    nothing reads (the real name is PHOTO_ATLAS_SCENE_TEXT_MODEL)."""
+
+    from pathlib import Path
+
+    root = Path(__file__).parent.parent
+    files = [root / "README.md", *(root / "src" / "photo_atlas").glob("*.py")]
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        assert not re.search(r"PHOTO_ATLAS_TEXT_MODEL\b", text), f"{f.name} cites a dead env var"

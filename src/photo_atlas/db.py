@@ -310,20 +310,63 @@ def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
     return None if row is None else str(row["value"])
 
 
+def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
+
+
+class ModelMismatchError(RuntimeError):
+    """The catalog's stored embeddings come from a different model than the current one."""
+
+
+_MODEL_WHAT = {"embedding_model": "photo embeddings", "face_model": "face embeddings"}
+
+
+def claim_model(
+    conn: sqlite3.Connection, key: str, model_id: str, *, replace: bool = False
+) -> None:
+    """Record which model produced the catalog's embeddings, or verify it.
+
+    The first call stamps ``model_id`` under ``meta[key]``; later calls must match,
+    otherwise vectors from two different embedding spaces would silently be compared
+    (same dimension is no guarantee — e.g. ArcFace R50 vs R100, or two SigLIP sizes).
+    ``replace=True`` re-stamps, for a deliberate rebuild with the new model.
+    Catalogs from before stamping simply get stamped with whatever runs first.
+    """
+
+    current = get_meta(conn, key)
+    if current is None or replace:
+        if current != model_id:
+            set_meta(conn, key, model_id)
+        return
+    if current != model_id:
+        raise ModelMismatchError(
+            f"This catalog's {_MODEL_WHAT.get(key, key)} were built with {current}, but "
+            f"the current model is {model_id}; mixing them gives wrong results. Rebuild "
+            "with the new model (`photo-atlas embed --recompute` for photo embeddings, "
+            "`photo-atlas index <folder> --recompute` for faces) and add "
+            "--accept-model-change, or switch back to the old model."
+        )
+
+
 def bump_meta(conn: sqlite3.Connection, key: str) -> int:
     """Increment the integer counter at ``key`` (starting from 0) and return it.
 
-    One ``UPSERT ... RETURNING`` statement, so a concurrent `index` and `serve`
-    can't both read the same value and lose an increment.
+    The increment is a single ``UPSERT`` *write first*: it takes SQLite's write lock,
+    so a concurrent `index` and `serve` can't both read the same value and lose an
+    increment, and the follow-up read (same transaction) sees our own value. (No
+    ``RETURNING``, so this works on SQLite older than 3.35.)
     """
 
-    row = conn.execute(
+    conn.execute(
         "INSERT INTO meta (key, value) VALUES (?, '1') "
-        "ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1 "
-        "RETURNING CAST(value AS INTEGER)",
+        "ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
         (key,),
-    ).fetchone()
-    return int(row[0])
+    )
+    return int(conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()[0])
 
 
 # -- embedding (de)serialisation ------------------------------------------

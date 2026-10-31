@@ -12,6 +12,7 @@ from typing import cast
 import numpy as np
 
 from . import db
+from . import faces as faces_module
 from .config import AtlasConfig
 from .faces import (
     cluster_embeddings,
@@ -131,6 +132,51 @@ def empty_trash(config: AtlasConfig) -> int:
             removed += 1
     (config.trash_dir / "manifest.jsonl").unlink(missing_ok=True)
     return removed
+
+
+def restore_trash(config: AtlasConfig, ids: list[int] | None = None) -> dict[str, int]:
+    """Move trashed originals back to where they came from.
+
+    Restores every manifest entry, or only those whose photo id is in ``ids``. A file
+    is never overwritten: if something now lives at the original path it counts as a
+    ``conflict`` and stays in the trash (and in the manifest). An entry whose trashed
+    file has vanished is ``missing`` and is dropped. Restored files are plain files
+    again — run ``photo-atlas index`` to catalogue them. Returns
+    ``{restored, missing, conflicts}``.
+    """
+
+    import shutil
+
+    manifest = config.trash_dir / "manifest.jsonl"
+    result = {"restored": 0, "missing": 0, "conflicts": 0}
+    if not manifest.exists():
+        return result
+    wanted = None if ids is None else {int(i) for i in ids}
+    kept: list[dict] = []
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue  # a corrupt line can't be restored; drop it
+        if wanted is not None and entry.get("id") not in wanted:
+            kept.append(entry)
+            continue
+        trashed = config.trash_dir / entry["trashed"]
+        original = Path(entry["original"])
+        if not trashed.exists():
+            result["missing"] += 1
+        elif original.exists():
+            result["conflicts"] += 1
+            kept.append(entry)
+        else:
+            original.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(trashed), original)
+            result["restored"] += 1
+    if kept:
+        manifest.write_text("".join(json.dumps(e) + "\n" for e in kept), encoding="utf-8")
+    else:
+        manifest.unlink()
+    return result
 
 
 def delete_photos(config: AtlasConfig, ids: list[int]) -> dict[str, int]:
@@ -259,3 +305,37 @@ def cluster_library(config: AtlasConfig) -> dict[str, int]:
         return {"faces": len(ids), "clusters": n_clusters}
     finally:
         conn.close()
+
+
+def calibrate_faces(config: AtlasConfig) -> dict | None:
+    """Suggest recognition thresholds from the faces a human has named.
+
+    Uses only faces assigned by hand (``confidence >= 1.0``) so auto-tags can't bias
+    the result, and only the dominant embedding dimension (so a library mixing
+    recogniser backends isn't compared across spaces). Returns the
+    :func:`photo_atlas.faces.calibrate_threshold` stats plus ``faces`` / ``people``
+    counts, or ``None`` when there isn't enough named data yet.
+    """
+
+    from collections import Counter  # noqa: PLC0415
+
+    conn = db.connect(config.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT person_id, embedding, dim FROM faces "
+            "WHERE person_id IS NOT NULL AND confidence >= 1.0 AND embedding IS NOT NULL"
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return None
+    dim = Counter(r["dim"] for r in rows).most_common(1)[0][0]
+    rows = [r for r in rows if r["dim"] == dim]
+    embeddings = np.vstack(
+        [cast(np.ndarray, db.blob_to_embedding(r["embedding"])) for r in rows]
+    )
+    person_ids = np.array([r["person_id"] for r in rows])
+    result = faces_module.calibrate_threshold(embeddings, person_ids)
+    if result is None:
+        return None
+    return {**result, "faces": len(rows), "people": int(np.unique(person_ids).size)}

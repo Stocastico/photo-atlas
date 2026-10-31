@@ -58,10 +58,10 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 
 | Module | Role |
 | --- | --- |
-| `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `empty-trash`, `export-labels`, `demo`) |
+| `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `empty-trash`, `restore`, `calibrate-faces`, `export-labels`, `demo`) |
 | `config.py` | `AtlasConfig` — library paths + tunables (`~/.photo_atlas`, `PHOTO_ATLAS_HOME`) |
 | `db.py` | SQLite schema, additive migrations (`_migrate`), embedding (de)serialisation. `PHOTO_COLUMNS` is the single source of truth for writable photo columns |
-| `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Housekeeping (`sweep_orphan_derivatives`, `prune_library`, `delete_photos`, `empty_trash`, `export_photos`, `cluster_library`) lives in `housekeeping.py` and is re-exported here. Also `embed_library`, `embed_face_regions` (per-person grounding backfill), `region_box` (face→person-region geometry), `backfill_phashes`, `retag_scenes`; `delete_photos` moves originals to `trash_dir` (purged by `empty_trash` / CLI `empty-trash`), `export_photos` copies a selection's originals to a folder |
+| `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Housekeeping (`sweep_orphan_derivatives`, `prune_library`, `delete_photos`, `empty_trash`, `restore_trash`, `export_photos`, `cluster_library`, `calibrate_faces`) lives in `housekeeping.py` and is re-exported here. Also `embed_library`, `embed_face_regions` (per-person grounding backfill), `region_box` (face→person-region geometry), `backfill_phashes`, `retag_scenes`; `delete_photos` moves originals to `trash_dir` (purged by `empty_trash` / CLI `empty-trash`, put back by `restore_trash` / CLI `restore [ids]`, which never overwrites), `export_photos` copies a selection's originals to a folder |
 | `metadata.py` | EXIF/dimensions/thumbnails, `cached_resized` derivatives (atomic temp+replace), HEIF opener. Resolves `taken_at` as **exif → filename → mtime** (folder hint slots in via the indexer) |
 | `filename_date.py` | `parse_filename_date` — ordered regex registry mining a capture date/time from real filename conventions (Android/iOS/WP/WhatsApp/`YYYY-MM-DD HH.MM.SS`/bare compact/Italian text), validated against a sane calendar range so counters/resolutions aren't misread |
 | `video.py` | optional ffmpeg/ffprobe poster-frame + capture-date/GPS extraction for videos (`index_video`); pure `_parse_probe` is the offline-testable seam |
@@ -123,6 +123,18 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   `extract_poster` writes the poster to an atomic `.part` temp, so it **must** pass
   `-f image2` to pin the muxer (ffmpeg otherwise infers the format from the `.part`
   extension and fails); the `at=` seek falls back to the opening frame for short clips.
+- **Embeddings are stamped with their model.** `meta['embedding_model']` (SigLIP vision
+  model file name, `models.scene_model_id()`) and `meta['face_model']` (`backend.model_id`)
+  are claimed on first use via `db.claim_model`; a later run on a different model raises
+  `db.ModelMismatchError` (CLI exit 2) unless `--accept-model-change` — or, for photo
+  embeddings, a library-wide `embed --recompute`. The API disables text search (409,
+  `stale_embeddings` in `/api/capabilities`) when the stamp differs from the configured model;
+  "more like this" still works since it only compares stored vectors. Add the new model's
+  file name to the right stamp whenever you add an embedding model.
+- **Face/recognition tunables** (`AtlasConfig`) have `PHOTO_ATLAS_*` env overrides:
+  `FACE_THRESHOLD`, `CLUSTER_EPS`, `REVIEW_CONFIDENCE`, `FACE_SCORE`, `DETECT_MAX_SIDE`,
+  `MIN_FACE_PX`; `photo-atlas calibrate-faces` derives the first three from human-named
+  faces. ONNX providers: `PHOTO_ATLAS_PROVIDERS` (auto = CUDA/DirectML if present).
 - **Facet filters accept a scalar or a list** (OR within a facet, AND across facets).
   Semantic search is a *ranking* layered on top, via the `text` query param.
 - **Face active learning:** correcting an auto-tag (un/reassign) records a

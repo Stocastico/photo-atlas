@@ -137,16 +137,28 @@ these items are the genuinely new pieces.
 ### Done
 - [x] **Concurrent requests 500'd** (`sqlite3.ProgrammingError`: connection pinned to its creating thread) — `check_same_thread=False`; 600/600 OK in a 40-thread repro.
 - [x] **DNS-rebinding guard** (non-loopback `Host` → 403; `serve --host` off-loopback opts out) and no import-time `create_app()`.
-- [x] **Recoverable delete** — originals go to `~/.photo_atlas/trash` (+ `manifest.jsonl`); `photo-atlas empty-trash` purges.
+- [x] **Recoverable delete** — originals go to `~/.photo_atlas/trash` (+ `manifest.jsonl`); `photo-atlas empty-trash` purges, `photo-atlas restore [ids]` puts files back (never overwrites; re-run `index` to re-catalogue).
 - [x] Cache signatures via partial indexes; locks on lazily-built indexes/encoder; atomic `bump_meta`; `argpartition` top-k ranking; `Cache-Control` on derivatives.
 - [x] `common_filters` dependency (one filter list for facets/photos/map); `index_errors.log` (uncapped); versioned migrations (`PRAGMA user_version`, newer catalogs refused).
 - [x] `reverse_geocoder` is a core dependency (real town labels by default).
 - [x] `web/app.js` → 19 native ES modules (`web/js/`), with a real-Chromium smoke test and harnesses importing the real modules; `web/js/*` added to package-data.
 - [x] `search.py` → `filters`/`semantic`/`groups`; `indexer.py` → `housekeeping`. Coverage 93.5% → 95.6% (faces 73→90, embed 65→99).
 
+### Models review (2026-10-31)
+- [x] ONNX providers (CUDA/DirectML auto, CoreML opt-in, `PHOTO_ATLAS_PROVIDERS`).
+- [x] Text queries lowercased (SigLIP 2 trained on lowercase text).
+- [x] `retag-scenes` scores from stored embeddings (no decode).
+- [x] Italian count phrases / preambles / connectives in the planner; a bare "photo of" is no longer a visual query.
+- [x] Configurable face detection (score, max side, min face size 32 px) + env overrides for thresholds.
+- [x] `calibrate-faces`: thresholds from human-named faces.
+- [x] Embeddings stamped with their model; mixing refused (`--accept-model-change`); text search 409s when stale.
+- [x] Hugging Face downloads pinned to a commit + SHA-256 (verified live on the tokenizer). Fixed docs/messages citing a dead `PHOTO_ATLAS_TEXT_MODEL` env var.
+
 ### Open
-- [ ] `restore` command for the trash (manifest already records original paths).
-- [ ] `bump_meta` uses `UPSERT … RETURNING` (SQLite ≥ 3.35); add a fallback if older system SQLite builds matter.
+- [ ] Pin YuNet / SFace (OpenCV Zoo) by SHA-256 — GitHub was unreachable from the dev sandbox.
+- [ ] Model bake-off on a real slice of the library (fp16/fp32 vs int8 SigLIP, larger SigLIP 2, ArcFace R50 speed/accuracy) following `MODELS.md`; needs the user's photos + named people as ground truth.
+- [ ] Query-time prompt template ("this is a photo of …") for short semantic queries — measure before adopting.
+- [ ] Verify the InsightFace licence text upstream before any redistribution (`PACKAGING.md`).
 
 ## Correctness / scale / quality (2026-06-15 final review)
 

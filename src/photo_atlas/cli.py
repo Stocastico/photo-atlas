@@ -53,15 +53,20 @@ def _cmd_index(args) -> int:
 
     workers = args.workers if args.workers is not None else (os.cpu_count() or 1)
     print(f"Indexing {root} ... (workers={workers})")
-    stats = index_path(
-        config, root,
-        backend_name=args.faces,
-        geocode=not args.no_geocode,
-        recompute=args.recompute,
-        workers=workers,
-        embed=args.embed,
-        progress=progress,
-    )
+    try:
+        stats = index_path(
+            config, root,
+            backend_name=args.faces,
+            geocode=not args.no_geocode,
+            recompute=args.recompute,
+            workers=workers,
+            embed=args.embed,
+            progress=progress,
+            accept_model_change=args.accept_model_change,
+        )
+    except db.ModelMismatchError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     print()
     print(
         f"Done: {stats.indexed} indexed, {stats.skipped} skipped, "
@@ -127,6 +132,50 @@ def _cmd_empty_trash(args) -> int:
     return 0
 
 
+def _cmd_restore(args) -> int:
+    from .indexer import restore_trash
+
+    result = restore_trash(_config(args), args.ids or None)
+    msg = f"Restored {result['restored']} file(s)"
+    if result["conflicts"]:
+        msg += (f"; skipped {result['conflicts']} because the original path is taken "
+                "(left in the trash)")
+    if result["missing"]:
+        msg += f"; {result['missing']} trashed file(s) were already gone"
+    print(msg + ".")
+    if result["restored"]:
+        print("Run `photo-atlas index <folder>` to add them back to the catalog.")
+    return 1 if result["conflicts"] else 0
+
+
+def _cmd_calibrate_faces(args) -> int:
+    from .housekeeping import calibrate_faces
+
+    config = _config(args)
+    r = calibrate_faces(config)
+    if r is None:
+        print(
+            "Not enough data to calibrate: name at least two people in the web UI "
+            "(each with 2+ faces you assigned or confirmed yourself), then run this again."
+        )
+        return 1
+    print(f"Calibrated on {r['faces']} named faces of {r['people']} people "
+          f"({r['genuine_pairs']} same-person and {r['impostor_pairs']} different-person pairs).")
+    print(f"  same person      distance: median {r['genuine_p50']:.2f}, 90th pct "
+          f"{r['genuine_p90']:.2f}")
+    print(f"  different people distance: 1st pct {r['impostor_p1']:.2f}, median "
+          f"{r['impostor_p50']:.2f}")
+    print(f"  at {r['threshold']}: keeps {r['recall']:.1%} of same-person pairs, accepts "
+          f"{r['false_accept']:.2%} of different-person pairs")
+    print(f"  current settings: match {config.face_match_threshold}, cluster "
+          f"{config.cluster_eps}, review below {config.review_confidence}")
+    print("\nTo use the suggested values (then re-run `index --recompute` / `cluster`):")
+    print(f"  export PHOTO_ATLAS_FACE_THRESHOLD={r['threshold']}")
+    print(f"  export PHOTO_ATLAS_CLUSTER_EPS={r['threshold']}")
+    print(f"  export PHOTO_ATLAS_REVIEW_CONFIDENCE={r['review_confidence']}")
+    return 0
+
+
 def _cmd_retag_scenes(args) -> int:
     config = _config(args)
 
@@ -153,17 +202,26 @@ def _cmd_embed(args) -> int:
 
     print("Computing SigLIP image embeddings for semantic search ...")
     try:
-        n = embed_library(config, recompute=args.recompute, progress=progress)
+        n = embed_library(
+            config, recompute=args.recompute, progress=progress,
+            accept_model_change=args.accept_model_change,
+        )
         print(f"\nDone: {n} photo(s) embedded.")
         # Per-person grounding: also embed the region around each named/unnamed face
         # so a hybrid query ("Stefano eating food") can score the person's region.
         print("Computing per-face region embeddings for per-person grounding ...")
-        m = embed_face_regions(config, recompute=args.recompute, progress=region_progress)
+        m = embed_face_regions(
+            config, recompute=args.recompute, progress=region_progress,
+            accept_model_change=args.accept_model_change,
+        )
+    except db.ModelMismatchError as exc:
+        print(f"\nerror: {exc}", file=sys.stderr)
+        return 2
     except Exception as exc:  # noqa: BLE001 - surface a clean message, not a traceback
         print(
             f"\nerror: could not build embeddings ({type(exc).__name__}: {exc}). "
             "Check that the SigLIP model can be downloaded (or set "
-            "PHOTO_ATLAS_SCENE_MODEL / PHOTO_ATLAS_TEXT_MODEL to local files).",
+            "PHOTO_ATLAS_SCENE_MODEL / PHOTO_ATLAS_SCENE_TEXT_MODEL to local files).",
             file=sys.stderr,
         )
         return 1
@@ -310,6 +368,11 @@ def build_parser() -> argparse.ArgumentParser:
              "semantic search",
     )
     p_index.add_argument(
+        "--accept-model-change", action="store_true",
+        help="Allow switching the catalog's recorded face/embedding model "
+             "(use when deliberately rebuilding everything with the new model)",
+    )
+    p_index.add_argument(
         "--workers", type=int, default=None,
         help="Worker processes for decode/detect (default: CPU count; 1 = serial)",
     )
@@ -326,6 +389,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_trash.set_defaults(func=_cmd_empty_trash)
 
+    p_restore = sub.add_parser(
+        "restore", help="Move trashed originals back to their original location"
+    )
+    p_restore.add_argument(
+        "ids", nargs="*", type=int, help="Photo ids to restore (default: everything in the trash)"
+    )
+    p_restore.set_defaults(func=_cmd_restore)
+
+    p_cal = sub.add_parser(
+        "calibrate-faces",
+        help="Suggest face-match thresholds from the people you have already named",
+    )
+    p_cal.set_defaults(func=_cmd_calibrate_faces)
+
     p_retag = sub.add_parser("retag-scenes", help="Recompute scene tags in place (no re-index)")
     p_retag.set_defaults(func=_cmd_retag_scenes)
 
@@ -334,6 +411,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_embed.add_argument(
         "--recompute", action="store_true", help="Re-embed photos that already have an embedding"
+    )
+    p_embed.add_argument(
+        "--accept-model-change", action="store_true",
+        help="Allow switching the catalog's recorded face/embedding model "
+             "(use when deliberately rebuilding everything with the new model)",
     )
     p_embed.set_defaults(func=_cmd_embed)
 

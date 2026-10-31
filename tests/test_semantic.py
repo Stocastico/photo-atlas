@@ -260,7 +260,8 @@ def test_api_capabilities_reports_semantic(tmp_path):
     caps = client.get("/api/capabilities").json()
     # Truthy iff embeddings exist AND the runtime libs are importable; the value
     # depends on whether the optional extra is installed, so just assert the shape.
-    assert set(caps) == {"semantic"} and isinstance(caps["semantic"], bool)
+    assert set(caps) == {"semantic", "stale_embeddings"}
+    assert isinstance(caps["semantic"], bool) and caps["stale_embeddings"] is False
 
 
 def _brute_rank(index, query, allowed, top_k):
