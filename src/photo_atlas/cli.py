@@ -143,6 +143,34 @@ def _cmd_restore(args) -> int:
     return 1 if result["conflicts"] else 0
 
 
+def _cmd_calibrate_faces(args) -> int:
+    from .housekeeping import calibrate_faces
+
+    config = _config(args)
+    r = calibrate_faces(config)
+    if r is None:
+        print(
+            "Not enough data to calibrate: name at least two people in the web UI "
+            "(each with 2+ faces you assigned or confirmed yourself), then run this again."
+        )
+        return 1
+    print(f"Calibrated on {r['faces']} named faces of {r['people']} people "
+          f"({r['genuine_pairs']} same-person and {r['impostor_pairs']} different-person pairs).")
+    print(f"  same person      distance: median {r['genuine_p50']:.2f}, 90th pct "
+          f"{r['genuine_p90']:.2f}")
+    print(f"  different people distance: 1st pct {r['impostor_p1']:.2f}, median "
+          f"{r['impostor_p50']:.2f}")
+    print(f"  at {r['threshold']}: keeps {r['recall']:.1%} of same-person pairs, accepts "
+          f"{r['false_accept']:.2%} of different-person pairs")
+    print(f"  current settings: match {config.face_match_threshold}, cluster "
+          f"{config.cluster_eps}, review below {config.review_confidence}")
+    print("\nTo use the suggested values (then re-run `index --recompute` / `cluster`):")
+    print(f"  export PHOTO_ATLAS_FACE_THRESHOLD={r['threshold']}")
+    print(f"  export PHOTO_ATLAS_CLUSTER_EPS={r['threshold']}")
+    print(f"  export PHOTO_ATLAS_REVIEW_CONFIDENCE={r['review_confidence']}")
+    return 0
+
+
 def _cmd_retag_scenes(args) -> int:
     config = _config(args)
 
@@ -349,6 +377,12 @@ def build_parser() -> argparse.ArgumentParser:
         "ids", nargs="*", type=int, help="Photo ids to restore (default: everything in the trash)"
     )
     p_restore.set_defaults(func=_cmd_restore)
+
+    p_cal = sub.add_parser(
+        "calibrate-faces",
+        help="Suggest face-match thresholds from the people you have already named",
+    )
+    p_cal.set_defaults(func=_cmd_calibrate_faces)
 
     p_retag = sub.add_parser("retag-scenes", help="Recompute scene tags in place (no re-index)")
     p_retag.set_defaults(func=_cmd_retag_scenes)

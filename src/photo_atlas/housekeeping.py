@@ -12,6 +12,7 @@ from typing import cast
 import numpy as np
 
 from . import db
+from . import faces as faces_module
 from .config import AtlasConfig
 from .faces import (
     cluster_embeddings,
@@ -304,3 +305,35 @@ def cluster_library(config: AtlasConfig) -> dict[str, int]:
         return {"faces": len(ids), "clusters": n_clusters}
     finally:
         conn.close()
+
+
+def calibrate_faces(config: AtlasConfig) -> dict | None:
+    """Suggest recognition thresholds from the faces a human has named.
+
+    Uses only faces assigned by hand (``confidence >= 1.0``) so auto-tags can't bias
+    the result, and only the dominant embedding dimension (so a library mixing
+    recogniser backends isn't compared across spaces). Returns the
+    :func:`photo_atlas.faces.calibrate_threshold` stats plus ``faces`` / ``people``
+    counts, or ``None`` when there isn't enough named data yet.
+    """
+
+    from collections import Counter  # noqa: PLC0415
+
+    conn = db.connect(config.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT person_id, embedding, dim FROM faces "
+            "WHERE person_id IS NOT NULL AND confidence >= 1.0 AND embedding IS NOT NULL"
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return None
+    dim = Counter(r["dim"] for r in rows).most_common(1)[0][0]
+    rows = [r for r in rows if r["dim"] == dim]
+    embeddings = np.vstack([db.blob_to_embedding(r["embedding"]) for r in rows])
+    person_ids = np.array([r["person_id"] for r in rows])
+    result = faces_module.calibrate_threshold(embeddings, person_ids)
+    if result is None:
+        return None
+    return {**result, "faces": len(rows), "people": int(np.unique(person_ids).size)}
