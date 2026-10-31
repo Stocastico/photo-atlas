@@ -763,7 +763,9 @@ def _worker_init(
     else:
         image_encoder = None
     _WORKER_STATE["backend"] = (
-        get_backend(backend_name, model_dir=model_dir) if backend_name != "none" else None
+        get_backend(backend_name, model_dir=model_dir, **config.face_detect_options())
+        if backend_name != "none"
+        else None
     )
     _WORKER_STATE["tagger"] = tagger
     _WORKER_STATE["image_encoder"] = image_encoder
@@ -914,7 +916,7 @@ def index_path(
     config.ensure_dirs()
     conn = db.connect(config.db_path)
     backend = (
-        get_backend(backend_name, model_dir=config.models_dir)
+        get_backend(backend_name, model_dir=config.models_dir, **config.face_detect_options())
         if backend_name != "none"
         else None
     )

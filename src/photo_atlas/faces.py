@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 import numpy as np
 
@@ -180,6 +180,8 @@ class _YuNetBackend:
     available pixels.
     """
 
+    _min_face_px = 0  # shorter-side floor (full-res px); set from config in __init__
+
     def __init__(
         self,
         model_dir: Path | None = None,
@@ -188,8 +190,10 @@ class _YuNetBackend:
         score_threshold: float = 0.85,
         nms_threshold: float = 0.3,
         detect_max_side: int = 1280,
+        min_face_px: int = 0,
     ):
         self._detect_max_side = detect_max_side
+        self._min_face_px = min_face_px
         import cv2  # noqa: PLC0415
 
         if not hasattr(cv2, "FaceDetectorYN"):
@@ -245,6 +249,8 @@ class _YuNetBackend:
             if scale != 1.0:
                 full_row[:14] = row[:14] / scale
             x, y, bw, bh = full_row[:4]
+            if min(bw, bh) < self._min_face_px:
+                continue  # too small for a trustworthy embedding
             observations.append(
                 FaceObservation(
                     bbox=(int(x), int(y), int(bw), int(bh)),
@@ -397,13 +403,31 @@ class DlibFaceBackend:  # pragma: no cover - optional heavy dependency
         return observations
 
 
-def get_backend(name: str = "auto", *, model_dir: Path | None = None) -> FaceBackend | None:
+def get_backend(
+    name: str = "auto",
+    *,
+    model_dir: Path | None = None,
+    score_threshold: float | None = None,
+    detect_max_side: int | None = None,
+    min_face_px: int | None = None,
+) -> FaceBackend | None:
     """Return a face backend by name, or ``None`` if none is available.
 
     ``auto`` prefers the deep YuNet + **ArcFace** pipeline, then dlib. ``yunet`` is
     an alias for that default deep backend; ``sface`` selects the legacy YuNet +
-    SFace (128-d) recogniser.
+    SFace (128-d) recogniser. The detection options (YuNet backends only) default to the
+    backend's own values when ``None``; ``AtlasConfig.face_detect_options()`` supplies them.
     """
+
+    detect_opts: dict[str, Any] = {
+        k: v
+        for k, v in (
+            ("score_threshold", score_threshold),
+            ("detect_max_side", detect_max_side),
+            ("min_face_px", min_face_px),
+        )
+        if v is not None
+    }
 
     order = {
         "auto": ["arcface", "dlib"],
@@ -418,9 +442,9 @@ def get_backend(name: str = "auto", *, model_dir: Path | None = None) -> FaceBac
     for choice in order:
         try:
             if choice == "arcface":
-                return YuNetArcFaceBackend(model_dir=model_dir)
+                return YuNetArcFaceBackend(model_dir=model_dir, **detect_opts)
             if choice == "sface":
-                return YuNetSFaceBackend(model_dir=model_dir)
+                return YuNetSFaceBackend(model_dir=model_dir, **detect_opts)
             if choice == "dlib":
                 return DlibFaceBackend()
             if choice == "synthetic":

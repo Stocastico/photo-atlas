@@ -22,6 +22,18 @@ def default_home() -> Path:
     return Path.home() / ".photo_atlas"
 
 
+def _env_number(name: str, default, cast):
+    """``cast(os.environ[name])`` or ``default`` when unset / not a valid number."""
+
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return cast(raw)
+    except ValueError:
+        return default
+
+
 @dataclass
 class AtlasConfig:
     """Filesystem layout and tunable thresholds for a library."""
@@ -41,9 +53,13 @@ class AtlasConfig:
     map_point_limit: int = 50000
 
     #: Face matches closer than this cosine distance are considered the same
-    #: identity when auto-recognising newly indexed photos. Tuned for SFace,
-    #: where same-person pairs sit near ~0.1-0.4 and different people near ~0.9.
-    face_match_threshold: float = 0.5
+    #: identity when auto-recognising newly indexed photos. The 0.5 default is a
+    #: conventional ArcFace value but has **not** been calibrated on your library:
+    #: run ``photo-atlas calibrate-faces`` to derive one from the people you've
+    #: already named, then apply it with ``PHOTO_ATLAS_FACE_THRESHOLD``.
+    face_match_threshold: float = field(
+        default_factory=lambda: _env_number("PHOTO_ATLAS_FACE_THRESHOLD", 0.5, float)
+    )
 
     #: Number of nearest enrolled faces consulted when auto-recognising a new
     #: face (k-NN majority vote). More robust than a single per-person centroid
@@ -53,7 +69,29 @@ class AtlasConfig:
     #: Auto-recognised faces whose confidence is below this are surfaced in the
     #: "Review guesses" list for the user to confirm or reject (active learning).
     #: A human assignment sets confidence to 1.0, so it drops out once reviewed.
-    review_confidence: float = 0.6
+    review_confidence: float = field(
+        default_factory=lambda: _env_number("PHOTO_ATLAS_REVIEW_CONFIDENCE", 0.6, float)
+    )
+
+    #: YuNet detection score threshold. Lower finds more (smaller / profile) faces at
+    #: the cost of false positives. ``PHOTO_ATLAS_FACE_SCORE``.
+    face_score_threshold: float = field(
+        default_factory=lambda: _env_number("PHOTO_ATLAS_FACE_SCORE", 0.85, float)
+    )
+
+    #: Detection runs on a copy whose long side is capped at this many pixels (faces
+    #: shrink with the frame, so small group-photo faces need a larger cap, at some
+    #: speed cost). ``PHOTO_ATLAS_DETECT_MAX_SIDE``.
+    face_detect_max_side: int = field(
+        default_factory=lambda: _env_number("PHOTO_ATLAS_DETECT_MAX_SIDE", 1280, int)
+    )
+
+    #: Faces whose shorter side is below this many full-resolution pixels are
+    #: ignored: ArcFace embeddings of tiny faces are unreliable and pollute clusters.
+    #: ``PHOTO_ATLAS_MIN_FACE_PX`` (0 disables).
+    min_face_px: int = field(
+        default_factory=lambda: _env_number("PHOTO_ATLAS_MIN_FACE_PX", 32, int)
+    )
 
     #: Logit temperature applied to the zero-shot cosine similarities before the
     #: softmax. Higher = sharper label probabilities.
@@ -71,7 +109,9 @@ class AtlasConfig:
     semantic_top_k: int = 200
 
     #: DBSCAN epsilon (cosine distance) used when clustering unknown faces.
-    cluster_eps: float = 0.5
+    cluster_eps: float = field(
+        default_factory=lambda: _env_number("PHOTO_ATLAS_CLUSTER_EPS", 0.5, float)
+    )
 
     #: Minimum number of faces required to form a cluster.
     cluster_min_samples: int = 2
@@ -136,6 +176,15 @@ class AtlasConfig:
         """Where hard-deleted originals are moved (recoverable until emptied)."""
 
         return self.home / "trash"
+
+    def face_detect_options(self) -> dict:
+        """Keyword arguments for :func:`photo_atlas.faces.get_backend`."""
+
+        return {
+            "score_threshold": self.face_score_threshold,
+            "detect_max_side": self.face_detect_max_side,
+            "min_face_px": self.min_face_px,
+        }
 
     def ensure_dirs(self) -> AtlasConfig:
         """Create the library directory tree if it does not exist yet."""
