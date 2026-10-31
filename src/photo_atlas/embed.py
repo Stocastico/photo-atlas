@@ -246,6 +246,7 @@ class SigLipTextEncoder:
         )
 
     def embed_text(self, text: str) -> np.ndarray:
-        ids = np.array([self._tok.encode(text).ids], dtype=np.int64)
+        # SigLIP 2's text tower was trained on lowercased text, so match that.
+        ids = np.array([self._tok.encode(text.strip().lower()).ids], dtype=np.int64)
         (pooled,) = self._session.run([self._output], {self._input: ids})
         return l2_normalize(pooled[0])
