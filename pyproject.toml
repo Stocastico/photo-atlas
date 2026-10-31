@@ -78,6 +78,7 @@ photo_atlas = [
   "data/*.csv",
   "data/*.npz",
   "web/*",
+  "web/js/*",
   "web/vendor/leaflet/*",
   "web/vendor/leaflet/images/*",
 ]

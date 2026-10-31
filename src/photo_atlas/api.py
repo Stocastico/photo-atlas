@@ -12,6 +12,7 @@ import time.
 from __future__ import annotations
 
 import datetime
+import mimetypes
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -139,6 +140,9 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
     (set by ``serve --host`` when the user deliberately binds off-loopback)."""
 
     config = (config or AtlasConfig()).ensure_dirs()
+    # The UI is loaded as ES modules, which browsers refuse unless served as a
+    # JavaScript MIME type; some Windows registries map .js to text/plain.
+    mimetypes.add_type("text/javascript", ".js")
     app = FastAPI(title="Photo Atlas", version="0.1.0")
 
     # Create / migrate the schema once, here, so the per-request connections below

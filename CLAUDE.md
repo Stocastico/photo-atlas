@@ -77,7 +77,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 | `library.py` | person/cluster management (rename/merge/cover/assign) |
 | `api.py` | FastAPI app (`create_app`); media + JSON endpoints; cross-origin write guard; caches the semantic index + text encoder |
 | `models.py` | on-demand model downloads (YuNet/ArcFace/SFace + SigLIP 2) with env overrides; `ensure_arcface_models` (default), `ensure_models` (SFace), `ensure_scene_input_size` |
-| `web/` | `index.html` + `app.js` + `styles.css`, Leaflet vendored locally; **no build step** |
+| `web/` | `index.html` + `styles.css` + native **ES modules** in `web/js/` (`main.js` entry; `state`/`api`/`filters`/`urlstate`/`sidebar`/`grid`/`lightbox`/one module per view), Leaflet vendored locally; **no build step**. Modules import each other cyclically (function declarations only — no import-time side effects outside `main.js`); a `let` can't be reassigned from another module, so expose a setter (see `urlstate.setRestoringState`) |
 
 ## Conventions & gotchas
 
@@ -133,9 +133,13 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   before `replace_faces` blanket-deletes a photo's faces, `_carry_human_labels`
   (IoU-matched by bbox) copies any prior `confidence>=1.0` assignment onto the
   re-detected face, so re-indexing refreshes detection/embeddings without wiping names.
-- **Frontend has no test runner**; pure JS helpers (grid windowing, URL state) are
-  exercised by Node harnesses in `tests/js/` via `tests/test_web_js.py`, which skips
-  when Node isn't installed.
+- **Frontend tests:** pure helpers (grid windowing, URL state, facet cache, zoom) are
+  exercised by Node harnesses in `tests/js/*_harness.mjs` that `import()` the real
+  modules over `tests/js/fake_dom.mjs` (`tests/test_web_js.py`); a real-Chromium smoke
+  test (`tests/js/browser_smoke.cjs` via `tests/test_web_browser.py`) loads the UI against the
+  demo library and fails on any console/page/request error. Both skip when Node /
+  Playwright aren't installed. `tests/test_web_modules.py` statically checks that every
+  `import {x} from "./y.js"` has a matching `export` and that `web/js/*` is packaged.
 - Backlog lives in `TODO.md`; performance notes in `PERFORMANCE.md`.
 
 ## Git

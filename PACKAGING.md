@@ -8,7 +8,7 @@ shape them, and a recommendation.
 ## What we're packaging
 
 Photo Atlas is **already a local web app**: a FastAPI/uvicorn server that serves
-a no-build-step vanilla-JS UI (`web/index.html` + `app.js` + `styles.css`,
+a no-build-step vanilla-JS UI (`web/index.html` + `js/*.js` (ES modules) + `styles.css`,
 Leaflet vendored locally). So "make it an app" means *wrap the server + show the
 UI in a window* — no GUI rewrite is needed. That's the central lever every
 option below pulls.

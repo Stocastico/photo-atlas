@@ -52,6 +52,16 @@ jobs:
       - name: Sync dependencies (app + dev tooling)
         run: uv sync --python ${{ matrix.python-version }}
 
+      # Real-browser UI smoke test (tests/test_web_browser.py): Node is preinstalled
+      # on ubuntu runners; Playwright + Chromium go in a temp dir (no repo package.json).
+      - name: Install Playwright + Chromium
+        if: matrix.python-version == '3.12'
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pw" playwright
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
+          echo "NODE_PATH=$RUNNER_TEMP/pw/node_modules" >> "$GITHUB_ENV"
+          echo "REQUIRE_BROWSER_TESTS=1" >> "$GITHUB_ENV"
+
       - name: Run the offline test suite with coverage
         # pyproject's pytest addopts enforce --cov-fail-under=80.
         run: uv run pytest -q

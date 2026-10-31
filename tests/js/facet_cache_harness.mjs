@@ -1,5 +1,5 @@
-// Headless harness for the client-side facet cache in ``photo_atlas/web/app.js``.
-// Like the URL-state harness, it evaluates the script in a minimal fake DOM and
+// Headless harness for the client-side facet cache in ``photo_atlas/web/js/*.js``.
+// Like the URL-state harness, it imports the real modules over a minimal fake DOM and
 // then exercises the pure cache helper ``fetchFacets`` (plus ``api``'s cache
 // invalidation) with a counting ``fetch`` to assert that:
 //   * a repeated filter signature is served from cache (no second round-trip),
@@ -8,68 +8,25 @@
 //
 // Run via ``node tests/js/facet_cache_harness.mjs`` (or the pytest wrapper in
 // ``tests/test_web_js.py``, which skips when Node isn't installed).
-import fs from "fs";
-import path from "path";
-import url from "url";
-import vm from "vm";
+import { installDom, webModule } from "./fake_dom.mjs";
 
-const here = path.dirname(url.fileURLToPath(import.meta.url));
-const appjs = path.resolve(here, "../../src/photo_atlas/web/app.js");
-
-function fakeEl() {
-  return {
-    style: {}, dataset: {}, children: [],
-    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
-    setAttribute() {}, getAttribute() { return null; }, removeAttribute() {},
-    appendChild() {}, replaceWith() {}, querySelector() { return fakeEl(); },
-    querySelectorAll() { return []; }, addEventListener() {}, focus() {}, select() {},
-    getBoundingClientRect() { return { top: 0, left: 0, width: 0, height: 0 }; },
-    onclick: null, onkeydown: null, onchange: null, oninput: null,
-    value: "", textContent: "", innerHTML: "", disabled: false, offsetParent: {},
-  };
-}
-
-const elements = {};
-const loc = { pathname: "/", search: "" };
-const hist = { pushState() {} };
-
-// A counting fetch. ``/api/facets`` returns an empty-but-valid facets payload;
-// any other URL returns an empty photos page so the load-time render can't throw.
+// A counting fetch. ``/api/facets`` returns an empty-but-valid facets payload.
 let fetchCount = 0;
-const sandbox = {
-  document: {
-    querySelector(sel) { return elements[sel] || (elements[sel] = fakeEl()); },
-    querySelectorAll() { return []; },
-    addEventListener() {}, createElement() { return fakeEl(); },
-    body: { offsetHeight: 1000 }, activeElement: { tagName: "BODY" },
-  },
-  window: { addEventListener() {}, innerHeight: 800, scrollY: 0, location: loc, history: hist },
-  location: loc, history: hist, URLSearchParams, console,
-  requestAnimationFrame() { return 0; },
+installDom({
   fetch: async (u) => {
     fetchCount++;
     const facets = { total: 0, with_faces: 0, persons: [], scenes: [] };
     const body = String(u).startsWith("/api/facets") ? facets : { total: 0, photos: [] };
     return { ok: true, json: async () => body };
   },
-  setTimeout: () => 0, clearTimeout: () => {},
-};
-vm.createContext(sandbox);
-
-const src = fs.readFileSync(appjs, "utf8") +
-  "\nthis.__fetchFacets=fetchFacets;this.__api=api;this.__facetCache=facetCache;";
-vm.runInContext(src, sandbox);
-
-const { __fetchFacets: fetchFacets, __api: api, __facetCache: facetCache } = sandbox;
+});
+const { api, facetCache, fetchFacets } = await import(webModule("api.js"));
 
 let pass = 0, fail = 0;
 const check = (name, cond) => { cond ? pass++ : (fail++, console.error("FAIL:", name)); };
 
 async function main() {
-  // The script runs an initial render at load (async). Let those promises fully
-  // settle on the real timer queue, then start from a clean slate so the
-  // load-time fetches don't pollute the counts below.
-  await new Promise((r) => globalThis.setTimeout(r, 50));
+  // Start from a clean slate (nothing renders at import time any more).
   facetCache.clear();
   fetchCount = 0;
 
