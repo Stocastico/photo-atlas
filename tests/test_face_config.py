@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import numpy as np
+from face_stubs import _Backend, _img, _row
 
 from photo_atlas import faces, indexer
 from photo_atlas.config import AtlasConfig
-from tests.test_faces_backends import _Backend, _img, _row
 
 
 def test_defaults(monkeypatch):
