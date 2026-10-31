@@ -172,6 +172,17 @@ def ensure_scene_model(model_dir: Path, download: bool = True) -> Path:
     return _resolve(SCENE_NAME, SCENE_URL, Path(model_dir), "PHOTO_ATLAS_SCENE_MODEL", download)
 
 
+def scene_model_id() -> str:
+    """Identifier of the vision model that produces photo embeddings (its file name).
+
+    Honours ``PHOTO_ATLAS_SCENE_MODEL`` without needing the file to exist, so it can
+    be compared against the catalog's stamp before anything is downloaded.
+    """
+
+    override = os.environ.get("PHOTO_ATLAS_SCENE_MODEL")
+    return Path(override).expanduser().name if override else SCENE_NAME
+
+
 def ensure_scene_input_size() -> int:
     """Return the vision encoder's expected square input resolution.
 

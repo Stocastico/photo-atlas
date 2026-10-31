@@ -276,6 +276,7 @@ class YuNetArcFaceBackend(_YuNetBackend):
         from .models import ensure_arcface_models, onnx_providers  # noqa: PLC0415
 
         yunet_path, arcface_path = ensure_arcface_models(model_dir, download=download)
+        self.model_id = arcface_path.name
         self._session = ort.InferenceSession(
             str(arcface_path), providers=onnx_providers()
         )
@@ -307,6 +308,7 @@ class YuNetSFaceBackend(_YuNetBackend):
                 "This OpenCV build lacks FaceRecognizerSF. Install opencv-python>=4.10."
             )
         yunet_path, sface_path = ensure_models(model_dir, download=download)
+        self.model_id = sface_path.name
         self._recognizer = self._cv2.FaceRecognizerSF.create(str(sface_path), "")
         return yunet_path
 
@@ -323,6 +325,8 @@ class SyntheticFaceBackend:
     its colour palette, giving deterministic, clusterable "identities". It is
     meant for the bundled demo and for tests -- not for real photographs.
     """
+
+    model_id = "synthetic"
 
     def __init__(self, min_area: int = 1500, max_area_frac: float = 0.2):
         import cv2  # noqa: PLC0415
@@ -370,6 +374,8 @@ class SyntheticFaceBackend:
 
 class DlibFaceBackend:  # pragma: no cover - optional heavy dependency
     """High quality 128-d embeddings via the ``face_recognition`` package."""
+
+    model_id = "dlib"
 
     def __init__(self):
         try:

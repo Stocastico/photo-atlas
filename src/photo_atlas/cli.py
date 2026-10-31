@@ -53,15 +53,20 @@ def _cmd_index(args) -> int:
 
     workers = args.workers if args.workers is not None else (os.cpu_count() or 1)
     print(f"Indexing {root} ... (workers={workers})")
-    stats = index_path(
-        config, root,
-        backend_name=args.faces,
-        geocode=not args.no_geocode,
-        recompute=args.recompute,
-        workers=workers,
-        embed=args.embed,
-        progress=progress,
-    )
+    try:
+        stats = index_path(
+            config, root,
+            backend_name=args.faces,
+            geocode=not args.no_geocode,
+            recompute=args.recompute,
+            workers=workers,
+            embed=args.embed,
+            progress=progress,
+            accept_model_change=args.accept_model_change,
+        )
+    except db.ModelMismatchError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     print()
     print(
         f"Done: {stats.indexed} indexed, {stats.skipped} skipped, "
@@ -197,12 +202,21 @@ def _cmd_embed(args) -> int:
 
     print("Computing SigLIP image embeddings for semantic search ...")
     try:
-        n = embed_library(config, recompute=args.recompute, progress=progress)
+        n = embed_library(
+            config, recompute=args.recompute, progress=progress,
+            accept_model_change=args.accept_model_change,
+        )
         print(f"\nDone: {n} photo(s) embedded.")
         # Per-person grounding: also embed the region around each named/unnamed face
         # so a hybrid query ("Stefano eating food") can score the person's region.
         print("Computing per-face region embeddings for per-person grounding ...")
-        m = embed_face_regions(config, recompute=args.recompute, progress=region_progress)
+        m = embed_face_regions(
+            config, recompute=args.recompute, progress=region_progress,
+            accept_model_change=args.accept_model_change,
+        )
+    except db.ModelMismatchError as exc:
+        print(f"\nerror: {exc}", file=sys.stderr)
+        return 2
     except Exception as exc:  # noqa: BLE001 - surface a clean message, not a traceback
         print(
             f"\nerror: could not build embeddings ({type(exc).__name__}: {exc}). "
@@ -354,6 +368,11 @@ def build_parser() -> argparse.ArgumentParser:
              "semantic search",
     )
     p_index.add_argument(
+        "--accept-model-change", action="store_true",
+        help="Allow switching the catalog's recorded face/embedding model "
+             "(use when deliberately rebuilding everything with the new model)",
+    )
+    p_index.add_argument(
         "--workers", type=int, default=None,
         help="Worker processes for decode/detect (default: CPU count; 1 = serial)",
     )
@@ -392,6 +411,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_embed.add_argument(
         "--recompute", action="store_true", help="Re-embed photos that already have an embedding"
+    )
+    p_embed.add_argument(
+        "--accept-model-change", action="store_true",
+        help="Allow switching the catalog's recorded face/embedding model "
+             "(use when deliberately rebuilding everything with the new model)",
     )
     p_embed.set_defaults(func=_cmd_embed)
 
