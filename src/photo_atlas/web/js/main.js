@@ -1,5 +1,6 @@
 // Entry point: event wiring and initial load.
 import { api } from "./api.js";
+import { setupRecognize } from "./clusters.js";
 import { bulkAction, bulkExport, renderPhotos, repaintSelection, setSelectMode, updateSelectionBar } from "./grid.js";
 import { applyLbZoom, closeHelp, closeLightbox, focusableInLightbox, helpOpen, lbZoom, lightboxStep, resetLbZoom, toggleHelp, toggleSlideshow, zoomBy } from "./lightbox.js";
 import { setSearchMode } from "./search.js";
@@ -35,6 +36,8 @@ if ($("#lb-help")) $("#lb-help").onclick = toggleHelp;
 
 // Scroll/drag zoom + pan on the image stage. Wired once; the handlers no-op
 // unless the lightbox is open. Drag panning only kicks in past 1× zoom.
+setupRecognize();
+
 (function setupLbZoom() {
   const stage = $(".lb-img");
   if (!stage || !stage.addEventListener) return;

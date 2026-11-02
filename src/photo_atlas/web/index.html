@@ -120,6 +120,11 @@ photo-atlas serve              # browse, filter, and name people</code></pre>
       </div>
 
       <div id="view-clusters" role="tabpanel" aria-labelledby="tab-clusters" style="display:none">
+        <div class="recognize-bar">
+          <button id="recognize-btn" class="primary" type="button">✨ Auto-tag faces from my names</button>
+          <span id="recognize-status" class="tagline" aria-live="polite">Applies the names you've
+            confirmed to every other face already indexed — no re-indexing.</span>
+        </div>
         <section id="review-section" style="display:none">
           <h3 style="margin:0 0 4px">Review guesses</h3>
           <p class="tagline">Low-confidence auto-tags. Confirm the right ones; reject the rest to teach

@@ -44,6 +44,47 @@ async function renderReview() {
   }
 }
 
+// "Looks like Anna" banner for a cluster whose faces resemble someone you've named.
+function suggestionHtml(s) {
+  if (!s || !s.name) return "";
+  const weak = s.agreement < 0.6;
+  return `<div class="suggest${weak ? " weak" : ""}">
+      Looks like <strong>${esc(s.name)}</strong>
+      <span class="conf">${Math.round(s.confidence * 100)}% match${weak ? " · mixed group" : ""}</span><br/>
+      <button class="primary" data-act="accept">✓ Yes, it's ${esc(s.name)}</button>
+    </div>`;
+}
+
+// "Auto-tag": run recognition over the whole catalog from the people you've confirmed.
+export function setupRecognize() {
+  const btn = $("#recognize-btn");
+  if (!btn) return;
+  btn.onclick = async () => {
+    const status = $("#recognize-status");
+    btn.disabled = true;
+    status.textContent = "Matching faces…";
+    try {
+      const r = await api("/api/faces/recognize", { method: "POST" });
+      if (!r.enrolled) {
+        status.textContent = "Name a few people first (below), then run this again.";
+      } else {
+        const bits = [`Tagged ${r.tagged} more face${r.tagged === 1 ? "" : "s"}`];
+        if (r.people) bits.push(`across ${r.people} ${r.people === 1 ? "person" : "people"}`);
+        if (r.retagged) bits.push(`${r.retagged} corrected`);
+        if (r.cleared) bits.push(`${r.cleared} weak guess${r.cleared === 1 ? "" : "es"} cleared`);
+        if (r.need_review) bits.push(`${r.need_review} to double-check under “Review guesses”`);
+        status.textContent = bits.join(" · ") + ".";
+      }
+      await renderClusters();
+      renderSidebar();
+    } catch (e) {
+      status.textContent = "Couldn't run recognition.";
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
+
 export async function renderClusters() {
   renderReview();
   const { clusters } = await api("/api/clusters");
@@ -58,12 +99,23 @@ export async function renderClusters() {
         ${c.samples.map((s) => `<img src="/api/face/${s.id}" onerror="this.style.visibility='hidden'"/>`).join("")}
       </div>
       <div class="sub">${c.size} faces</div>
+      ${suggestionHtml(c.suggestion)}
       <div class="row">
         <input placeholder="Who is this?" />
         <button class="primary">Name</button>
       </div>`;
+    const accept = el.querySelector('[data-act="accept"]');
+    if (accept) {
+      accept.onclick = async () => {
+        await api(`/api/clusters/${c.cluster_id}/assign`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ person_id: c.suggestion.person_id }),
+        });
+        renderClusters(); renderSidebar();
+      };
+    }
     const input = el.querySelector("input");
-    el.querySelector("button").onclick = async () => {
+    el.querySelector(".row button").onclick = async () => {
       if (!input.value.trim()) return;
       await api(`/api/clusters/${c.cluster_id}/assign`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -71,7 +123,7 @@ export async function renderClusters() {
       });
       renderClusters(); renderSidebar();
     };
-    input.addEventListener("keydown", (e) => e.key === "Enter" && el.querySelector("button").click());
+    input.addEventListener("keydown", (e) => e.key === "Enter" && el.querySelector(".row button").click());
     wrap.appendChild(el);
   }
 }

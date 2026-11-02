@@ -58,7 +58,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 
 | Module | Role |
 | --- | --- |
-| `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `empty-trash`, `restore`, `calibrate-faces`, `eval-faces`, `eval-search`, `eval-init-queries`, `export-labels`, `demo`) |
+| `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `empty-trash`, `restore`, `recognize`, `calibrate-faces`, `eval-faces`, `eval-search`, `eval-init-queries`, `export-labels`, `demo`) |
 | `config.py` | `AtlasConfig` — library paths + tunables (`~/.photo_atlas`, `PHOTO_ATLAS_HOME`) |
 | `db.py` | SQLite schema, additive migrations (`_migrate`), embedding (de)serialisation. `PHOTO_COLUMNS` is the single source of truth for writable photo columns |
 | `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Housekeeping (`sweep_orphan_derivatives`, `prune_library`, `delete_photos`, `empty_trash`, `restore_trash`, `export_photos`, `cluster_library`, `calibrate_faces`) lives in `housekeeping.py` and is re-exported here. Also `embed_library`, `embed_face_regions` (per-person grounding backfill), `region_box` (face→person-region geometry), `backfill_phashes`, `retag_scenes`; `delete_photos` moves originals to `trash_dir` (purged by `empty_trash` / CLI `empty-trash`, put back by `restore_trash` / CLI `restore [ids]`, which never overwrites), `export_photos` copies a selection's originals to a folder |
@@ -138,6 +138,14 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   faces. ONNX providers: `PHOTO_ATLAS_PROVIDERS` (auto = CUDA/DirectML if present).
 - **Facet filters accept a scalar or a list** (OR within a facet, AND across facets).
   Semantic search is a *ranking* layered on top, via the `text` query param.
+- **Human-confirmed = `faces.confidence >= 1.0`**, however it got there (`assign_face`,
+  `assign_cluster`, confirming a guess; migration v2 promoted faces named through clusters
+  before this was true). Enrolment (`indexer._load_enrollment`), `calibrate-faces`, `eval-faces`
+  and `--recompute` carry-over use only those; unconfirmed auto-tags are never ground truth.
+  `housekeeping.recognize_faces` (CLI `recognize`, `POST /api/faces/recognize`, the “Auto-tag”
+  button) re-runs k-NN over the **stored** embeddings for every non-confirmed face, so naming
+  someone reaches already-indexed photos without re-indexing. Cluster cards come from
+  `library.list_clusters` (samples = faces closest to the centroid; `suggestion` = “looks like X”).
 - **Face active learning:** correcting an auto-tag (un/reassign) records a
   `face_negatives` row; `_load_enrollment` feeds those into `Enrollment` so
   `knn_person_match` penalises a rejected identity. A human `assign_face` sets

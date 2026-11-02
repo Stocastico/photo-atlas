@@ -36,6 +36,17 @@ const ok = (cond, msg) => {
     if (view === "map") ok((await page.locator("#map .leaflet-container, #map.leaflet-container").count()) > 0, "map initialises leaflet");
   }
 
+  // "Auto-tag faces from my names": reports an outcome (the demo has no confirmed faces yet).
+  await page.click('.tab[data-view="clusters"]');
+  await page.waitForSelector("#recognize-btn");
+  await page.click("#recognize-btn");
+  await page.waitForFunction(
+    () => /Name a few people first|Tagged/.test(document.querySelector("#recognize-status").textContent),
+    null, { timeout: 5000 });
+  ok(!(await page.isDisabled("#recognize-btn")), "auto-tag button is re-enabled afterwards");
+  await page.click('.tab[data-view="photos"]');
+  await page.waitForTimeout(300);
+
   // Sidebar filter -> URL state + fewer-or-equal results; clear restores.
   await page.waitForSelector("#sidebar .chip", { timeout: 5000 });
   await page.locator("#sidebar .chip").first().click();

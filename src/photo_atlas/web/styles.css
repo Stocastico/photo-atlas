@@ -176,6 +176,11 @@ button.icon { padding: 6px 9px; line-height: 1; }
 /* active-learning review queue */
 #review-section { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
 .review-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.recognize-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.cluster-card .suggest { background: var(--panel-2); border-radius: 10px; padding: 8px; margin: 8px 0; font-size: 13px; }
+.cluster-card .suggest.weak { opacity: .75; }
+.cluster-card .suggest .conf { color: var(--muted); font-size: 12px; }
+.cluster-card .suggest button { margin-top: 6px; font-size: 12px; padding: 5px 9px; }
 .review-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; text-align: center; }
 .review-card img { width: 84px; height: 84px; border-radius: 10px; object-fit: cover; background: var(--panel-2); }
 .review-card .sub { color: var(--muted); font-size: 12px; margin: 6px 0; }

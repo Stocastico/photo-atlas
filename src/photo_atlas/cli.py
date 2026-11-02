@@ -147,6 +147,28 @@ def _cmd_restore(args) -> int:
     return 1 if result["conflicts"] else 0
 
 
+def _cmd_recognize(args) -> int:
+    from .housekeeping import recognize_faces
+
+    config = _config(args)
+    r = recognize_faces(config, dry_run=args.dry_run)
+    if r["enrolled"] == 0:
+        print("No confirmed faces yet: name some people first (web UI → Name faces), "
+              "then run this again.")
+        return 1
+    verb = "Would tag" if args.dry_run else "Tagged"
+    print(f"{verb} {r['tagged']} previously unnamed face(s) across {r['people']} people "
+          f"(learned from {r['enrolled']} confirmed faces); retagged {r['retagged']}, "
+          f"cleared {r['cleared']} guess(es) that no longer match.")
+    if r["need_review"]:
+        print(f"{r['need_review']} guess(es) are below {r['review_confidence']:.0%} "
+              "confidence: check them in the web UI (Name faces → Review guesses).")
+    if r["skipped_dim"]:
+        print(f"Skipped {r['skipped_dim']} face(s) from a different face model "
+              "(re-index them with --recompute --accept-model-change).")
+    return 0
+
+
 def _cmd_calibrate_faces(args) -> int:
     from .housekeeping import calibrate_faces
 
@@ -505,6 +527,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_eq = sub.add_parser("eval-init-queries", help="Write a template queries file for eval-search")
     p_eq.add_argument("file", help="where to write the template")
     p_eq.set_defaults(func=_cmd_eval_init_queries)
+
+    p_rec = sub.add_parser(
+        "recognize",
+        help="Name the faces already indexed using the people you've confirmed (no re-index)",
+    )
+    p_rec.add_argument("--dry-run", action="store_true", help="show what would change")
+    p_rec.set_defaults(func=_cmd_recognize)
 
     p_cal = sub.add_parser(
         "calibrate-faces",
