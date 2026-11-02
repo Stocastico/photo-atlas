@@ -452,8 +452,8 @@ class SearchCandidate:
     size_mb: float | None = None
 
 
+def load_upright_pil(path: Path | str):
     """Open a photo EXIF-upright as RGB (as the indexer feeds encoders); ``None`` on failure."""
-    """Open a photo EXIF-upright as RGB (what the indexer feeds the encoder); ``None`` on failure."""
 
     from PIL import Image, ImageOps  # noqa: PLC0415
 
