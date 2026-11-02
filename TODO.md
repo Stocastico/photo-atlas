@@ -154,9 +154,16 @@ these items are the genuinely new pieces.
 - [x] Embeddings stamped with their model; mixing refused (`--accept-model-change`); text search 409s when stale.
 - [x] Hugging Face downloads pinned to a commit + SHA-256 (verified live on the tokenizer). Fixed docs/messages citing a dead `PHOTO_ATLAS_TEXT_MODEL` env var.
 
+### Model evaluation + platforms (2026-11-02)
+- [x] `eval-faces` / `eval-search` / `eval-init-queries` (`evaluate.py`): verification + identification on human-named faces, retrieval on your queries + label-free burst check; checksum-pinned presets (AuraFace, SigLIP 2 fp16/base-384/large-384/so400m-384).
+- [x] macOS (arm64) and Windows in CI; NFC names, Windows-safe replace/unlink, console encoding, worker cap.
+
 ### Open
 - [ ] Pin YuNet / SFace (OpenCV Zoo) by SHA-256 — GitHub was unreachable from the dev sandbox.
-- [ ] Model bake-off on a real slice of the library (fp16/fp32 vs int8 SigLIP, larger SigLIP 2, ArcFace R50 speed/accuracy) following `MODELS.md`; needs the user's photos + named people as ground truth.
+- [ ] **Run the bake-off** on the real library with the new `eval-*` commands (needs the user's photos, named people and a queries file) and decide on a default; then, if a larger SigLIP 2 wins, rebuild `scene_labels.npz` for it.
+- [ ] Real-hardware checks on macOS/Windows (CI uses stub models): GPU providers (DirectML/CoreML), HEIC, long Windows paths.
+- [ ] Evaluate Meta's Perception Encoder (Apache-2.0, claims better zero-shot than SigLIP 2) once an ONNX export exists; MobileCLIP2/jina-clip-v2/EdgeFace are research/non-commercial licensed.
+- [ ] Case-insensitive search for non-ASCII capitals (SQLite `LIKE` only folds ASCII).
 - [ ] Query-time prompt template ("this is a photo of …") for short semantic queries — measure before adopting.
 - [ ] Verify the InsightFace licence text upstream before any redistribution (`PACKAGING.md`).
 
