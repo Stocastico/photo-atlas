@@ -319,6 +319,7 @@ photo-atlas embed [--recompute] [--accept-model-change]   # backfill semantic-se
 photo-atlas dedup [--recompute]     # backfill perceptual hashes (Duplicates tab)
 photo-atlas retag-scenes            # recompute scene tags in place (from stored embeddings)
 photo-atlas recognize [--dry-run]   # tag already-indexed faces from the people you've named
+photo-atlas face-quality            # score older faces so the clearest ones lead previews/covers
 photo-atlas calibrate-faces         # suggest face-match thresholds from people you named
 photo-atlas eval-faces / eval-search / eval-init-queries   # compare models on your library (MODELS.md)
 photo-atlas empty-trash             # permanently delete files removed via the web UI

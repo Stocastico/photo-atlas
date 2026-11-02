@@ -15,7 +15,9 @@ from . import db
 from . import faces as faces_module
 from .config import AtlasConfig
 from .faces import (
+    cap_confidence_for_quality,
     cluster_embeddings,
+    face_quality,
     knn_person_match,
 )
 from .fsutil import unlink_quietly
@@ -279,7 +281,9 @@ def cluster_library(config: AtlasConfig) -> dict[str, int]:
     conn = db.connect(config.db_path)
     try:
         rows = conn.execute(
-            "SELECT id, embedding FROM faces WHERE person_id IS NULL AND embedding IS NOT NULL"
+            "SELECT id, embedding FROM faces WHERE person_id IS NULL AND embedding IS NOT NULL "
+            "AND (quality IS NULL OR quality >= ?)",
+            (config.min_face_quality,),
         ).fetchall()
         ids = [int(r["id"]) for r in rows]
         # The WHERE clause guarantees non-NULL embeddings, so each decodes to an
@@ -367,14 +371,16 @@ def recognize_faces(config: AtlasConfig, *, dry_run: bool = False) -> dict:
     }
     conn = db.connect(config.db_path)
     try:
-        enrollment = _load_enrollment(conn)
+        enrollment = _load_enrollment(conn, config.min_face_quality)
         result["enrolled"] = int(enrollment.person_ids.size)
         if enrollment.is_empty:
             return result
         dim = int(enrollment.embeddings.shape[1])
         rows = conn.execute(
-            "SELECT id, person_id, confidence, embedding FROM faces "
-            "WHERE embedding IS NOT NULL AND (confidence IS NULL OR confidence < 1.0)"
+            "SELECT id, person_id, confidence, embedding, quality FROM faces "
+            "WHERE embedding IS NOT NULL AND (confidence IS NULL OR confidence < 1.0) "
+            "AND (quality IS NULL OR quality >= ?)",
+            (config.min_face_quality,),
         ).fetchall()
         updates: list[tuple[int | None, float, int]] = []
         newly: set[int] = set()
@@ -388,6 +394,11 @@ def recognize_faces(config: AtlasConfig, *, dry_run: bool = False) -> dict:
                 vec, enrollment, k=config.recognition_k, threshold=config.face_match_threshold
             )
             old, old_conf = r["person_id"], r["confidence"] or 0.0
+            conf = cap_confidence_for_quality(
+                conf, r["quality"],
+                review_confidence=config.review_confidence,
+                review_quality=config.review_quality,
+            )
             if pid is None:
                 if old is None:
                     result["unchanged"] += 1
@@ -419,3 +430,41 @@ def recognize_faces(config: AtlasConfig, *, dry_run: bool = False) -> dict:
         return result
     finally:
         conn.close()
+
+
+def backfill_face_quality(config: AtlasConfig, *, progress=None) -> int:
+    """Score faces indexed before quality existed, from their saved crops.
+
+    A crop has no landmarks, so pose is left neutral; size comes from the stored box and
+    sharpness from the crop itself. Faces whose crop file is missing stay unscored (they
+    are never excluded or demoted). Returns the number of faces scored.
+    """
+
+    import cv2  # noqa: PLC0415
+
+    conn = db.connect(config.db_path)
+    scored = 0
+    try:
+        rows = conn.execute(
+            "SELECT id, crop_path, bbox_w, bbox_h FROM faces "
+            "WHERE quality IS NULL AND crop_path IS NOT NULL"
+        ).fetchall()
+        for i, r in enumerate(rows):
+            crop = cv2.imread(str(r["crop_path"]))
+            if crop is None:
+                continue
+            h, w = crop.shape[:2]
+            side = min(r["bbox_w"] or w, r["bbox_h"] or h)
+            conn.execute(
+                "UPDATE faces SET quality=? WHERE id=?",
+                (face_quality(crop, (0, 0, w, h), None, side=float(side)), r["id"]),
+            )
+            scored += 1
+            if scored % 500 == 0:
+                conn.commit()
+            if progress is not None:
+                progress(i + 1, len(rows))
+        conn.commit()
+    finally:
+        conn.close()
+    return scored

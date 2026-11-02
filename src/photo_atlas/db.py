@@ -95,7 +95,8 @@ CREATE TABLE IF NOT EXISTS faces (
     crop_path   TEXT,
     confidence  REAL,
     region_embedding BLOB,      -- SigLIP embedding of the person region (for grounding)
-    region_dim       INTEGER    -- length of ``region_embedding`` (NULL when not embedded)
+    region_dim       INTEGER,   -- length of ``region_embedding`` (NULL when not embedded)
+    quality          REAL       -- 0-1 recognition usefulness (size/sharpness/pose); NULL = unscored
 );
 
 -- Face active-learning: a "not this person" negative recorded when the user
@@ -268,6 +269,16 @@ def _migrate_to_v2(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_to_v3(conn: sqlite3.Connection) -> None:
+    """Per-face quality score (filled at index time; ``photo-atlas face-quality`` backfills)."""
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "faces" in tables:
+        fcols = {r["name"] for r in conn.execute("PRAGMA table_info(faces)")}
+        if "quality" not in fcols:
+            conn.execute("ALTER TABLE faces ADD COLUMN quality REAL")
+
+
 #: Ordered ``(version, fn)`` catalog migrations, applied once each and recorded in
 #: ``PRAGMA user_version``. Append new entries (and bump ``SCHEMA_VERSION``) instead
 #: of adding ad-hoc column probes. A migration runs *before* the schema script, so on
@@ -275,8 +286,9 @@ def _migrate_to_v2(conn: sqlite3.Connection) -> None:
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _migrate_to_v1),
     (2, _migrate_to_v2),
+    (3, _migrate_to_v3),
 ]
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -653,8 +665,8 @@ def replace_faces(conn: sqlite3.Connection, photo_id: int, faces: Iterable[dict]
         conn.execute(
             "INSERT INTO faces (photo_id, person_id, cluster_id, bbox_x, bbox_y, "
             "bbox_w, bbox_h, dim, embedding, crop_path, confidence, "
-            "region_embedding, region_dim) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "region_embedding, region_dim, quality) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 photo_id,
                 f.get("person_id"),
@@ -666,6 +678,7 @@ def replace_faces(conn: sqlite3.Connection, photo_id: int, faces: Iterable[dict]
                 f.get("confidence"),
                 f.get("region_embedding"),
                 f.get("region_dim"),
+                f.get("quality"),
             ),
         )
     conn.execute("UPDATE photos SET face_count=? WHERE id=?", (len(rows), photo_id))

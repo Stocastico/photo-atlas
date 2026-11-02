@@ -30,7 +30,7 @@ def list_persons(conn: sqlite3.Connection) -> list[dict]:
         "            AND f0.crop_path IS NOT NULL), "
         "         (SELECT f2.id FROM faces f2 "
         "          WHERE f2.person_id = pr.id AND f2.crop_path IS NOT NULL "
-        "          ORDER BY f2.id LIMIT 1)"
+        "          ORDER BY COALESCE(f2.quality, 0.6) DESC, f2.id LIMIT 1)"
         "       ) AS cover_face_id, "
         "       COUNT(f.id) AS face_count, "
         "       COUNT(DISTINCT f.photo_id) AS photo_count "
@@ -202,8 +202,8 @@ def list_clusters(
 ) -> list[dict]:
     """Unnamed face clusters, largest first, ready to be named in one click.
 
-    ``samples`` are the six **most typical** faces (closest to the cluster centroid),
-    not simply the first ids, so the card shows who the cluster really is rather than
+    ``samples`` are the six **most typical, best-quality** faces (close to the centroid and
+    legible), not simply the first ids, so the card shows who the cluster really is rather than
     its outliers. With an ``enrollment`` of confirmed people, a cluster whose centroid
     matches one gets a ``suggestion`` (``person_id``, ``name``, ``confidence`` and
     ``agreement`` = share of up to 12 typical members that match the same person).
@@ -224,7 +224,7 @@ def list_clusters(
     clusters = []
     for g in groups:
         rows = conn.execute(
-            "SELECT id, photo_id, crop_path, embedding FROM faces "
+            "SELECT id, photo_id, crop_path, embedding, quality FROM faces "
             "WHERE cluster_id=? AND person_id IS NULL ORDER BY id",
             (g["cluster_id"],),
         ).fetchall()
@@ -235,7 +235,13 @@ def list_clusters(
         if usable and len({cast(np.ndarray, embs[i]).shape[0] for i in usable}) == 1:
             mat = np.vstack([l2_normalize(cast(np.ndarray, embs[i])) for i in usable])
             centroid = l2_normalize(mat.mean(axis=0))
-            ranked = [usable[j] for j in np.argsort(-(mat @ centroid), kind="stable")]
+            # Most typical *and* most legible: closeness to the centroid, discounted by
+            # quality (an unscored face counts as middling).
+            quality = np.array([
+                0.6 if rows[i]["quality"] is None else rows[i]["quality"] for i in usable
+            ])
+            score = (mat @ centroid) * (0.5 + 0.5 * quality)
+            ranked = [usable[j] for j in np.argsort(-score, kind="stable")]
             order = ranked + [i for i in range(len(rows)) if i not in set(usable)]
         entry: dict = {
             "cluster_id": int(g["cluster_id"]),

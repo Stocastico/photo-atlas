@@ -147,6 +147,20 @@ def _cmd_restore(args) -> int:
     return 1 if result["conflicts"] else 0
 
 
+def _cmd_face_quality(args) -> int:
+    from .housekeeping import backfill_face_quality
+
+    config = _config(args)
+
+    def progress(done: int, total: int) -> None:
+        sys.stdout.write(f"\r  scored {done}/{total}")
+        sys.stdout.flush()
+
+    n = backfill_face_quality(config, progress=progress)
+    print(f"\nScored {n} face(s). Best faces now lead cluster previews and person covers.")
+    return 0
+
+
 def _cmd_recognize(args) -> int:
     from .housekeeping import recognize_faces
 
@@ -527,6 +541,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_eq = sub.add_parser("eval-init-queries", help="Write a template queries file for eval-search")
     p_eq.add_argument("file", help="where to write the template")
     p_eq.set_defaults(func=_cmd_eval_init_queries)
+
+    p_fq = sub.add_parser(
+        "face-quality", help="Score faces indexed before quality existed (from their saved crops)"
+    )
+    p_fq.set_defaults(func=_cmd_face_quality)
 
     p_rec = sub.add_parser(
         "recognize",

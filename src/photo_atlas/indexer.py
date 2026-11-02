@@ -37,6 +37,8 @@ from .embed import SigLipImageEncoder
 from .faces import (
     Enrollment,
     FaceBackend,
+    cap_confidence_for_quality,
+    face_quality,
     get_backend,
     knn_person_match,
     pil_to_bgr,
@@ -97,7 +99,7 @@ _MAX_ERRORS = 50
 _Bytes = bytes
 
 
-def _load_enrollment(conn: sqlite3.Connection) -> Enrollment:
+def _load_enrollment(conn: sqlite3.Connection, min_quality: float = 0.0) -> Enrollment:
     """Collect every human-confirmed named face for k-NN auto-recognition.
 
     Unlike the old per-person centroid, this keeps each enrolled face as its own
@@ -109,7 +111,9 @@ def _load_enrollment(conn: sqlite3.Connection) -> Enrollment:
     # unconfirmed auto-tags too would let one wrong guess attract more wrong guesses.
     rows = conn.execute(
         "SELECT person_id, embedding FROM faces "
-        "WHERE person_id IS NOT NULL AND confidence >= 1.0 AND embedding IS NOT NULL"
+        "WHERE person_id IS NOT NULL AND confidence >= 1.0 AND embedding IS NOT NULL "
+        "AND (quality IS NULL OR quality >= ?)",
+        (min_quality,),
     ).fetchall()
     pairs: list[tuple[int, np.ndarray]] = []
     for row in rows:
@@ -155,6 +159,8 @@ class _PreparedFace:
     #: embeddings were requested (the same ``image_encoder`` that embeds the photo).
     region_embedding_blob: bytes | None = None
     region_dim: int | None = None
+    #: 0-1 recognition usefulness (``faces.face_quality``); ``None`` if unscorable.
+    quality: float | None = None
 
 
 @dataclass
@@ -388,6 +394,14 @@ def _prepare_photo(
                     k=config.recognition_k, threshold=config.face_match_threshold,
                 )
             x, y, w, h = obs.bbox
+            quality = obs.quality
+            if quality is None and bgr is not None:  # no landmarks (dlib, synthetic)
+                quality = face_quality(bgr, obs.bbox)
+            confidence = cap_confidence_for_quality(
+                confidence, quality,
+                review_confidence=config.review_confidence,
+                review_quality=config.review_quality,
+            )
             # Per-person grounding: embed the region around this face in the same
             # SigLIP space as the photo/text embeddings, so a hybrid query can score
             # *this person's* region. Only when embeddings are on (same encoder).
@@ -409,6 +423,7 @@ def _prepare_photo(
                     confidence=confidence,
                     region_embedding_blob=region_blob,
                     region_dim=region_dim,
+                    quality=quality,
                 )
             )
 
@@ -588,6 +603,7 @@ def _commit_prepared(
                 "confidence": face.confidence,
                 "region_embedding": face.region_embedding_blob,
                 "region_dim": face.region_dim,
+                "quality": face.quality,
             }
         )
 
@@ -960,7 +976,7 @@ def index_path(
     stats = IndexStats()
 
     try:
-        enrollment = _load_enrollment(conn)
+        enrollment = _load_enrollment(conn, config.min_face_quality)
         existing = {
             r["path"] for r in conn.execute("SELECT path FROM photos").fetchall()
         }

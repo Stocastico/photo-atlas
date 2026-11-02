@@ -724,7 +724,8 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
     def api_clusters(conn: sqlite3.Connection = Depends(get_conn)):
         from . import indexer
 
-        enrollment = indexer._load_enrollment(conn)  # confirmed faces -> "looks like X"
+        # confirmed faces -> "looks like X"
+        enrollment = indexer._load_enrollment(conn, config.min_face_quality)
         return {"clusters": library.list_clusters(
             conn,
             enrollment=None if enrollment.is_empty else enrollment,

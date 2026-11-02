@@ -58,7 +58,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 
 | Module | Role |
 | --- | --- |
-| `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `empty-trash`, `restore`, `recognize`, `calibrate-faces`, `eval-faces`, `eval-search`, `eval-init-queries`, `export-labels`, `demo`) |
+| `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `empty-trash`, `restore`, `recognize`, `face-quality`, `calibrate-faces`, `eval-faces`, `eval-search`, `eval-init-queries`, `export-labels`, `demo`) |
 | `config.py` | `AtlasConfig` — library paths + tunables (`~/.photo_atlas`, `PHOTO_ATLAS_HOME`) |
 | `db.py` | SQLite schema, additive migrations (`_migrate`), embedding (de)serialisation. `PHOTO_COLUMNS` is the single source of truth for writable photo columns |
 | `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Housekeeping (`sweep_orphan_derivatives`, `prune_library`, `delete_photos`, `empty_trash`, `restore_trash`, `export_photos`, `cluster_library`, `calibrate_faces`) lives in `housekeeping.py` and is re-exported here. Also `embed_library`, `embed_face_regions` (per-person grounding backfill), `region_box` (face→person-region geometry), `backfill_phashes`, `retag_scenes`; `delete_photos` moves originals to `trash_dir` (purged by `empty_trash` / CLI `empty-trash`, put back by `restore_trash` / CLI `restore [ids]`, which never overwrites), `export_photos` copies a selection's originals to a folder |
@@ -146,6 +146,13 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   button) re-runs k-NN over the **stored** embeddings for every non-confirmed face, so naming
   someone reaches already-indexed photos without re-indexing. Cluster cards come from
   `library.list_clusters` (samples = faces closest to the centroid; `suggestion` = “looks like X”).
+- **Face quality** (`faces.quality`, 0-1, schema v3): `faces.face_quality` blends size,
+  Laplacian sharpness and landmark-based pose (geometric mean; constants are sensible defaults,
+  not tuned). Set at index time (`FaceObservation.quality`, fallback size+sharpness for backends
+  without landmarks), backfilled from crops by `face-quality`. Used to (a) lead cluster previews and
+  person covers with legible faces, (b) force guesses on poor faces (`review_quality`, 0.35) into
+  “Review guesses” via `cap_confidence_for_quality`, and (c) optionally gate enrolment/clustering/
+  auto-tagging with `PHOTO_ATLAS_MIN_FACE_QUALITY` (default 0 = off; unscored faces are never excluded).
 - **Face active learning:** correcting an auto-tag (un/reassign) records a
   `face_negatives` row; `_load_enrollment` feeds those into `Enrollment` so
   `knn_person_match` penalises a rejected identity. A human `assign_face` sets

@@ -86,6 +86,19 @@ class AtlasConfig:
         default_factory=lambda: _env_number("PHOTO_ATLAS_DETECT_MAX_SIDE", 1280, int)
     )
 
+    #: Faces scoring below this (0-1, see ``faces.face_quality``) are not learned from
+    #: (enrolment), not clustered and not auto-tagged. 0 disables the gate; unscored
+    #: faces (older catalogs) are never excluded. ``PHOTO_ATLAS_MIN_FACE_QUALITY``.
+    min_face_quality: float = field(
+        default_factory=lambda: _env_number("PHOTO_ATLAS_MIN_FACE_QUALITY", 0.0, float)
+    )
+
+    #: Auto-tags on faces scoring below this are always routed to "Review guesses",
+    #: however confident the match looks. ``PHOTO_ATLAS_REVIEW_QUALITY``.
+    review_quality: float = field(
+        default_factory=lambda: _env_number("PHOTO_ATLAS_REVIEW_QUALITY", 0.35, float)
+    )
+
     #: Faces whose shorter side is below this many full-resolution pixels are
     #: ignored: ArcFace embeddings of tiny faces are unreliable and pollute clusters.
     #: ``PHOTO_ATLAS_MIN_FACE_PX`` (0 disables).
