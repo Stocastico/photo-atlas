@@ -58,7 +58,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 
 | Module | Role |
 | --- | --- |
-| `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `empty-trash`, `restore`, `calibrate-faces`, `export-labels`, `demo`) |
+| `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `empty-trash`, `restore`, `calibrate-faces`, `eval-faces`, `eval-search`, `eval-init-queries`, `export-labels`, `demo`) |
 | `config.py` | `AtlasConfig` — library paths + tunables (`~/.photo_atlas`, `PHOTO_ATLAS_HOME`) |
 | `db.py` | SQLite schema, additive migrations (`_migrate`), embedding (de)serialisation. `PHOTO_COLUMNS` is the single source of truth for writable photo columns |
 | `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Housekeeping (`sweep_orphan_derivatives`, `prune_library`, `delete_photos`, `empty_trash`, `restore_trash`, `export_photos`, `cluster_library`, `calibrate_faces`) lives in `housekeeping.py` and is re-exported here. Also `embed_library`, `embed_face_regions` (per-person grounding backfill), `region_box` (face→person-region geometry), `backfill_phashes`, `retag_scenes`; `delete_photos` moves originals to `trash_dir` (purged by `empty_trash` / CLI `empty-trash`, put back by `restore_trash` / CLI `restore [ids]`, which never overwrites), `export_photos` copies a selection's originals to a folder |
@@ -76,6 +76,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 | `geocode.py` / `folder_meta.py` | GPS→city/country; year/place mined from folder names (incl. a month from a yearless named-month subfolder, e.g. `2026/01-gennaio`) |
 | `library.py` | person/cluster management (rename/merge/cover/assign) |
 | `api.py` | FastAPI app (`create_app`); media + JSON endpoints; cross-origin write guard; caches the semantic index + text encoder |
+| `evaluate.py` | model evaluation harness behind `eval-*`: pure metrics (`verification_metrics`, `identification_metrics`, `rank_metrics`), `evaluate_faces` (named faces re-detected once, embedded by every candidate), `evaluate_search` (user queries + label-free burst check), candidate builders/presets |
 | `models.py` | on-demand model downloads (YuNet/ArcFace/SFace + SigLIP 2) with env overrides; `ensure_arcface_models` (default), `ensure_models` (SFace), `ensure_scene_input_size` |
 | `web/` | `index.html` + `styles.css` + native **ES modules** in `web/js/` (`main.js` entry; `state`/`api`/`filters`/`urlstate`/`sidebar`/`grid`/`lightbox`/one module per view), Leaflet vendored locally; **no build step**. Modules import each other cyclically (function declarations only — no import-time side effects outside `main.js`); a `let` can't be reassigned from another module, so expose a setter (see `urlstate.setRestoringState`) |
 

@@ -291,6 +291,7 @@ photo-atlas embed [--recompute] [--accept-model-change]   # backfill semantic-se
 photo-atlas dedup [--recompute]     # backfill perceptual hashes (Duplicates tab)
 photo-atlas retag-scenes            # recompute scene tags in place (from stored embeddings)
 photo-atlas calibrate-faces         # suggest face-match thresholds from people you named
+photo-atlas eval-faces / eval-search / eval-init-queries   # compare models on your library (MODELS.md)
 photo-atlas empty-trash             # permanently delete files removed via the web UI
 photo-atlas restore [IDS…]          # put trashed originals back (never overwrites)
 photo-atlas prune                   # drop dead rows + sweep orphaned derivatives
