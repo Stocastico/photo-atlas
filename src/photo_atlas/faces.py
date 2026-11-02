@@ -499,23 +499,17 @@ def get_backend(
 
 
 # -- threshold calibration ------------------------------------------------
-def calibrate_threshold(
+def sample_pair_distances(
     embeddings: np.ndarray,
     person_ids: np.ndarray,
     *,
     max_pairs: int = 200_000,
     seed: int = 0,
-    max_false_accept: float = 0.001,
-) -> dict | None:
-    """Derive recognition thresholds from faces whose identity is known.
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Sample cosine distances of **genuine** (same person) and **impostor** pairs.
 
-    Samples **genuine** pairs (two faces of the same person) and **impostor** pairs
-    (faces of different people), and measures their cosine distances. The match
-    threshold is the distance at which only ``max_false_accept`` of impostor pairs
-    would still be accepted (clamped to 0.2-0.7); ``recall`` is the share of genuine
-    pairs it keeps. ``review_confidence`` is set so only matches worse than ~90% of
-    genuine ones land in the "Review guesses" list. Returns ``None`` when there is no
-    genuine or no impostor pair to learn from. Deterministic for a given ``seed``.
+    Returns ``(genuine, impostor)`` or ``None`` when there is no person with two
+    faces, or fewer than two people. Deterministic for a given ``seed``.
     """
 
     emb = np.asarray(embeddings, dtype=np.float32)
@@ -547,6 +541,32 @@ def calibrate_threshold(
     impostor = _pair_distances(emb, i[keep][:max_pairs], j[keep][:max_pairs])
     if impostor.size == 0:
         return None
+    return genuine, impostor
+
+
+def calibrate_threshold(
+    embeddings: np.ndarray,
+    person_ids: np.ndarray,
+    *,
+    max_pairs: int = 200_000,
+    seed: int = 0,
+    max_false_accept: float = 0.001,
+) -> dict | None:
+    """Derive recognition thresholds from faces whose identity is known.
+
+    Samples **genuine** pairs (two faces of the same person) and **impostor** pairs
+    (faces of different people), and measures their cosine distances. The match
+    threshold is the distance at which only ``max_false_accept`` of impostor pairs
+    would still be accepted (clamped to 0.2-0.7); ``recall`` is the share of genuine
+    pairs it keeps. ``review_confidence`` is set so only matches worse than ~90% of
+    genuine ones land in the "Review guesses" list. Returns ``None`` when there is no
+    genuine or no impostor pair to learn from. Deterministic for a given ``seed``.
+    """
+
+    pairs = sample_pair_distances(embeddings, person_ids, max_pairs=max_pairs, seed=seed)
+    if pairs is None:
+        return None
+    genuine, impostor = pairs
 
     threshold = float(np.clip(np.percentile(impostor, max_false_accept * 100), 0.2, 0.7))
     genuine_p90 = float(np.percentile(genuine, 90))

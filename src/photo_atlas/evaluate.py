@@ -21,6 +21,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -68,7 +69,7 @@ def verification_metrics(genuine: np.ndarray, impostor: np.ndarray) -> dict:
 
 
 def identification_metrics(
-    embeddings: np.ndarray, labels: Sequence, *, threshold: float, k: int = 5
+    embeddings: np.ndarray, labels: Sequence[Any] | np.ndarray, *, threshold: float, k: int = 5
 ) -> dict:
     """Leave-one-out identification mirroring how the app auto-tags a new face.
 
@@ -218,3 +219,215 @@ QUERY_TEMPLATE = (
 
 def write_query_template(path: Path | str) -> None:
     Path(path).write_text(QUERY_TEMPLATE, encoding="utf-8")
+
+
+# -- face evaluation --------------------------------------------------------
+class EvaluationError(ValueError):
+    """The library doesn't have what an evaluation needs (message says what to do)."""
+
+
+class FaceEmbedder(Protocol):
+    def embed(self, image: np.ndarray, full_row: np.ndarray) -> np.ndarray: ...
+
+
+@dataclass
+class FaceCandidate:
+    """A recogniser to evaluate: anything with ``embed(image_bgr, detection_row)``."""
+
+    name: str
+    embedder: FaceEmbedder
+    size_mb: float | None = None
+
+
+def load_upright_bgr(path: Path | str) -> np.ndarray | None:
+    """Decode a photo the way the indexer does (EXIF-upright), as BGR; ``None`` on failure."""
+
+    from PIL import Image, ImageOps  # noqa: PLC0415
+
+    from . import metadata  # noqa: F401, PLC0415 - registers the HEIC opener
+    from .faces import pil_to_bgr  # noqa: PLC0415
+
+    try:
+        with Image.open(path) as raw:
+            raw.load()
+            return pil_to_bgr(ImageOps.exif_transpose(raw) or raw)
+    except Exception:
+        return None
+
+
+def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    ix = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
+    iy = max(0.0, min(ay + ah, by + bh) - max(ay, by))
+    inter = ix * iy
+    union = aw * ah + bw * bh - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _load_labelled_faces(conn, *, max_faces: int, max_per_person: int, seed: int) -> list[dict]:
+    """Faces a human named (confidence 1.0), capped per person and overall, reproducibly."""
+
+    rows = conn.execute(
+        "SELECT f.id AS face_id, f.person_id, f.bbox_x, f.bbox_y, f.bbox_w, f.bbox_h, p.path "
+        "FROM faces f JOIN photos p ON p.id = f.photo_id "
+        "WHERE f.person_id IS NOT NULL AND f.confidence >= 1.0 "
+        "AND f.bbox_w > 0 AND f.bbox_h > 0 ORDER BY f.id"
+    ).fetchall()
+    by_person: dict[int, list[dict]] = {}
+    for r in rows:
+        by_person.setdefault(r["person_id"], []).append(dict(r))
+    by_person = {p: fs for p, fs in by_person.items() if len(fs) >= 2}
+    rng = np.random.default_rng(seed)
+    cap = max_per_person
+    if sum(min(len(fs), cap) for fs in by_person.values()) > max_faces and by_person:
+        cap = max(2, max_faces // len(by_person))
+    chosen: list[dict] = []
+    for _, fs in sorted(by_person.items()):
+        picked = rng.permutation(len(fs))[:cap]
+        chosen.extend(fs[i] for i in sorted(picked))
+        if len(chosen) >= max_faces:
+            break
+    return chosen[:max_faces]
+
+
+def evaluate_faces(
+    config,
+    candidates: Sequence[FaceCandidate],
+    *,
+    detector,
+    max_faces: int = 2000,
+    max_per_person: int = 40,
+    k: int = 5,
+    seed: int = 0,
+    loader=load_upright_bgr,
+) -> dict:
+    """Compare face recognisers on the people you have named by hand.
+
+    The ground truth is every face you assigned or confirmed yourself (confidence 1.0).
+    Each source photo is decoded and run through ``detector.detect_rows`` **once**; the
+    detection matching each stored face (IoU ≥ 0.4) is then aligned and embedded by every
+    candidate, so all of them see exactly the same faces. Per candidate the result holds
+    ``verification`` (see :func:`verification_metrics`), ``identification`` (at the
+    threshold where 0.1% of different-person pairs would be accepted — an equal
+    false-accept budget for everyone) and speed. Raises :class:`EvaluationError` when
+    fewer than two people have two named faces each.
+    """
+
+    from . import db, faces  # noqa: PLC0415
+
+    conn = db.connect(config.db_path)
+    try:
+        labelled = _load_labelled_faces(
+            conn, max_faces=max_faces, max_per_person=max_per_person, seed=seed
+        )
+    finally:
+        conn.close()
+
+    by_path: dict[str, list[dict]] = {}
+    for f in labelled:
+        by_path.setdefault(f["path"], []).append(f)
+
+    kept: list[dict] = []
+    vectors: list[list[np.ndarray]] = [[] for _ in candidates]
+    seconds = [0.0] * len(candidates)
+    errors: dict[int, str] = {}
+    import time  # noqa: PLC0415
+
+    for path, fs in by_path.items():
+        image = loader(path) if Path(path).exists() else None
+        rows = detector.detect_rows(image) if image is not None else []
+        for f in fs:
+            box = (f["bbox_x"], f["bbox_y"], f["bbox_w"], f["bbox_h"])
+            scored = [(_iou(box, tuple(r[:4])), r) for r in rows]
+            best = max(scored, key=lambda t: t[0], default=(0.0, None))
+            if best[1] is None or best[0] < 0.4:
+                continue
+            assert image is not None  # a row only exists if the image decoded
+            embedded: list[np.ndarray | None] = []
+            for ci, cand in enumerate(candidates):
+                if ci in errors:
+                    embedded.append(None)
+                    continue
+                t0 = time.perf_counter()
+                try:
+                    vec = np.asarray(cand.embedder.embed(image, best[1]), dtype=np.float32)
+                except Exception as exc:  # a broken candidate must not sink the others
+                    errors[ci] = f"{type(exc).__name__}: {exc}"
+                    embedded.append(None)
+                    continue
+                seconds[ci] += time.perf_counter() - t0
+                embedded.append(vec.reshape(-1))
+            kept.append(f)
+            for ci, got in enumerate(embedded):
+                if got is not None:
+                    vectors[ci].append(got)
+
+    # Drop people left with fewer than two matched faces.
+    counts = Counter(f["person_id"] for f in kept)
+    keep_idx = [i for i, f in enumerate(kept) if counts[f["person_id"]] >= 2]
+    person_ids = np.array([kept[i]["person_id"] for i in keep_idx])
+    if len(set(person_ids.tolist())) < 2:
+        raise EvaluationError(
+            "Not enough named faces to evaluate: name at least two people in the web UI, "
+            "each with 2+ faces you assigned or confirmed yourself (and whose photos are "
+            "still on disk)."
+        )
+
+    results = []
+    for ci, cand in enumerate(candidates):
+        entry: dict = {"name": cand.name, "size_mb": cand.size_mb}
+        if ci in errors:
+            entry["error"] = errors[ci]
+            results.append(entry)
+            continue
+        emb = np.vstack([vectors[ci][i] for i in keep_idx])
+        pairs = faces.sample_pair_distances(emb, person_ids, seed=seed)
+        if pairs is None:
+            entry["error"] = "no usable pairs"
+            results.append(entry)
+            continue
+        ver = verification_metrics(*pairs)
+        entry.update(
+            dim=int(emb.shape[1]),
+            ms_per_face=round(1000 * seconds[ci] / max(1, len(vectors[ci])), 2),
+            verification=ver,
+            identification=identification_metrics(
+                emb, person_ids, threshold=ver["thr_at_far_0p1pct"], k=k
+            ),
+        )
+        results.append(entry)
+
+    return {
+        "faces": len(keep_idx),
+        "people": len(set(person_ids.tolist())),
+        "unmatched": len(labelled) - len(keep_idx),
+        "candidates": results,
+    }
+
+
+def format_faces_report(result: dict) -> str:
+    """A fixed-width table of :func:`evaluate_faces` output."""
+
+    lines = [
+        f"Face recognisers on {result['faces']} faces of {result['people']} people "
+        f"({result['unmatched']} named faces could not be re-detected and were skipped).",
+        "Identification uses each model's own threshold at 0.1% false-accept; "
+        "higher is better except EER, wrong, unknown and ms/face.",
+        "",
+        f"{'model':<22}{'MB':>7}{'dim':>6}{'ms/face':>9}{'AUC':>8}{'EER':>8}"
+        f"{'TAR@FAR1%':>11}{'TAR@FAR.1%':>12}{'top1':>7}{'right':>7}{'wrong':>7}{'unk':>6}",
+    ]
+    for c in result["candidates"]:
+        if "error" in c:
+            lines.append(f"{c['name']:<22} FAILED: {c['error']}")
+            continue
+        v, i = c["verification"], c["identification"]
+        size = f"{c['size_mb']:.0f}" if c.get("size_mb") else "-"
+        lines.append(
+            f"{c['name']:<22}{size:>7}{c['dim']:>6}{c['ms_per_face']:>9.1f}"
+            f"{v['auc']:>8.4f}{v['eer']:>8.4f}{v['tar_at_far_1pct']:>11.3f}"
+            f"{v['tar_at_far_0p1pct']:>12.3f}{i['top1_accuracy']:>7.3f}{i['auto_correct']:>7.3f}"
+            f"{i['auto_wrong']:>7.3f}{i['auto_unknown']:>6.3f}"
+        )
+    return "\n".join(lines)
