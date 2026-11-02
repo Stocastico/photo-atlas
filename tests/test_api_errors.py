@@ -323,3 +323,35 @@ def test_filter_params_shared_by_facets_photos_and_map(client):
         names = {p["name"] for p in spec[path]["get"]["parameters"]}
         assert shared <= names, (path, shared - names)
         assert client.get(path, params={"date_from": "nope"}).status_code == 422
+
+
+def test_photo_detail_works_for_a_photo_that_has_an_embedding(tmp_path):
+    """SELECT * used to drag the binary embedding into the JSON -> a 500 in the lightbox."""
+
+    import numpy as np
+    from fastapi.testclient import TestClient
+
+    from photo_atlas.api import create_app
+    from photo_atlas.config import AtlasConfig
+
+    config = AtlasConfig(home=tmp_path / "lib").ensure_dirs()
+    conn = db.connect(config.db_path)
+    pid = db.upsert_photo(conn, {"path": "/a.jpg", "filename": "a.jpg", "scene_scores": "{}"})
+    db.set_photo_embedding(conn, pid, np.random.rand(768).astype(np.float32))
+    db.set_phash(conn, pid, "0f0f0f0f0f0f0f0f")
+    db.replace_faces(conn, pid, [{
+        "bbox_x": 10, "bbox_y": 20, "bbox_w": 30, "bbox_h": 40, "confidence": 0.7,
+        "quality": 0.8, "embedding": db.embedding_to_blob(np.ones(4, dtype=np.float32)),
+    }])
+    conn.commit()
+    conn.close()
+
+    res = TestClient(create_app(config)).get(f"/api/photos/{pid}")
+    assert res.status_code == 200
+    body = res.json()
+    assert "embedding" not in body and "phash" not in body       # heavy/internal columns
+    assert body["filename"] == "a.jpg" and body["scene_scores"] == "{}"
+    (face,) = body["faces"]
+    got = (face["bbox_x"], face["bbox_w"], face["confidence"], face["quality"])
+    assert got == (10, 30, 0.7, 0.8)
+    assert "embedding" not in face
