@@ -103,14 +103,23 @@ def assign_cluster(
     name: str | None = None,
     person_id: int | None = None,
 ) -> int:
-    """Assign every face in ``cluster_id`` to a person and clear the cluster."""
+    """Assign every face in ``cluster_id`` to a person (human-confirmed) and clear the cluster."""
 
     if person_id is None:
         if not name:
             raise ValueError("Provide either a person name or an existing person_id")
         person_id = db.get_or_create_person(conn, name)
+    # Naming a cluster is a human label: its faces become ground truth (confidence 1.0),
+    # which is what recognition enrolment, calibration and --recompute carry-over rely
+    # on. Any earlier "not this person" correction against *this* person is stale now.
     conn.execute(
-        "UPDATE faces SET person_id=?, cluster_id=NULL WHERE cluster_id=? AND person_id IS NULL",
+        "DELETE FROM face_negatives WHERE person_id=? AND face_id IN "
+        "(SELECT id FROM faces WHERE cluster_id=? AND person_id IS NULL)",
+        (person_id, cluster_id),
+    )
+    conn.execute(
+        "UPDATE faces SET person_id=?, cluster_id=NULL, confidence=1.0 "
+        "WHERE cluster_id=? AND person_id IS NULL",
         (person_id, cluster_id),
     )
     conn.commit()

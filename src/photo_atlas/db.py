@@ -238,6 +238,8 @@ def _migrate_to_v1(conn: sqlite3.Connection) -> None:
         # in via a re-index (``index --embed``) or the ``embed`` backfill.
         if "embedding" not in fcols:
             conn.execute("ALTER TABLE faces ADD COLUMN embedding BLOB")
+        if "confidence" not in fcols:
+            conn.execute("ALTER TABLE faces ADD COLUMN confidence REAL")
         if "region_embedding" not in fcols:
             conn.execute("ALTER TABLE faces ADD COLUMN region_embedding BLOB")
         if "region_dim" not in fcols:
@@ -249,12 +251,32 @@ def _migrate_to_v1(conn: sqlite3.Connection) -> None:
         conn.execute(f"DROP INDEX IF EXISTS {name}")
 
 
+def _migrate_to_v2(conn: sqlite3.Connection) -> None:
+    """Faces named through a *cluster* were never marked human-confirmed.
+
+    ``assign_cluster`` used to leave ``confidence`` at the index-time 0.0 (an auto-match
+    always stores >= 1 - threshold > 0), so a named face with confidence 0/NULL can only
+    have been named by a person. Promote them to 1.0 so enrolment, calibration, the
+    evaluation commands and ``--recompute`` carry-over all see them.
+    """
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "faces" in tables:
+        conn.execute(
+            "UPDATE faces SET confidence = 1.0 "
+            "WHERE person_id IS NOT NULL AND (confidence IS NULL OR confidence <= 0)"
+        )
+
+
 #: Ordered ``(version, fn)`` catalog migrations, applied once each and recorded in
 #: ``PRAGMA user_version``. Append new entries (and bump ``SCHEMA_VERSION``) instead
 #: of adding ad-hoc column probes. A migration runs *before* the schema script, so on
 #: a brand-new file its tables may not exist yet — guard accordingly.
-MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [(1, _migrate_to_v1)]
-SCHEMA_VERSION = 1
+MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
+    (1, _migrate_to_v1),
+    (2, _migrate_to_v2),
+]
+SCHEMA_VERSION = 2
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

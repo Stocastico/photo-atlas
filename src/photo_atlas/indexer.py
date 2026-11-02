@@ -98,16 +98,18 @@ _Bytes = bytes
 
 
 def _load_enrollment(conn: sqlite3.Connection) -> Enrollment:
-    """Collect every named face for k-NN auto-recognition.
+    """Collect every human-confirmed named face for k-NN auto-recognition.
 
     Unlike the old per-person centroid, this keeps each enrolled face as its own
     vector, so recognition matches the nearest individual examples rather than an
     average that blurs a person's look across years.
     """
 
+    # Only faces a human assigned or confirmed (confidence 1.0) are ground truth. Enrolling
+    # unconfirmed auto-tags too would let one wrong guess attract more wrong guesses.
     rows = conn.execute(
         "SELECT person_id, embedding FROM faces "
-        "WHERE person_id IS NOT NULL AND embedding IS NOT NULL"
+        "WHERE person_id IS NOT NULL AND confidence >= 1.0 AND embedding IS NOT NULL"
     ).fetchall()
     pairs: list[tuple[int, np.ndarray]] = []
     for row in rows:
