@@ -431,3 +431,244 @@ def format_faces_report(result: dict) -> str:
             f"{i['auto_wrong']:>7.3f}{i['auto_unknown']:>6.3f}"
         )
     return "\n".join(lines)
+
+
+# -- search evaluation ------------------------------------------------------
+class ImageEncoder(Protocol):
+    def embed_image(self, img: Any) -> np.ndarray: ...
+
+
+class TextEncoder(Protocol):
+    def embed_text(self, text: str) -> np.ndarray: ...
+
+
+@dataclass
+class SearchCandidate:
+    """An image-text encoder pair to evaluate (image and text towers share a space)."""
+
+    name: str
+    image_encoder: ImageEncoder
+    text_encoder: TextEncoder
+    size_mb: float | None = None
+
+
+    """Open a photo EXIF-upright as RGB (as the indexer feeds encoders); ``None`` on failure."""
+    """Open a photo EXIF-upright as RGB (what the indexer feeds the encoder); ``None`` on failure."""
+
+    from PIL import Image, ImageOps  # noqa: PLC0415
+
+    from . import metadata  # noqa: F401, PLC0415 - registers the HEIC opener
+
+    try:
+        with Image.open(path) as raw:
+            raw.load()
+            return (ImageOps.exif_transpose(raw) or raw).convert("RGB")
+    except Exception:
+        return None
+
+
+def _resolve_relevant(
+    specs: Sequence[str], by_path: dict[str, int], by_name: dict[str, list[int]]
+) -> tuple[set[int], list[str]]:
+    """Map the file names / paths in a query file to photo ids; report what didn't match."""
+
+    ids: set[int] = set()
+    unresolved: list[str] = []
+    for spec in specs:
+        if spec in by_path:
+            ids.add(by_path[spec])
+            continue
+        matches = by_name.get(Path(spec).name.lower(), [])
+        if len(matches) == 1:
+            ids.add(matches[0])
+        elif len(matches) > 1:
+            unresolved.append(f"{spec} (ambiguous)")
+        else:
+            unresolved.append(spec)
+    return ids, unresolved
+
+
+def evaluate_search(
+    config,
+    candidates: Sequence[SearchCandidate],
+    *,
+    queries_path: Path | str | None = None,
+    bursts: bool = True,
+    max_photos: int = 2000,
+    max_burst_groups: int = 200,
+    seed: int = 0,
+    image_loader=load_upright_pil,
+) -> dict:
+    """Compare image-text encoders on *your* photos and *your* kind of queries.
+
+    * **text** — the queries in ``queries_path`` (see :func:`load_queries`): rank the
+      photo pool by cosine to each query, score against your ``relevant`` lists.
+    * **bursts** — label-free image→image check: for each near-duplicate burst the
+      first shot is the query and its siblings should come back first.
+
+    The pool is every photo the queries/bursts mention plus a random fill (seeded) up to
+    ``max_photos``, so all candidates rank the same photos. Needs the originals on disk.
+    Raises :class:`EvaluationError` if there is nothing to score.
+    """
+
+    import time  # noqa: PLC0415
+
+    from . import db, groups  # noqa: PLC0415
+
+    conn = db.connect(config.db_path)
+    try:
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT id, path, filename FROM photos WHERE is_video = 0 ORDER BY id"
+            )
+            if Path(r["path"]).exists()
+        ]
+        by_path = {r["path"]: r["id"] for r in rows}
+        by_name: dict[str, list[int]] = {}
+        for r in rows:
+            by_name.setdefault(r["filename"].lower(), []).append(r["id"])
+
+        queries: list[tuple[str, set[int]]] = []
+        unresolved: list[str] = []
+        for q in load_queries(queries_path) if queries_path else []:
+            ids, bad = _resolve_relevant(q.relevant, by_path, by_name)
+            unresolved.extend(bad)
+            if ids:
+                queries.append((q.text, ids))
+
+        rng = np.random.default_rng(seed)
+        burst_cases: list[tuple[int, set[int]]] = []
+        if bursts:
+            known = set(by_path.values())
+            found = groups.find_burst_groups(
+                conn, max_distance=config.dup_max_distance,
+                max_gap_seconds=config.dup_max_gap_seconds, min_group=2,
+            )
+            for gi in rng.permutation(len(found))[:max_burst_groups]:
+                members = [p["id"] for p in found[int(gi)]["photos"] if p["id"] in known]
+                if len(members) >= 2:
+                    burst_cases.append((members[0], set(members[1:])))
+    finally:
+        conn.close()
+
+    if not queries and not burst_cases:
+        raise EvaluationError(
+            "Nothing to evaluate: give --queries FILE (create a template with "
+            "`photo-atlas eval-init-queries`) and/or index a library that has near-duplicate "
+            "bursts (run `photo-atlas dedup` to compute perceptual hashes)."
+        )
+
+    required: set[int] = set()
+    for _, rel in queries:
+        required |= rel
+    for q_id, rel in burst_cases:
+        required |= {q_id, *rel}
+    spare = [r["id"] for r in rows if r["id"] not in required]
+    fill = max(0, max_photos - len(required))
+    pool_ids = sorted(required | {spare[i] for i in rng.permutation(len(spare))[:fill]})
+    paths = {r["id"]: r["path"] for r in rows}
+
+    results = []
+    for cand in candidates:
+        entry: dict = {"name": cand.name, "size_mb": cand.size_mb}
+        vecs: dict[int, np.ndarray] = {}
+        t0 = time.perf_counter()
+        try:
+            for pid in pool_ids:
+                img = image_loader(paths[pid])
+                if img is not None:
+                    vecs[pid] = np.asarray(cand.image_encoder.embed_image(img), dtype=np.float32)
+            elapsed = time.perf_counter() - t0
+            order = sorted(vecs)
+            matrix = np.vstack([vecs[p] for p in order])
+            index_of = {p: i for i, p in enumerate(order)}
+            entry.update(
+                dim=int(matrix.shape[1]), embedded=len(order),
+                images_per_sec=round(len(order) / elapsed, 2) if elapsed > 0 else None,
+            )
+            entry["text"], entry["worst"] = None, []
+            usable = [(t, rel & set(order)) for t, rel in queries]
+            usable = [(t, rel) for t, rel in usable if rel]
+            if usable:
+                qv = np.vstack([
+                    np.asarray(cand.text_encoder.embed_text(t), dtype=np.float32) for t, _ in usable
+                ])
+                ranked = rank_pool(qv, matrix, top=min(len(order), 100))
+                rankings = [[order[i] for i in r] for r in ranked]
+                entry["text"] = rank_metrics(rankings, [rel for _, rel in usable])
+                worst = []
+                for (text, rel), ranks in zip(usable, rankings, strict=True):
+                    pos = next((n + 1 for n, p in enumerate(ranks) if p in rel), None)
+                    worst.append((pos if pos is not None else 10**6, text))
+                entry["worst"] = [
+                    {"query": t, "first_hit_rank": None if p == 10**6 else p}
+                    for p, t in sorted(worst, reverse=True)[:3]
+                ]
+            entry["bursts"] = None
+            cases = [(q, rel & set(order)) for q, rel in burst_cases if q in index_of]
+            cases = [(q, rel) for q, rel in cases if rel]
+            if cases:
+                ranked = rank_pool(
+                    matrix[[index_of[q] for q, _ in cases]], matrix, top=min(len(order), 100),
+                    exclude=[index_of[q] for q, _ in cases],
+                )
+                entry["bursts"] = rank_metrics(
+                    [[order[i] for i in r] for r in ranked], [rel for _, rel in cases]
+                )
+        except Exception as exc:  # a broken candidate must not sink the others
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        results.append(entry)
+
+    return {
+        "pool": len(pool_ids),
+        "queries": len(queries),
+        "unresolved": unresolved,
+        "burst_cases": len(burst_cases),
+        "candidates": results,
+    }
+
+
+def format_search_report(result: dict) -> str:
+    """A fixed-width table of :func:`evaluate_search` output."""
+
+    def f(x, spec=".3f"):
+        return format(x, spec) if x is not None else "-"
+
+    lines = [
+        f"Image-text encoders over a pool of {result['pool']} photos: "
+        f"{result['queries']} text queries, {result['burst_cases']} burst cases.",
+        "Text = your queries -> photos; Bursts = image -> its near-duplicate siblings. "
+        "Higher is better.",
+    ]
+    if result["unresolved"]:
+        shown = ", ".join(result["unresolved"][:5])
+        more = len(result["unresolved"]) - 5
+        lines.append(f"Not matched in the catalog ({len(result['unresolved'])}): {shown}"
+                     + (f", +{more} more" if more > 0 else ""))
+    lines += [
+        "",
+        f"{'model':<24}{'MB':>7}{'dim':>6}{'img/s':>8}"
+        f"{'Hit@1':>8}{'Hit@5':>7}{'Hit@10':>8}{'MRR':>7}{'nDCG@10':>9}"
+        f"{'| burst R@5':>12}{'MRR':>7}",
+    ]
+    for c in result["candidates"]:
+        if "error" in c:
+            lines.append(f"{c['name']:<24} FAILED: {c['error']}")
+            continue
+        t, b = c.get("text") or {}, c.get("bursts") or {}
+        size = f"{c['size_mb']:.0f}" if c.get("size_mb") else "-"
+        lines.append(
+            f"{c['name']:<24}{size:>7}{c['dim']:>6}{f(c['images_per_sec'], '.1f'):>8}"
+            f"{f(t.get('hit@1')):>8}{f(t.get('hit@5')):>7}{f(t.get('hit@10')):>8}"
+            f"{f(t.get('mrr')):>7}{f(t.get('ndcg@10')):>9}"
+            f"{f(b.get('recall@5')):>12}{f(b.get('mrr')):>7}"
+        )
+    for c in result["candidates"]:
+        if c.get("worst"):
+            hits = "; ".join(
+                f"'{w['query']}' (first hit: {w['first_hit_rank'] or 'not in top 100'})"
+                for w in c["worst"]
+            )
+            lines.append(f"  weakest for {c['name']}: {hits}")
+    return "\n".join(lines)
