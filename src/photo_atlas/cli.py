@@ -176,6 +176,77 @@ def _cmd_calibrate_faces(args) -> int:
     return 0
 
 
+def _run_eval(args, build, run, report) -> int:
+    """Shared driver for the eval-* commands: build candidates, run, print, optional JSON."""
+
+    import json
+
+    from . import evaluate
+
+    config = _config(args)
+    try:
+        candidates = build(config)
+        print(f"Evaluating {len(candidates)} candidate(s): "
+              f"{', '.join(c.name for c in candidates)} ...")
+        result = run(config, candidates)
+    except evaluate.EvaluationError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except (ValueError, FileNotFoundError, OSError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(report(result))
+    if args.json:
+        Path(args.json).write_text(json.dumps(result, indent=2), encoding="utf-8")
+        print(f"\nFull results written to {args.json}")
+    return 0
+
+
+def _cmd_eval_faces(args) -> int:
+    from . import evaluate
+
+    return _run_eval(
+        args,
+        lambda config: evaluate.build_face_candidates(
+            config, args.candidate, args.preset, include_default=not args.no_default
+        ),
+        lambda config, candidates: evaluate.evaluate_faces(
+            config, candidates, detector=evaluate.default_face_detector(config),
+            max_faces=args.max_faces, max_per_person=args.max_per_person,
+        ),
+        evaluate.format_faces_report,
+    )
+
+
+def _cmd_eval_search(args) -> int:
+    from . import evaluate
+
+    return _run_eval(
+        args,
+        lambda config: evaluate.build_search_candidates(
+            config, args.candidate, args.preset, include_default=not args.no_default
+        ),
+        lambda config, candidates: evaluate.evaluate_search(
+            config, candidates, queries_path=args.queries, bursts=not args.no_bursts,
+            max_photos=args.max_photos,
+        ),
+        evaluate.format_search_report,
+    )
+
+
+def _cmd_eval_init_queries(args) -> int:
+    from . import evaluate
+
+    path = Path(args.file)
+    if path.exists():
+        print(f"error: {path} already exists; not overwriting it.", file=sys.stderr)
+        return 1
+    evaluate.write_query_template(path)
+    print(f"Wrote a query template to {path}. Edit it, then run:\n"
+          f"  photo-atlas eval-search --queries {path}")
+    return 0
+
+
 def _cmd_retag_scenes(args) -> int:
     config = _config(args)
 
@@ -396,6 +467,45 @@ def build_parser() -> argparse.ArgumentParser:
         "ids", nargs="*", type=int, help="Photo ids to restore (default: everything in the trash)"
     )
     p_restore.set_defaults(func=_cmd_restore)
+
+    # -- model evaluation (see MODELS.md) --
+    def _add_eval_args(p, kind: str) -> None:
+        from . import models
+
+        presets = models.FACE_PRESETS if kind == "faces" else models.SEARCH_PRESETS
+        spec = "NAME=RECOGNISER.onnx" if kind == "faces" else "NAME=VISION,TEXT[,TOKENIZER][,SIZE]"
+        p.add_argument("--candidate", action="append", default=[], metavar=spec,
+                       help="a model file(s) to evaluate (repeatable)")
+        p.add_argument("--preset", action="append", default=[], choices=sorted(presets),
+                       help="a downloadable, checksum-pinned candidate (repeatable)")
+        p.add_argument("--no-default", action="store_true",
+                       help="don't include the app's current default model as the baseline")
+        p.add_argument("--json", metavar="FILE", help="also write the full results as JSON")
+
+    p_ef = sub.add_parser(
+        "eval-faces",
+        help="Compare face recognisers on the people you have named (see MODELS.md)",
+    )
+    _add_eval_args(p_ef, "faces")
+    p_ef.add_argument("--max-faces", type=int, default=2000, help="cap on faces used")
+    p_ef.add_argument("--max-per-person", type=int, default=40, help="cap per person")
+    p_ef.set_defaults(func=_cmd_eval_faces)
+
+    p_es = sub.add_parser(
+        "eval-search",
+        help="Compare image-text encoders on your queries and on photo bursts (see MODELS.md)",
+    )
+    _add_eval_args(p_es, "search")
+    p_es.add_argument("--queries", metavar="FILE",
+                      help="JSONL of {query, relevant[]} (create one with eval-init-queries)")
+    p_es.add_argument("--no-bursts", action="store_true",
+                      help="skip the label-free near-duplicate image->image check")
+    p_es.add_argument("--max-photos", type=int, default=2000, help="photo pool size")
+    p_es.set_defaults(func=_cmd_eval_search)
+
+    p_eq = sub.add_parser("eval-init-queries", help="Write a template queries file for eval-search")
+    p_eq.add_argument("file", help="where to write the template")
+    p_eq.set_defaults(func=_cmd_eval_init_queries)
 
     p_cal = sub.add_parser(
         "calibrate-faces",

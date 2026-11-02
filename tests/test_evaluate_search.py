@@ -160,3 +160,44 @@ def test_report_lists_models_and_metrics(tmp_path):
     )
     text = evaluate.format_search_report(result)
     assert "good" in text and "bad" in text and "MRR" in text and "img/s" in text
+
+
+# -- CLI --------------------------------------------------------------------
+def test_cli_eval_search_and_init_queries(tmp_path, monkeypatch, capsys):
+    import json
+
+    from photo_atlas import cli
+
+    config, names = _library(tmp_path)
+    seen: dict = {}
+
+    def build(cfg, specs, presets, include_default=True, **kw):
+        seen.update(specs=list(specs), presets=list(presets), default=include_default)
+        return _candidates()
+
+    monkeypatch.setattr(evaluate, "build_search_candidates", build)
+    out = tmp_path / "s.json"
+    rc = cli.main(["--home", str(config.home), "eval-search", "--queries",
+                   str(_queries(tmp_path, names)), "--no-bursts", "--preset", "siglip2-large-384",
+                   "--json", str(out), "--max-photos", "10"])
+    assert rc == 0
+    assert "MRR" in capsys.readouterr().out
+    assert seen["presets"] == ["siglip2-large-384"] and seen["default"] is True
+    assert json.loads(out.read_text())["queries"] == 3
+
+    tpl = tmp_path / "queries.jsonl"
+    assert cli.main(["--home", str(config.home), "eval-init-queries", str(tpl)]) == 0
+    assert evaluate.load_queries(tpl)
+    # Never clobber a file the user has been editing.
+    tpl.write_text("# mine\n")
+    assert cli.main(["--home", str(config.home), "eval-init-queries", str(tpl)]) == 1
+    assert tpl.read_text() == "# mine\n"
+
+
+def test_cli_eval_search_with_nothing_to_score_is_actionable(tmp_path, monkeypatch, capsys):
+    from photo_atlas import cli
+
+    config, _ = _library(tmp_path)
+    monkeypatch.setattr(evaluate, "build_search_candidates", lambda *a, **k: _candidates())
+    assert cli.main(["--home", str(config.home), "eval-search", "--no-bursts"]) == 1
+    assert "eval-init-queries" in capsys.readouterr().err

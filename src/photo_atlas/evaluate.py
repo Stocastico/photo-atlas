@@ -672,3 +672,126 @@ def format_search_report(result: dict) -> str:
             )
             lines.append(f"  weakest for {c['name']}: {hits}")
     return "\n".join(lines)
+
+
+# -- building candidates (CLI helpers) ---------------------------------------
+def parse_face_candidate(spec: str) -> tuple[str, str]:
+    """``"NAME=PATH"`` (or a bare path, named after its file) -> ``(name, path)``."""
+
+    if not spec or not spec.strip():
+        raise ValueError("expected NAME=PATH (an ArcFace-style recogniser .onnx)")
+    if "=" in spec:
+        name, path = spec.split("=", 1)
+    else:
+        name, path = Path(spec).stem, spec
+    if not name or not path:
+        raise ValueError(f"expected NAME=PATH, got {spec!r}")
+    return name, path
+
+
+def parse_search_candidate(spec: str) -> tuple[str, str, str, str | None, int | None]:
+    """``"NAME=VISION,TEXT[,TOKENIZER][,SIZE]"`` -> ``(name, vision, text, tokenizer, size)``."""
+
+    name, _, rest = spec.partition("=")
+    parts = [p.strip() for p in rest.split(",") if p.strip()]
+    if not name or len(parts) < 2:
+        raise ValueError(f"expected NAME=VISION,TEXT[,TOKENIZER][,SIZE], got {spec!r}")
+    tokenizer: str | None = None
+    size: int | None = None
+    for extra in parts[2:]:
+        if extra.isdigit():
+            size = int(extra)
+        else:
+            tokenizer = extra
+    return name, parts[0], parts[1], tokenizer, size
+
+
+def _mb(*paths: Path) -> float:
+    return round(sum(p.stat().st_size for p in paths) / 1e6, 1)
+
+
+def _require(path: str | Path) -> Path:
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"model file not found: {p}")
+    return p
+
+
+def build_face_candidates(
+    config, specs: Sequence[str], presets: Sequence[str], *, include_default: bool = True,
+    embedder_factory=None,
+) -> list[FaceCandidate]:
+    """The current default recogniser, ``--candidate`` files and downloadable presets."""
+
+    from . import models  # noqa: PLC0415
+
+    if embedder_factory is None:
+        from .faces import ArcFaceEmbedder as embedder_factory  # noqa: PLC0415, N813
+    out: list[FaceCandidate] = []
+    if include_default:
+        path = models.ensure_arcface(config.models_dir)
+        out.append(FaceCandidate("default", embedder_factory(path), _mb(path)))
+    for spec in specs:
+        name, raw = parse_face_candidate(spec)
+        path = _require(raw)
+        out.append(FaceCandidate(name, embedder_factory(path), _mb(path)))
+    for key in presets:
+        if key not in models.FACE_PRESETS:
+            raise ValueError(
+                f"unknown face preset {key!r}; available: {', '.join(models.FACE_PRESETS)}"
+            )
+        path = models.fetch_file(models.FACE_PRESETS[key].model, config.models_dir)
+        out.append(FaceCandidate(key, embedder_factory(path), _mb(path)))
+    return out
+
+
+def build_search_candidates(
+    config, specs: Sequence[str], presets: Sequence[str], *, include_default: bool = True,
+    image_cls=None, text_cls=None,
+) -> list[SearchCandidate]:
+    """The current default encoder pair, ``--candidate`` files and downloadable presets."""
+
+    from . import models  # noqa: PLC0415
+
+    if image_cls is None or text_cls is None:
+        from .embed import SigLipImageEncoder, SigLipTextEncoder  # noqa: PLC0415
+
+        image_cls = image_cls or SigLipImageEncoder
+        text_cls = text_cls or SigLipTextEncoder
+    default_size = models.ensure_scene_input_size()
+    tokenizer = models.ensure_scene_tokenizer(config.models_dir)
+    out: list[SearchCandidate] = []
+
+    def add(name: str, vision: Path, text: Path, tok: Path, size: int | None) -> None:
+        out.append(SearchCandidate(
+            name,
+            image_cls(vision, image_size=size, default_size=default_size),
+            text_cls(text, tok),
+            _mb(vision, text),
+        ))
+
+    if include_default:
+        add("default", models.ensure_scene_model(config.models_dir),
+            models.ensure_scene_text_model(config.models_dir), tokenizer, None)
+    for spec in specs:
+        name, vision, text, tok, size = parse_search_candidate(spec)
+        add(name, _require(vision), _require(text), _require(tok) if tok else tokenizer, size)
+    for key in presets:
+        if key not in models.SEARCH_PRESETS:
+            raise ValueError(
+                f"unknown search preset {key!r}; available: {', '.join(models.SEARCH_PRESETS)}"
+            )
+        preset = models.SEARCH_PRESETS[key]
+        add(key, models.fetch_file(preset.vision, config.models_dir),
+            models.fetch_file(preset.text, config.models_dir), tokenizer, preset.input_size)
+    return out
+
+
+def default_face_detector(config):
+    """YuNet configured like indexing, but keeping tiny faces (they were labelled once)."""
+
+    from .faces import YuNetDetector  # noqa: PLC0415
+
+    options = config.face_detect_options()
+    options["min_face_px"] = 0
+    return YuNetDetector(model_dir=config.models_dir, **options)

@@ -165,3 +165,52 @@ def test_a_broken_candidate_is_reported_without_sinking_the_others(tmp_path):
     assert "bad input shape" in broken["error"] and "verification" not in broken
     assert ok["verification"]["auc"] > 0.99
     assert "FAILED" in evaluate.format_faces_report(result)
+
+
+# -- CLI --------------------------------------------------------------------
+def _patch_face_cli(monkeypatch, *, captured=None):
+    def build(config, specs, presets, include_default=True, **kw):
+        if captured is not None:
+            captured.update(specs=list(specs), presets=list(presets), default=include_default)
+        return [evaluate.FaceCandidate("good", IdentityEmbedder()),
+                evaluate.FaceCandidate("bad", RandomEmbedder())]
+
+    monkeypatch.setattr(evaluate, "build_face_candidates", build)
+    monkeypatch.setattr(evaluate, "default_face_detector", lambda config: FakeDetector())
+
+
+def test_cli_eval_faces_prints_report_and_writes_json(tmp_path, monkeypatch, capsys):
+    import json
+
+    from photo_atlas import cli
+
+    config = _library(tmp_path)
+    seen: dict = {}
+    _patch_face_cli(monkeypatch, captured=seen)
+    out = tmp_path / "r.json"
+    rc = cli.main(["--home", str(config.home), "eval-faces", "--candidate", "x=/m/x.onnx",
+                   "--preset", "auraface", "--no-default", "--json", str(out)])
+    assert rc == 0
+    text = capsys.readouterr().out
+    assert "AUC" in text and "good" in text and "bad" in text
+    assert seen == {"specs": ["x=/m/x.onnx"], "presets": ["auraface"], "default": False}
+    data = json.loads(out.read_text())
+    assert data["people"] == 4 and [c["name"] for c in data["candidates"]] == ["good", "bad"]
+
+
+def test_cli_eval_faces_explains_missing_data_and_bad_input(tmp_path, monkeypatch, capsys):
+    from photo_atlas import cli
+
+    config = AtlasConfig(home=tmp_path / "empty").ensure_dirs()
+    _patch_face_cli(monkeypatch)
+    assert cli.main(["--home", str(config.home), "eval-faces"]) == 1
+    assert "name at least two people" in capsys.readouterr().err
+
+    def boom(*a, **k):
+        raise ValueError("unknown face preset 'zzz'")
+
+    monkeypatch.setattr(evaluate, "build_face_candidates", boom)
+    assert cli.main(["--home", str(config.home), "eval-faces", "--preset", "auraface"]) == 2
+    assert "unknown face preset" in capsys.readouterr().err
+    with pytest.raises(SystemExit):  # argparse itself rejects names that aren't presets
+        cli.main(["--home", str(config.home), "eval-faces", "--preset", "zzz"])

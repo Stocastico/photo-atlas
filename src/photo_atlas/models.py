@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 ZOO = "https://github.com/opencv/opencv_zoo/raw/main/models"
@@ -114,6 +115,117 @@ def onnx_providers() -> list[str]:
         wanted = ["CUDAExecutionProvider", "DmlExecutionProvider"]
     chosen = [p for p in wanted if p and p in available and p != "CPUExecutionProvider"]
     return [*chosen, "CPUExecutionProvider"]
+
+
+# -- evaluation candidates (not used by the app unless you switch to them) ----
+@dataclass(frozen=True)
+class RemoteFile:
+    """A model file hosted on Hugging Face, pinned to a commit and a SHA-256."""
+
+    filename: str  # local name inside the models dir (unique across presets)
+    url: str
+    sha256: str
+
+
+@dataclass(frozen=True)
+class FacePreset:
+    note: str
+    model: RemoteFile
+
+
+@dataclass(frozen=True)
+class SearchPreset:
+    note: str
+    vision: RemoteFile
+    text: RemoteFile
+    input_size: int  # square input resolution of the vision tower
+
+
+#: Face recognisers that drop into the default pipeline (112² ArcFace-style, 512-d).
+FACE_PRESETS: dict[str, FacePreset] = {
+    "auraface": FacePreset(
+        "AuraFace v1 (ResNet100, Apache-2.0): the permissive-licence alternative to the "
+        "InsightFace weights; its model card reports lower CFP-FP accuracy.",
+        RemoteFile(
+        "auraface_v1_glintr100.onnx",
+        "https://huggingface.co/fal/AuraFace-v1/resolve/af6d057c9b0ec4071d4c49c80e3539258798b609/glintr100.onnx",
+        "a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60",
+    ),
+    ),
+}
+
+#: SigLIP 2 variants that share the default tokenizer. Switching the app to one also
+#: needs its label matrix rebuilt (scripts/build_scene_embeddings.py) and a re-embed.
+SEARCH_PRESETS: dict[str, SearchPreset] = {
+    "siglip2-base-256-fp16": SearchPreset(
+        "Same model as the default but fp16 instead of int8: does quantisation cost accuracy?",
+        RemoteFile(
+        "siglip2_base_256_vision_fp16.onnx",
+        "https://huggingface.co/onnx-community/siglip2-base-patch16-256-ONNX/resolve/d1114256522a37ffa257a0a58017348ab0058db2/onnx/vision_model_fp16.onnx",
+        "fe9ad8020a6d3d98d394c9be8f07064066135fc2f87ec11692de0b677c0ac4db",
+    ),
+        RemoteFile(
+        "siglip2_base_256_text_fp16.onnx",
+        "https://huggingface.co/onnx-community/siglip2-base-patch16-256-ONNX/resolve/d1114256522a37ffa257a0a58017348ab0058db2/onnx/text_model_fp16.onnx",
+        "80954edffdc689599e5d5bc6a1738380bc9e8139a18e5c8892485f248b6b4890",
+    ),
+        256,
+    ),
+    "siglip2-base-384": SearchPreset(
+        "Base model at 384 px input (int8): sharper detail for ~the same weights.",
+        RemoteFile(
+        "siglip2_base_384_vision_int8.onnx",
+        "https://huggingface.co/onnx-community/siglip2-base-patch16-384-ONNX/resolve/99f5d40afb5331b81eecee4bb02c360fbb9cdf8a/onnx/vision_model_quantized.onnx",
+        "9f354d80bbb46b319f46f9e9d0e24ae523e3eb5921aac3d34979d74dbd0db6cd",
+    ),
+        RemoteFile(
+        "siglip2_base_384_text_int8.onnx",
+        "https://huggingface.co/onnx-community/siglip2-base-patch16-384-ONNX/resolve/99f5d40afb5331b81eecee4bb02c360fbb9cdf8a/onnx/text_model_quantized.onnx",
+        "30a94b43b9ddc39c04ab67f80cba4b808262682b2fa1a2a8b924bf1e7bd84c61",
+    ),
+        384,
+    ),
+    "siglip2-large-384": SearchPreset(
+        "Large (int8, 384 px): ~3.4x the vision weights of the default.",
+        RemoteFile(
+        "siglip2_large_384_vision_int8.onnx",
+        "https://huggingface.co/onnx-community/siglip2-large-patch16-384-ONNX/resolve/257daa8df5100fdd0add12f4c2187aebf0beb409/onnx/vision_model_quantized.onnx",
+        "563a51bb7d04797e669d705176a2275c68ea0d2a08faf8bd08e24601e02b9df3",
+    ),
+        RemoteFile(
+        "siglip2_large_384_text_int8.onnx",
+        "https://huggingface.co/onnx-community/siglip2-large-patch16-384-ONNX/resolve/257daa8df5100fdd0add12f4c2187aebf0beb409/onnx/text_model_quantized.onnx",
+        "d01fa21e4b9ab51cf7cdad55d42def718895efefee3e503e274bf2445fd3b4cc",
+    ),
+        384,
+    ),
+    "siglip2-so400m-384": SearchPreset(
+        "So400m (int8, 384 px): the biggest practical SigLIP 2; slowest to index.",
+        RemoteFile(
+        "siglip2_so400m_384_vision_int8.onnx",
+        "https://huggingface.co/onnx-community/siglip2-so400m-patch14-384-ONNX/resolve/8ecf3f2bbb135bec33f4bb721c11479bf6a8a254/onnx/vision_model_quantized.onnx",
+        "f078130c78e4666a51ddf2dc00203385a584dce8388782016e16c67ca7dac27d",
+    ),
+        RemoteFile(
+        "siglip2_so400m_384_text_int8.onnx",
+        "https://huggingface.co/onnx-community/siglip2-so400m-patch14-384-ONNX/resolve/8ecf3f2bbb135bec33f4bb721c11479bf6a8a254/onnx/text_model_quantized.onnx",
+        "3423f71ad99e102bf3c389fb0ebafd181faec6dedef9e28ddf17ecc6852e0397",
+    ),
+        384,
+    ),
+}
+
+for _p in (
+    *(fp.model for fp in FACE_PRESETS.values()),
+    *(f for sp in SEARCH_PRESETS.values() for f in (sp.vision, sp.text)),
+):
+    MODEL_SHA256[_p.filename] = _p.sha256
+
+
+def fetch_file(remote: RemoteFile, model_dir: Path) -> Path:
+    """Download (or reuse) a preset file into ``model_dir``, verifying its SHA-256."""
+
+    return _resolve(remote.filename, remote.url, Path(model_dir), "PHOTO_ATLAS_NO_OVERRIDE", True)
 
 
 def _sha256_of(path: Path) -> str:
