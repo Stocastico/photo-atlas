@@ -53,6 +53,7 @@ from .metadata import (
     sha1_of,
 )
 from .models import scene_model_id
+from .textutil import nfc
 
 
 @dataclass
@@ -411,7 +412,7 @@ def _prepare_photo(
 
     return _PreparedPhoto(
         path=str(path.resolve()),
-        filename=path.name,
+        filename=nfc(path.name),
         sha1=sha1,
         width=meta.width,
         height=meta.height,
@@ -680,7 +681,7 @@ def index_video(
     place = geocoder.lookup(meta.lat, meta.lon) if geocoder is not None else None
     record = {
         "path": str(path.resolve()),
-        "filename": path.name,
+        "filename": nfc(path.name),
         "sha1": sha1,
         "width": meta.width or poster_w,
         "height": meta.height or poster_h,

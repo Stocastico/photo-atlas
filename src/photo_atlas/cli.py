@@ -12,6 +12,7 @@ Examples::
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -49,9 +50,7 @@ def _cmd_index(args) -> int:
         )
         sys.stdout.flush()
 
-    import os
-
-    workers = args.workers if args.workers is not None else (os.cpu_count() or 1)
+    workers = args.workers if args.workers is not None else _default_workers()
     print(f"Indexing {root} ... (workers={workers})")
     try:
         stats = index_path(
@@ -562,7 +561,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_streams() -> None:
+    """Never crash on a character the console can't encode.
+
+    A Windows console that is redirected (or an old code page) can't encode e.g. "→" or
+    "✓"; with the default ``strict`` handler a status line would raise
+    ``UnicodeEncodeError`` mid-run. Substitute instead.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
+def _default_workers() -> int:
+    """CPU count, capped at 61 on Windows (the most processes ``ProcessPoolExecutor`` allows)."""
+
+    count = os.cpu_count() or 1
+    return min(count, 61) if sys.platform == "win32" else count
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)
