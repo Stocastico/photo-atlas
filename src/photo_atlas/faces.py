@@ -172,6 +172,31 @@ def arcface_preprocess(aligned_bgr: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(rgb.transpose(2, 0, 1)[None])
 
 
+class ArcFaceEmbedder:
+    """An ArcFace-style recogniser (112² aligned RGB in, one embedding out) from any ONNX.
+
+    Wraps the session + the alignment/preprocessing the default backend uses, so the
+    default model and an evaluation candidate go through exactly the same pipeline.
+    """
+
+    def __init__(self, model_path: Path | str):
+        import onnxruntime as ort  # noqa: PLC0415
+
+        from .models import onnx_providers  # noqa: PLC0415
+
+        self.model_id = Path(model_path).name
+        self._session = ort.InferenceSession(str(model_path), providers=onnx_providers())
+        self._input = self._session.get_inputs()[0].name
+        self._output = self._session.get_outputs()[0].name
+
+    def embed(self, image: np.ndarray, full_row: np.ndarray) -> np.ndarray:
+        """Embed the face of a detection row ``[x, y, w, h, 5×landmark, score]``."""
+
+        aligned = norm_crop(image, full_row[4:14].reshape(5, 2))
+        (feature,) = self._session.run([self._output], {self._input: arcface_preprocess(aligned)})
+        return feature.flatten()
+
+
 class _YuNetBackend:
     """Shared YuNet detection; subclasses supply the recognition ``_embed``.
 
@@ -222,6 +247,36 @@ class _YuNetBackend:
 
         raise NotImplementedError
 
+    def detect_rows(self, image: np.ndarray) -> list[np.ndarray]:
+        """Detect faces; return full-resolution rows ``[x, y, w, h, 5×landmark, score]``.
+
+        Faces below ``min_face_px`` are dropped. Detection runs on a downscaled copy for
+        speed; boxes/landmarks are mapped back so a recogniser can align on the best
+        pixels. Split from :meth:`detect` so an evaluation can reuse one detection pass
+        across several recognisers.
+        """
+
+        det_img, scale = _maybe_downscale(image, self._detect_max_side)
+        dh, dw = det_img.shape[:2]
+        self._detector.setInputSize((dw, dh))
+        _, results = self._detector.detect(det_img)
+        rows: list[np.ndarray] = []
+        if results is None:
+            return rows
+        for raw_row in results:
+            # cv2's stubs type each detection row as a scalar; it's really a
+            # 1-D [x, y, w, h, 5×landmark, score] array.
+            row = cast(np.ndarray, raw_row)
+            # Map the box + 5 landmarks (indices 0..13) back to full-res coords;
+            # the trailing score (index 14) is left untouched.
+            full_row = row.copy()
+            if scale != 1.0:
+                full_row[:14] = row[:14] / scale
+            if min(full_row[2], full_row[3]) < self._min_face_px:
+                continue  # too small for a trustworthy embedding
+            rows.append(full_row)
+        return rows
+
     def detect(
         self, image_path: Path, image: np.ndarray | None = None
     ) -> list[FaceObservation]:
@@ -229,33 +284,14 @@ class _YuNetBackend:
             image = _read_bgr(image_path)
         if image is None:
             return []
-        # Detect on a downscaled copy for speed, but align/embed on the full-res
-        # frame for the best recognition quality.
-        det_img, scale = _maybe_downscale(image, self._detect_max_side)
-        dh, dw = det_img.shape[:2]
-        self._detector.setInputSize((dw, dh))
-        _, results = self._detector.detect(det_img)
         observations: list[FaceObservation] = []
-        if results is None:
-            return observations
-        for raw_row in results:
-            # cv2's stubs type each detection row as a scalar; it's really a
-            # 1-D [x, y, w, h, 5×landmark, score] array.
-            row = cast(np.ndarray, raw_row)
-            score = float(row[-1])
-            # Map the box + 5 landmarks (indices 0..13) back to full-res coords;
-            # the trailing score (index 14) is left untouched.
-            full_row = row.copy()
-            if scale != 1.0:
-                full_row[:14] = row[:14] / scale
+        for full_row in self.detect_rows(image):
             x, y, bw, bh = full_row[:4]
-            if min(bw, bh) < self._min_face_px:
-                continue  # too small for a trustworthy embedding
             observations.append(
                 FaceObservation(
                     bbox=(int(x), int(y), int(bw), int(bh)),
                     embedding=l2_normalize(self._embed(image, full_row)),
-                    confidence=score,
+                    confidence=float(full_row[-1]),
                 )
             )
         return observations
@@ -271,25 +307,27 @@ class YuNetArcFaceBackend(_YuNetBackend):
     """
 
     def _setup(self, model_dir: Path, *, download: bool) -> Path:
-        import onnxruntime as ort  # noqa: PLC0415
-
-        from .models import ensure_arcface_models, onnx_providers  # noqa: PLC0415
+        from .models import ensure_arcface_models  # noqa: PLC0415
 
         yunet_path, arcface_path = ensure_arcface_models(model_dir, download=download)
-        self.model_id = arcface_path.name
-        self._session = ort.InferenceSession(
-            str(arcface_path), providers=onnx_providers()
-        )
-        self._input = self._session.get_inputs()[0].name
-        self._output = self._session.get_outputs()[0].name
+        self._embedder = ArcFaceEmbedder(arcface_path)
+        self.model_id = self._embedder.model_id
         return yunet_path
 
     def _embed(self, image: np.ndarray, full_row: np.ndarray) -> np.ndarray:
-        landmarks = full_row[4:14].reshape(5, 2)
-        aligned = norm_crop(image, landmarks)
-        blob = arcface_preprocess(aligned)
-        (feature,) = self._session.run([self._output], {self._input: blob})
-        return feature.flatten()
+        return self._embedder.embed(image, full_row)
+
+
+class YuNetDetector(_YuNetBackend):
+    """YuNet detection only (no recogniser): feeds :meth:`detect_rows` for evaluations."""
+
+    def _setup(self, model_dir: Path, *, download: bool) -> Path:
+        from .models import ensure_yunet  # noqa: PLC0415
+
+        return ensure_yunet(model_dir, download=download)
+
+    def _embed(self, image: np.ndarray, full_row: np.ndarray) -> np.ndarray:
+        raise NotImplementedError("YuNetDetector only detects; use ArcFaceEmbedder to embed")
 
 
 class YuNetSFaceBackend(_YuNetBackend):
@@ -461,23 +499,17 @@ def get_backend(
 
 
 # -- threshold calibration ------------------------------------------------
-def calibrate_threshold(
+def sample_pair_distances(
     embeddings: np.ndarray,
     person_ids: np.ndarray,
     *,
     max_pairs: int = 200_000,
     seed: int = 0,
-    max_false_accept: float = 0.001,
-) -> dict | None:
-    """Derive recognition thresholds from faces whose identity is known.
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Sample cosine distances of **genuine** (same person) and **impostor** pairs.
 
-    Samples **genuine** pairs (two faces of the same person) and **impostor** pairs
-    (faces of different people), and measures their cosine distances. The match
-    threshold is the distance at which only ``max_false_accept`` of impostor pairs
-    would still be accepted (clamped to 0.2-0.7); ``recall`` is the share of genuine
-    pairs it keeps. ``review_confidence`` is set so only matches worse than ~90% of
-    genuine ones land in the "Review guesses" list. Returns ``None`` when there is no
-    genuine or no impostor pair to learn from. Deterministic for a given ``seed``.
+    Returns ``(genuine, impostor)`` or ``None`` when there is no person with two
+    faces, or fewer than two people. Deterministic for a given ``seed``.
     """
 
     emb = np.asarray(embeddings, dtype=np.float32)
@@ -509,6 +541,32 @@ def calibrate_threshold(
     impostor = _pair_distances(emb, i[keep][:max_pairs], j[keep][:max_pairs])
     if impostor.size == 0:
         return None
+    return genuine, impostor
+
+
+def calibrate_threshold(
+    embeddings: np.ndarray,
+    person_ids: np.ndarray,
+    *,
+    max_pairs: int = 200_000,
+    seed: int = 0,
+    max_false_accept: float = 0.001,
+) -> dict | None:
+    """Derive recognition thresholds from faces whose identity is known.
+
+    Samples **genuine** pairs (two faces of the same person) and **impostor** pairs
+    (faces of different people), and measures their cosine distances. The match
+    threshold is the distance at which only ``max_false_accept`` of impostor pairs
+    would still be accepted (clamped to 0.2-0.7); ``recall`` is the share of genuine
+    pairs it keeps. ``review_confidence`` is set so only matches worse than ~90% of
+    genuine ones land in the "Review guesses" list. Returns ``None`` when there is no
+    genuine or no impostor pair to learn from. Deterministic for a given ``seed``.
+    """
+
+    pairs = sample_pair_distances(embeddings, person_ids, max_pairs=max_pairs, seed=seed)
+    if pairs is None:
+        return None
+    genuine, impostor = pairs
 
     threshold = float(np.clip(np.percentile(impostor, max_false_accept * 100), 0.2, 0.7))
     genuine_p90 = float(np.percentile(genuine, 90))

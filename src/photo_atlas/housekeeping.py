@@ -17,6 +17,7 @@ from .config import AtlasConfig
 from .faces import (
     cluster_embeddings,
 )
+from .fsutil import unlink_quietly
 
 
 def sweep_orphan_derivatives(config: AtlasConfig) -> int:
@@ -52,14 +53,12 @@ def sweep_orphan_derivatives(config: AtlasConfig) -> int:
                 continue
             # A leftover atomic-write temp is an orphan regardless of name.
             if f.name.endswith(".part"):
-                f.unlink(missing_ok=True)
-                removed += 1
+                removed += unlink_quietly(f)
                 continue
             # Filenames are ``{sha1}.jpg`` or ``{sha1}_{size}.jpg``; pull the sha1.
             sha1 = f.name.split(".", 1)[0].split("_", 1)[0]
             if sha1 not in live_sha1:
-                f.unlink(missing_ok=True)
-                removed += 1
+                removed += unlink_quietly(f)
     # Face-crop directories keyed by photo id.
     if config.faces_dir.exists():
         for sub in config.faces_dir.iterdir():
@@ -92,7 +91,7 @@ def prune_library(config: AtlasConfig) -> dict[str, int]:
                 kept += 1
                 continue
             if row["thumb_path"]:
-                Path(row["thumb_path"]).unlink(missing_ok=True)
+                unlink_quietly(Path(row["thumb_path"]))
             crop_dir = config.faces_dir / str(row["id"])
             if crop_dir.exists():
                 shutil.rmtree(crop_dir, ignore_errors=True)
@@ -127,10 +126,9 @@ def empty_trash(config: AtlasConfig) -> int:
         return 0
     removed = 0
     for entry in config.trash_dir.iterdir():
-        if entry.name != "manifest.jsonl" and entry.is_file():
-            entry.unlink()
+        if entry.name != "manifest.jsonl" and entry.is_file() and unlink_quietly(entry):
             removed += 1
-    (config.trash_dir / "manifest.jsonl").unlink(missing_ok=True)
+    unlink_quietly(config.trash_dir / "manifest.jsonl")
     return removed
 
 
@@ -212,7 +210,7 @@ def delete_photos(config: AtlasConfig, ids: list[int]) -> dict[str, int]:
                     except OSError as exc:  # surface, don't crash the whole batch
                         print(f"warning: could not trash {src}: {exc}", file=sys.stderr)
                 if row["thumb_path"]:
-                    Path(row["thumb_path"]).unlink(missing_ok=True)
+                    unlink_quietly(Path(row["thumb_path"]))
                 crop_dir = config.faces_dir / str(row["id"])
                 if crop_dir.exists():
                     shutil.rmtree(crop_dir, ignore_errors=True)

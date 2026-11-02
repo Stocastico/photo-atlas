@@ -36,18 +36,36 @@ jobs:
         run: uv run mypy
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.11", "3.12"]
+        include:
+          # macOS (Apple Silicon) and Windows: the app must work on both.
+          - os: macos-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.12"
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install uv
+      - name: Install uv (Linux/macOS)
+        if: runner.os != 'Windows'
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install uv (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://astral.sh/uv/install.ps1 | iex
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.local\bin"
 
       - name: Sync dependencies (app + dev tooling)
         run: uv sync --python ${{ matrix.python-version }}
@@ -55,7 +73,7 @@ jobs:
       # Real-browser UI smoke test (tests/test_web_browser.py): Node is preinstalled
       # on ubuntu runners; Playwright + Chromium go in a temp dir (no repo package.json).
       - name: Install Playwright + Chromium
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.12' && runner.os == 'Linux'
         run: |
           npm install --prefix "$RUNNER_TEMP/pw" playwright
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium

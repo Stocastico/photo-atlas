@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from .fsutil import replace_atomic
+
 #: Override the binaries for an unusual install (e.g. a vendored static build).
 FFMPEG = os.environ.get("PHOTO_ATLAS_FFMPEG", "ffmpeg")
 FFPROBE = os.environ.get("PHOTO_ATLAS_FFPROBE", "ffprobe")
@@ -70,7 +72,7 @@ def extract_poster(video: Path, dest: Path, *, at: float = 1.0, timeout: int = 1
             raise RuntimeError("empty poster")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError):
         _run(None)  # clip shorter than `at`: grab the opening frame instead
-    os.replace(tmp, dest)
+    replace_atomic(tmp, dest)
     return dest
 
 

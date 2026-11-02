@@ -17,6 +17,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .textutil import nfc
+
 # Tokens are separated by spaces, underscores, dashes or dots.
 _SEP = re.compile(r"[\s_.\-]+")
 _YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
@@ -137,10 +139,11 @@ def extract_folder_meta(path: Path | str) -> FolderMeta:
     # folder supplied an (always-preferred) explicit month.
     pending_month: int | None = None
     for parent in Path(path).parents:
-        fm = parse_component(parent.name)
+        name = nfc(parent.name)
+        fm = parse_component(name)
         if fm.year is None:
             if pending_month is None:
-                pending_month = _loose_month(parent.name)
+                pending_month = _loose_month(name)
             continue
         if result.year is None:
             result.year = fm.year

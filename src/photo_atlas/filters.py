@@ -29,6 +29,7 @@ from typing import Any
 
 from . import db
 from .classify import SCENE_LABELS as _SCENE_LABELS
+from .textutil import nfc
 
 # Columns returned for grid/list rows: every photo column except the
 # ``scene_scores`` JSON blob, which only the single-photo detail view uses.
@@ -210,7 +211,7 @@ def _where(filters: dict[str, Any]) -> tuple[str, list[Any]]:
     if kinds:
         clauses.append("(" + " OR ".join(kinds) + ")")
     if filters.get("q"):
-        like = f"%{_like_escape(str(filters['q']))}%"
+        like = f"%{_like_escape(nfc(str(filters['q'])))}%"
         clauses.append(
             "(p.filename LIKE ? ESCAPE '\\' OR p.place_city LIKE ? ESCAPE '\\' "
             "OR p.place_country LIKE ? ESCAPE '\\' OR p.place_label LIKE ? ESCAPE '\\' "

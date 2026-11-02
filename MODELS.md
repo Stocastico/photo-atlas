@@ -167,3 +167,42 @@ if CPU index-time speed becomes the binding constraint.
   pass runs the vision tower once per photo over the whole library.
 - Keep every candidate **env-overridable** so an A/B is a config change, and keep the
   default suite offline (stub encoders), never downloading a model in CI.
+
+### The evaluation commands (use these)
+
+The checklist above is now automated, on **your own library**, so the result reflects
+your photos, your people and the way you search.
+
+```bash
+# 1) Faces — needs people you've named by hand (assigned/confirmed in the web UI).
+photo-atlas eval-faces --preset auraface                  # default vs AuraFace (Apache-2.0)
+photo-atlas eval-faces --candidate r50=/models/arcface_r50.onnx --no-default
+
+# 2) Search — write a queries file, then compare encoders.
+photo-atlas eval-init-queries queries.jsonl               # edit: 15-30 queries, in your language
+photo-atlas eval-search --queries queries.jsonl \
+    --preset siglip2-base-256-fp16 --preset siglip2-large-384 --preset siglip2-so400m-384
+photo-atlas eval-search --candidate mine=VISION.onnx,TEXT.onnx,TOKENIZER.json,384   # your own files
+```
+
+- **`eval-faces`** re-detects each named face once (YuNet) and has every recogniser
+  align and embed the *same* faces. It reports verification (AUC, EER, TAR at 1% and 0.1%
+  false-accept) and leave-one-out identification mirroring the app's k-NN auto-tagging at
+  an equal 0.1% false-accept budget, plus size and ms/face. Candidates must be ArcFace-style
+  (112² aligned RGB, one embedding out).
+- **`eval-search`** ranks a photo pool (everything your queries mention + a seeded random
+  fill up to `--max-photos`) by cosine to each query and scores Hit@k / Recall@k / MRR /
+  nDCG@10 against your `relevant` lists (file names or paths). A second, **label-free**
+  check uses near-duplicate bursts (run `photo-atlas dedup` first): the first shot is the
+  query and its siblings should come back first. Throughput is reported in img/s.
+- Presets are downloaded to `~/.photo_atlas/models`, pinned to a commit and verified by
+  SHA-256; `--json FILE` keeps the full numbers. Nothing is changed in your catalog.
+- **Reading the results:** at ~20-30 queries a few points of Hit@1 is noise — prefer MRR /
+  nDCG and look at the "weakest queries" lines. A candidate must clearly win on *your* data
+  to justify the cost: the larger SigLIP 2 variants are several times slower to index and
+  need a rebuilt label matrix (`scripts/build_scene_embeddings.py`) plus a full
+  `embed --recompute --accept-model-change`; a new face model needs
+  `index --recompute --accept-model-change` and re-running `calibrate-faces`.
+- *Not covered:* scene-label accuracy (the tagger is the same encoder, so retrieval quality
+  is the better proxy) and non-ArcFace face models.
+

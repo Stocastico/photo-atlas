@@ -245,3 +245,35 @@ def test_index_writes_full_error_log(tmp_path, capsys):
     log = AtlasConfig(home=home).home / "index_errors.log"
     assert str(log) in err
     assert "broken.jpg" in log.read_text()
+
+
+# -- platform robustness ----------------------------------------------------
+def test_streams_never_crash_on_unencodable_characters(monkeypatch):
+    import io
+    import sys
+
+    # A redirected Windows console is cp1252: "→" and "✓" can't be encoded there.
+    out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    err = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+    with pytest.raises(UnicodeEncodeError):
+        print("→", file=out)  # the failure mode this guards against
+    cli._configure_streams()
+    print("done → ✓")
+    print("warn → ✓", file=sys.stderr)
+    out.flush()
+    assert out.buffer.getvalue().startswith(b"done ")
+
+
+def test_default_workers_respects_the_windows_process_limit(monkeypatch):
+    import os
+    import sys
+
+    monkeypatch.setattr(os, "cpu_count", lambda: 128)
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert cli._default_workers() == 61
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert cli._default_workers() == 128
+    monkeypatch.setattr(os, "cpu_count", lambda: None)
+    assert cli._default_workers() == 1

@@ -42,7 +42,9 @@ def test_arcface_embed_runs_session_on_aligned_blob():
             seen["shape"] = feed["in"].shape
             return [np.ones((1, 512), dtype=np.float32)]
 
-    backend._session, backend._input, backend._output = Session(), "in", "out"
+    embedder = faces.ArcFaceEmbedder.__new__(faces.ArcFaceEmbedder)
+    embedder._session, embedder._input, embedder._output = Session(), "in", "out"
+    backend._embedder = embedder
     # Plausible landmarks inside a 200x200 frame so the affine fit is well-posed.
     lm = np.array([70, 80, 130, 80, 100, 110, 80, 140, 120, 140], dtype=np.float32)
     full_row = np.concatenate([[50, 50, 100, 100], lm, [0.99]]).astype(np.float32)
@@ -90,3 +92,52 @@ def test_sface_setup_requires_recognizer_module(monkeypatch):
     monkeypatch.delattr(cv2, "FaceRecognizerSF")
     with pytest.raises(RuntimeError, match="FaceRecognizerSF"):
         backend._setup(None, download=False)
+
+
+def test_detect_rows_returns_fullres_rows_with_landmarks():
+    rows = np.array([_row(x=5, y=6, w=8, h=8)])
+    backend = _Backend(rows, max_side=100)
+    out = backend.detect_rows(_img(200, 400))  # downscaled x0.25 -> mapped back x4
+    assert len(out) == 1 and out[0].shape == (15,)
+    assert tuple(out[0][:4]) == (20, 24, 32, 32)
+    assert out[0][-1] == np.float32(0.9)
+
+
+def test_arcface_embedder_uses_given_model_and_providers(monkeypatch, tmp_path):
+    import onnxruntime
+
+    seen = {}
+
+    class Session:
+        def __init__(self, path, providers=None):
+            seen["path"], seen["providers"] = path, providers
+
+        def get_inputs(self):
+            return [type("N", (), {"name": "in"})()]
+
+        def get_outputs(self):
+            return [type("N", (), {"name": "out"})()]
+
+        def run(self, outputs, feed):
+            seen["shape"] = feed["in"].shape
+            return [np.full((1, 512), 2.0, dtype=np.float32)]
+
+    monkeypatch.setattr(onnxruntime, "InferenceSession", Session)
+    emb = faces.ArcFaceEmbedder(tmp_path / "my_recogniser.onnx")
+    assert emb.model_id == "my_recogniser.onnx"
+    assert seen["path"].endswith("my_recogniser.onnx")
+    assert "CPUExecutionProvider" in seen["providers"]
+    lm = np.array([70, 80, 130, 80, 100, 110, 80, 140, 120, 140], dtype=np.float32)
+    row = np.concatenate([[50, 50, 100, 100], lm, [0.99]]).astype(np.float32)
+    vec = emb.embed(np.zeros((200, 200, 3), dtype=np.uint8), row)
+    assert vec.shape == (512,) and seen["shape"] == (1, 3, 112, 112)
+
+
+def test_yunet_detector_only_detects(monkeypatch, tmp_path):
+    from photo_atlas import models
+
+    monkeypatch.setattr(models, "ensure_yunet", lambda d, download=True: tmp_path / "yunet.onnx")
+    det = faces.YuNetDetector.__new__(faces.YuNetDetector)
+    assert det._setup(tmp_path, download=False) == tmp_path / "yunet.onnx"
+    with pytest.raises(NotImplementedError):
+        det._embed(_img(), _row())

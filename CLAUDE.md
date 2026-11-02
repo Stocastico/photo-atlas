@@ -58,7 +58,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 
 | Module | Role |
 | --- | --- |
-| `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `empty-trash`, `restore`, `calibrate-faces`, `export-labels`, `demo`) |
+| `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `empty-trash`, `restore`, `calibrate-faces`, `eval-faces`, `eval-search`, `eval-init-queries`, `export-labels`, `demo`) |
 | `config.py` | `AtlasConfig` — library paths + tunables (`~/.photo_atlas`, `PHOTO_ATLAS_HOME`) |
 | `db.py` | SQLite schema, additive migrations (`_migrate`), embedding (de)serialisation. `PHOTO_COLUMNS` is the single source of truth for writable photo columns |
 | `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Housekeeping (`sweep_orphan_derivatives`, `prune_library`, `delete_photos`, `empty_trash`, `restore_trash`, `export_photos`, `cluster_library`, `calibrate_faces`) lives in `housekeeping.py` and is re-exported here. Also `embed_library`, `embed_face_regions` (per-person grounding backfill), `region_box` (face→person-region geometry), `backfill_phashes`, `retag_scenes`; `delete_photos` moves originals to `trash_dir` (purged by `empty_trash` / CLI `empty-trash`, put back by `restore_trash` / CLI `restore [ids]`, which never overwrites), `export_photos` copies a selection's originals to a folder |
@@ -76,6 +76,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 | `geocode.py` / `folder_meta.py` | GPS→city/country; year/place mined from folder names (incl. a month from a yearless named-month subfolder, e.g. `2026/01-gennaio`) |
 | `library.py` | person/cluster management (rename/merge/cover/assign) |
 | `api.py` | FastAPI app (`create_app`); media + JSON endpoints; cross-origin write guard; caches the semantic index + text encoder |
+| `evaluate.py` | model evaluation harness behind `eval-*`: pure metrics (`verification_metrics`, `identification_metrics`, `rank_metrics`), `evaluate_faces` (named faces re-detected once, embedded by every candidate), `evaluate_search` (user queries + label-free burst check), candidate builders/presets |
 | `models.py` | on-demand model downloads (YuNet/ArcFace/SFace + SigLIP 2) with env overrides; `ensure_arcface_models` (default), `ensure_models` (SFace), `ensure_scene_input_size` |
 | `web/` | `index.html` + `styles.css` + native **ES modules** in `web/js/` (`main.js` entry; `state`/`api`/`filters`/`urlstate`/`sidebar`/`grid`/`lightbox`/one module per view), Leaflet vendored locally; **no build step**. Modules import each other cyclically (function declarations only — no import-time side effects outside `main.js`); a `let` can't be reassigned from another module, so expose a setter (see `urlstate.setRestoringState`) |
 
@@ -152,6 +153,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   demo library and fails on any console/page/request error. Both skip when Node /
   Playwright aren't installed. `tests/test_web_modules.py` statically checks that every
   `import {x} from "./y.js"` has a matching `export` and that `web/js/*` is packaged.
+- **Cross-platform (macOS default, Windows).** CI runs the suite on ubuntu (3.11/3.12), macos-latest and windows-latest. Rules: names from the file system are normalised with `textutil.nfc` before they feed display/search columns (the stored `path` stays byte-exact); anything that replaces/deletes a file another handle may hold open goes through `fsutil.replace_atomic` / `unlink_quietly` (Windows raises `PermissionError`); never print without `cli._configure_streams()` having run (non-UTF-8 consoles); worker pools are `spawn` and capped at 61 on Windows; tests can't import `tests.*` (not a package) — share helpers as bare modules like `scene_stub`/`face_stubs`.
 - Backlog lives in `TODO.md`; performance notes in `PERFORMANCE.md`.
 
 ## Git

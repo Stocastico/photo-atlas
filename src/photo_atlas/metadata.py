@@ -18,6 +18,7 @@ from PIL import Image, ImageOps
 from PIL.ExifTags import GPSTAGS, TAGS
 
 from .filename_date import parse_filename_date
+from .fsutil import replace_atomic
 
 # HEIC/HEIF (the default iPhone format) needs the optional ``pillow-heif``
 # plugin; register it when present so those files decode instead of failing.
@@ -369,7 +370,7 @@ def cached_resized(
     tmp = dest.with_name(f"{dest.name}.{os.getpid()}.part")
     try:
         _write_resized(src, tmp, size, quality)
-        os.replace(tmp, dest)
+        replace_atomic(tmp, dest)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
