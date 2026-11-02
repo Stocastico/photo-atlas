@@ -155,7 +155,10 @@ def test_a_broken_candidate_is_reported_without_sinking_the_others(tmp_path):
 
     result = evaluate.evaluate_faces(
         config,
-        [evaluate.FaceCandidate("broken", Broken()), evaluate.FaceCandidate("ok", IdentityEmbedder())],
+        [
+            evaluate.FaceCandidate("broken", Broken()),
+            evaluate.FaceCandidate("ok", IdentityEmbedder()),
+        ],
         detector=FakeDetector(),
     )
     broken, ok = result["candidates"]
