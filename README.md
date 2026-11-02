@@ -79,6 +79,34 @@ uv sync                     # core app + dev tooling (pytest/ruff/mypy) into .ve
 The core install already includes face recognition, scene tagging and semantic
 search (ONNX Runtime + tokenizers are core dependencies — **no PyTorch anywhere**).
 
+### Platforms
+
+macOS (Apple Silicon and Intel) and Windows are first-class, alongside Linux: CI runs the
+whole test suite on all three. Install `uv` with the one-liner for your OS
+([docs](https://docs.astral.sh/uv/getting-started/installation/)):
+
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+then `uv sync` and `uv run photo-atlas demo` work the same everywhere. Platform notes:
+
+- **Library location** is `~/.photo_atlas` (`C:\Users\you\.photo_atlas` on Windows); set
+  `PHOTO_ATLAS_HOME` or `--home` to put it elsewhere (e.g. on a bigger disk).
+- **Accents in file names.** macOS often stores names in decomposed (NFD) Unicode; names
+  used for display and search are normalised, so typing "città" finds "Città…" either way.
+- **Speed.** onnxruntime runs on the CPU by default. On Windows, replacing the
+  `onnxruntime` package with `onnxruntime-directml` enables the GPU automatically; with a
+  CUDA build, NVIDIA GPUs are used. On macOS the CoreML provider is opt-in
+  (`PHOTO_ATLAS_PROVIDERS=coreml`) because it is not reliable for every model. Force the
+  CPU with `PHOTO_ATLAS_PROVIDERS=cpu`.
+- **Windows paths** longer than 260 characters need Windows' "long paths" setting; photos
+  in deeply nested folders may otherwise be reported as failed (see `index_errors.log`).
+- Videos need `ffmpeg` on the `PATH` (see below); HEIC needs `uv sync --extra heic`.
+
 ### Optional extras
 
 Some formats and backends are opt-in to keep the base install lean:

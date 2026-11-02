@@ -153,6 +153,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   demo library and fails on any console/page/request error. Both skip when Node /
   Playwright aren't installed. `tests/test_web_modules.py` statically checks that every
   `import {x} from "./y.js"` has a matching `export` and that `web/js/*` is packaged.
+- **Cross-platform (macOS default, Windows).** CI runs the suite on ubuntu (3.11/3.12), macos-latest and windows-latest. Rules: names from the file system are normalised with `textutil.nfc` before they feed display/search columns (the stored `path` stays byte-exact); anything that replaces/deletes a file another handle may hold open goes through `fsutil.replace_atomic` / `unlink_quietly` (Windows raises `PermissionError`); never print without `cli._configure_streams()` having run (non-UTF-8 consoles); worker pools are `spawn` and capped at 61 on Windows; tests can't import `tests.*` (not a package) — share helpers as bare modules like `scene_stub`/`face_stubs`.
 - Backlog lives in `TODO.md`; performance notes in `PERFORMANCE.md`.
 
 ## Git
