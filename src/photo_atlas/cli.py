@@ -20,6 +20,7 @@ from . import db
 from .config import AtlasConfig
 from .indexer import (
     backfill_phashes,
+    backfill_tints,
     cluster_library,
     embed_face_regions,
     embed_library,
@@ -354,6 +355,19 @@ def _cmd_dedup(args) -> int:
     return 0
 
 
+def _cmd_tints(args) -> int:
+    config = _config(args)
+
+    def progress(done: int, total: int) -> None:
+        sys.stdout.write(f"\r  tinted {done}/{total}")
+        sys.stdout.flush()
+
+    print("Computing placeholder colours for the photo grid ...")
+    n = backfill_tints(config, recompute=args.recompute, progress=progress)
+    print(f"\nDone: {n} photo(s) tinted.")
+    return 0
+
+
 def _cmd_export_labels(args) -> int:
     from .export import write_xmp_sidecars
 
@@ -584,6 +598,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--recompute", action="store_true", help="Re-hash photos that already have a hash"
     )
     p_dedup.set_defaults(func=_cmd_dedup)
+
+    p_tints = sub.add_parser(
+        "tints",
+        help="Backfill the average colour used as the grid's blur-up placeholder (from thumbnails)",
+    )
+    p_tints.add_argument(
+        "--recompute", action="store_true", help="Recompute photos that already have a tint"
+    )
+    p_tints.set_defaults(func=_cmd_tints)
 
     p_export = sub.add_parser(
         "export-labels", help="Write person names to portable XMP sidecars"

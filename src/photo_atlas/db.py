@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS photos (
     embedding    BLOB,          -- SigLIP image embedding (float32) for semantic search
     embed_dim    INTEGER,       -- length of ``embedding`` (NULL when not embedded)
     phash        TEXT,          -- perceptual hash (dHash, hex) for near-duplicate grouping
+    tint         TEXT,          -- average colour (rrggbb hex): blur-up placeholder in the grid
     indexed_at   TEXT
 );
 
@@ -279,6 +280,16 @@ def _migrate_to_v3(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE faces ADD COLUMN quality REAL")
 
 
+def _migrate_to_v4(conn: sqlite3.Connection) -> None:
+    """Average-colour ``photos.tint`` (blur-up placeholder; ``photo-atlas tints`` backfills)."""
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "photos" in tables:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(photos)")}
+        if "tint" not in cols:
+            conn.execute("ALTER TABLE photos ADD COLUMN tint TEXT")
+
+
 #: Ordered ``(version, fn)`` catalog migrations, applied once each and recorded in
 #: ``PRAGMA user_version``. Append new entries (and bump ``SCHEMA_VERSION``) instead
 #: of adding ad-hoc column probes. A migration runs *before* the schema script, so on
@@ -287,8 +298,9 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _migrate_to_v1),
     (2, _migrate_to_v2),
     (3, _migrate_to_v3),
+    (4, _migrate_to_v4),
 ]
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -519,6 +531,12 @@ def set_phash(conn: sqlite3.Connection, photo_id: int, phash: str | None) -> Non
     """
 
     conn.execute("UPDATE photos SET phash=? WHERE id=?", (phash, photo_id))
+
+
+def set_tint(conn: sqlite3.Connection, photo_id: int, tint: str | None) -> None:
+    """Persist a photo's average colour (``rrggbb``); kept out of PHOTO_COLUMNS like phash."""
+
+    conn.execute("UPDATE photos SET tint=? WHERE id=?", (tint, photo_id))
 
 
 def delete_photos(conn: sqlite3.Connection, ids: list[int]) -> int:

@@ -53,6 +53,7 @@ from .metadata import (
     is_video,
     make_thumbnail_from_image,
     sha1_of,
+    tint_of,
 )
 from .models import scene_model_id
 from .textutil import nfc
@@ -200,6 +201,7 @@ class _PreparedPhoto:
     #: Perceptual hash (dHash, hex) for near-duplicate / burst grouping. Always
     #: computed (it's cheap), so even non-embedded libraries get duplicate detection.
     phash: str | None = None
+    tint: str | None = None
 
 
 # Per-person grounding crops a *region* around each face (not the tight face box)
@@ -373,6 +375,7 @@ def _prepare_photo(
 
         # Perceptual hash off the same upright pixels (cheap), for burst/dupe grouping.
         phash = dhash(img)
+        tint = tint_of(img)
 
         # Compute the SigLIP image embedding once (if requested) and reuse it for
         # the zero-shot scene tag, so the vision tower runs a single time per photo.
@@ -448,6 +451,7 @@ def _prepare_photo(
         embedding_blob=db.embedding_to_blob(embedding),
         embed_dim=None if embedding is None else int(embedding.shape[0]),
         phash=phash,
+        tint=tint,
     )
 
 
@@ -577,6 +581,7 @@ def _commit_prepared(
     # Always refresh the perceptual hash (kept out of PHOTO_COLUMNS, like the
     # embedding), so a re-index keeps it current and burst grouping stays accurate.
     db.set_phash(conn, photo_id, prepared.phash)
+    db.set_tint(conn, photo_id, prepared.tint)
 
     face_rows = []
     for i, face in enumerate(prepared.faces):
@@ -1331,6 +1336,44 @@ def backfill_phashes(
     finally:
         conn.close()
     return hashed
+
+
+def backfill_tints(
+    config: AtlasConfig,
+    *,
+    recompute: bool = False,
+    progress: Callable[[int, int], None] | None = None,
+) -> int:
+    """Backfill the blur-up average colour from the (small) stored thumbnails.
+
+    Cheap: reads the ~320px thumbnail, never the original, so it also covers videos
+    (poster frames) and photos whose source file has moved. Returns the number tinted.
+    """
+
+    conn = db.connect(config.db_path)
+    done = 0
+    try:
+        where = "" if recompute else "WHERE tint IS NULL"
+        rows = conn.execute(f"SELECT id, thumb_path FROM photos {where}").fetchall()
+        total = len(rows)
+        for i, row in enumerate(rows):
+            thumb = Path(row["thumb_path"] or "")
+            if not thumb.is_file():
+                continue
+            try:
+                with Image.open(thumb) as im:
+                    value = tint_of(im)
+            except Exception as exc:
+                print(f"warning: could not tint {thumb}: {exc}", file=sys.stderr)
+                continue
+            db.set_tint(conn, int(row["id"]), value)
+            done += 1
+            if progress is not None:
+                progress(i + 1, total)
+        conn.commit()
+    finally:
+        conn.close()
+    return done
 
 
 # Housekeeping lives in its own module; re-exported so ``indexer.X`` keeps working.

@@ -291,6 +291,14 @@ def read_exif_settings(path: Path) -> dict[str, str]:
         return exif_settings(img)
 
 
+def tint_of(img: Image.Image) -> str:
+    """Average colour of an image as ``rrggbb`` hex (the grid's blur-up placeholder)."""
+
+    px = img.convert("RGB").resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+    assert isinstance(px, tuple)
+    return "{:02x}{:02x}{:02x}".format(*px[:3])
+
+
 def dhash(img: Image.Image, hash_size: int = 8) -> str:
     """Return the difference-hash (dHash) of an image as a hex string.
 

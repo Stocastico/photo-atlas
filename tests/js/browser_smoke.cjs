@@ -43,6 +43,8 @@ const ok = (cond, msg) => {
   await page.waitForFunction(
     () => /Name a few people first|Tagged/.test(document.querySelector("#recognize-status").textContent),
     null, { timeout: 5000 });
+  await page.waitForFunction(() => !document.querySelector("#recognize-btn").disabled, null, { timeout: 5000 })
+    .catch(() => {});
   ok(!(await page.isDisabled("#recognize-btn")), "auto-tag button is re-enabled afterwards");
   await page.click('.tab[data-view="photos"]');
   await page.waitForTimeout(300);
