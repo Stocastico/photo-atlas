@@ -130,6 +130,33 @@ def assign_cluster(
     return person_id
 
 
+def unassign_cluster(
+    conn: sqlite3.Connection, cluster_id: int, face_ids: list[int], person_id: int
+) -> int:
+    """Undo :func:`assign_cluster` for exactly ``face_ids``: back into the group, unnamed.
+
+    Only faces still assigned to ``person_id`` are touched. A person left with no faces
+    at all (typically one the undone naming just created) is removed. Returns the
+    number of faces restored.
+    """
+
+    clean = [int(i) for i in face_ids]
+    if not clean:
+        return 0
+    marks = ", ".join("?" * len(clean))
+    cur = conn.execute(
+        f"UPDATE faces SET person_id=NULL, cluster_id=?, confidence=0.0 "
+        f"WHERE id IN ({marks}) AND person_id=?",
+        [cluster_id, *clean, person_id],
+    )
+    restored = cur.rowcount
+    left = conn.execute("SELECT COUNT(*) FROM faces WHERE person_id=?", (person_id,)).fetchone()[0]
+    if left == 0:
+        conn.execute("DELETE FROM persons WHERE id=?", (person_id,))
+    conn.commit()
+    return int(restored)
+
+
 def assign_face(
     conn: sqlite3.Connection,
     face_id: int,

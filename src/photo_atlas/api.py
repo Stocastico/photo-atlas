@@ -85,6 +85,11 @@ class AssignRequest(BaseModel):
     person_id: int | None = None
 
 
+class UnassignClusterRequest(BaseModel):
+    face_ids: list[int]
+    person_id: int
+
+
 class RenameRequest(BaseModel):
     name: str
 
@@ -737,13 +742,29 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
     def api_assign_cluster(
         cluster_id: int, payload: AssignRequest, conn: sqlite3.Connection = Depends(get_conn)
     ):
+        # Report which faces were named so the UI can offer an exact undo.
+        face_ids = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM faces WHERE cluster_id=? AND person_id IS NULL", (cluster_id,)
+            )
+        ]
         try:
             person_id = library.assign_cluster(
                 conn, cluster_id, name=payload.name, person_id=payload.person_id
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return {"ok": True, "person_id": person_id}
+        return {"ok": True, "person_id": person_id, "face_ids": face_ids}
+
+    @app.post("/api/clusters/{cluster_id}/unassign")
+    def api_unassign_cluster(
+        cluster_id: int,
+        payload: UnassignClusterRequest,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ):
+        restored = library.unassign_cluster(conn, cluster_id, payload.face_ids, payload.person_id)
+        return {"ok": True, "restored": restored}
 
     @app.post("/api/faces/{face_id}/assign")
     def api_assign_face(
