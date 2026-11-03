@@ -274,6 +274,7 @@ kbd { font: inherit; font-size: 11px; padding: 1px 6px; border-radius: 4px; back
   padding: 0; opacity: 0; pointer-events: auto; cursor: pointer; transition: opacity .15s ease;
   box-shadow: 0 0 0 1px rgba(0,0,0,.45); }
 .lb-img:hover .fbox, .fbox.hl, .fbox:focus-visible { opacity: 1; }
+.boxes-always .fbox { opacity: 1; }
 .fbox.named { border-color: var(--accent); }
 .fbox.hl { border-width: 3px; background: rgba(255,255,255,.12); }
 .fbox .fname { position: absolute; left: 50%; bottom: calc(100% + 4px); transform: translateX(-50%);

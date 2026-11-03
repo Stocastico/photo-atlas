@@ -31,7 +31,7 @@ check("key beyond candidates ignored", A("5", 3) === null);
 check("n -> new person", A("n").type === "new" && A("N").type === "new");
 check("s -> skip", A("s").type === "skip");
 check("ArrowRight -> skip", A("ArrowRight").type === "skip");
-check("z is not bound (no undo endpoint)", A("z") === null);
+check("z -> undo", A("z").type === "undo" && A("Z").type === "undo");
 check("other keys ignored", A("q") === null && A("0") === null);
 
 console.log(`${pass} passed, ${fail} failed`);
