@@ -25,6 +25,29 @@ const ok = (cond, msg) => {
   await page.goto(base, { waitUntil: "networkidle" });
   await page.waitForSelector("#grid .card", { timeout: 10000 });
   ok((await page.locator("#grid .card").count()) > 0, "grid renders photo cards");
+  // Justified rows: tiles in one row share a top and the row fills the grid width.
+  const geo = await page.evaluate(() => {
+    const g = document.querySelector("#grid").getBoundingClientRect();
+    const rects = [...document.querySelectorAll("#grid .card")].map((c) => c.getBoundingClientRect());
+    const top = rects[0].top;
+    const row = rects.filter((r) => Math.abs(r.top - top) < 1);
+    return { n: row.length, right: Math.max(...row.map((r) => r.right)) - g.left, width: g.width,
+      headers: document.querySelectorAll("#grid .group-header").length };
+  });
+  ok(geo.n >= 1 && (geo.n === 1 || Math.abs(geo.right - geo.width) < 2), "first row is justified to the grid width");
+  ok(geo.headers >= 1, "month group headers are shown by default");
+  // Switching to no grouping removes headers without refetching.
+  await page.selectOption("#group-by", "none");
+  await page.waitForTimeout(150);
+  ok((await page.locator("#grid .group-header").count()) === 0, "no grouping -> no headers");
+  await page.selectOption("#group-by", "month");
+  // Hover checkbox starts a selection and reveals the bar; Clear ends it.
+  const first = page.locator("#grid .card").first();
+  await first.hover();
+  await first.locator(".select-check").click();
+  ok(!(await page.locator("#selection-bar").isHidden()), "ticking a checkbox shows the selection bar");
+  await page.click("#select-clear");
+  ok(await page.locator("#selection-bar").isHidden(), "clearing hides the selection bar");
   ok(/\d/.test(await page.textContent("#result-count")), "result count is shown");
 
   // Every tab shows its own panel (and hides the photos panel).

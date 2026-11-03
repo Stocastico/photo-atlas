@@ -48,7 +48,18 @@
           <span id="result-count">—</span>
           <span id="search-plan" class="search-plan" aria-live="polite"></span>
           <div class="spacer" style="flex:1"></div>
-          <button id="select-toggle" class="ghost" type="button" aria-pressed="false">Select</button>
+          <label>Group
+            <select id="group-by">
+              <option value="month">By month</option>
+              <option value="year">By year</option>
+              <option value="day">By day</option>
+              <option value="folder">By folder</option>
+              <option value="none">No grouping</option>
+            </select>
+          </label>
+          <label class="size-ctl" title="Thumbnail size">Size
+            <input id="row-height" type="range" min="90" max="320" step="10" value="180" />
+          </label>
           <label>Sort
             <select id="sort">
               <option value="newest">Newest first</option>
@@ -72,6 +83,7 @@
         </div>
         <div id="active-filters"></div>
         <div id="grid" class="grid"></div>
+        <div id="date-bubble" class="date-bubble" aria-hidden="true"></div>
         <div id="onboarding" class="empty onboarding" style="display:none">
           <h2>Your library is empty</h2>
           <p>Point Photo Atlas at a folder of photos to get started:</p>
