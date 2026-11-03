@@ -1,6 +1,14 @@
 // Shared UI state and constants (labels, grid geometry).
 
 export const PAGE = 120;
+
+// Per-viewer UI preferences survive reloads (localStorage can throw/be absent).
+export function pref(key, fallback) {
+  try { return localStorage.getItem("pa." + key) ?? fallback; } catch (e) { return fallback; }
+}
+export function setPref(key, value) {
+  try { localStorage.setItem("pa." + key, String(value)); } catch (e) { /* ignore */ }
+}
 export const state = {
   view: "photos",
   filters: {}, // person_id, scene, country, city, place, year, camera, q
@@ -13,7 +21,10 @@ export const state = {
   lightboxIndex: null,
   facetExpanded: {}, // facet key -> show all values
   rendered: new Map(), // index -> live card node (virtualised grid window)
+  renderedHeaders: new Map(), // group key -> live header node
   layout: null,        // last computed grid layout
+  groupMode: pref("groupMode", "month"), // none | year | month | day | folder
+  rowHeight: +pref("rowHeight", 180),    // target justified-row height (px)
   searchMode: "filter", // "filter" (substring q) or "semantic" (natural-language text)
   semanticAvailable: false,
   similarTo: null,    // photo id when the grid is in "more like this" mode
@@ -24,10 +35,10 @@ export const state = {
   selectAnchor: null, // last-clicked index, for shift-click range selection
 };
 
-// Grid windowing constants — GAP/MIN must match the CSS .grid/.card rules.
-export const GRID_GAP = 10;
-export const CARD_MIN = 160;     // grid-template min column width
-export const BUFFER_ROWS = 4;    // rows rendered above/below the viewport
+// Grid geometry (the justified layout lives in layout.js).
+export const GRID_GAP = 4;
+export const HEADER_H = 44;        // group header height
+export const BUFFER_PX = 700;      // pixels rendered above/below the viewport
 
 export const FILTER_NAMES = {
   person_id: "Person", scene: "Scene", country: "Country", city: "City",

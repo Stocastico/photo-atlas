@@ -122,13 +122,18 @@ def map_points(
 
 
 def photo_detail(conn: sqlite3.Connection, photo_id: int) -> dict | None:
-    row = conn.execute("SELECT * FROM photos WHERE id=?", (photo_id,)).fetchone()
+    # Explicit columns: ``SELECT *`` would drag in the binary embedding (not JSON-encodable,
+    # so every photo with an embedding 500'd in the lightbox) and the perceptual hash.
+    row = conn.execute(
+        f"SELECT {_LIST_COLUMNS}, p.scene_scores, p.named_face_count FROM photos p WHERE p.id=?",
+        (photo_id,),
+    ).fetchone()
     if row is None:
         return None
     photo = dict(row)
     faces = conn.execute(
         "SELECT f.id, f.person_id, f.cluster_id, f.bbox_x, f.bbox_y, f.bbox_w, "
-        "f.bbox_h, f.confidence, f.crop_path, pr.name AS person_name "
+        "f.bbox_h, f.confidence, f.quality, f.crop_path, pr.name AS person_name "
         "FROM faces f LEFT JOIN persons pr ON pr.id = f.person_id "
         "WHERE f.photo_id=? ORDER BY f.id",
         (photo_id,),

@@ -694,3 +694,16 @@ hardware) to design and benchmark. None of it is started.
   year and no dated folder named an explicit month. Place inference stays year-gated as
   before (so `ALTRE`/`Food Pics`/`Mosaico` aren't mistaken for places); the date for those
   `*_varie` folders comes from filename mining instead. Unit-tested (`tests/test_folder_meta.py`).
+
+## UI/UX round (2026-11, from the interactive lab)
+
+### Done
+- [x] Justified rows + grouping (month default; year/day/folder/none), size slider, clean cards,
+  blur-up from `photos.tint`, hover checkbox selection, floating date bubble, lightbox face
+  boxes, keyboard quick-review naming.
+
+### Not done (rated "maybe" in the lab)
+- [ ] Draggable year/month scrubber (only the scroll bubble exists).
+- [ ] Top filter menu with popovers (the sidebar is unchanged).
+- [ ] Face boxes always-on option; show a face-box toggle in the lightbox.
+- [ ] Quick-review undo (needs an "unassign cluster" endpoint).

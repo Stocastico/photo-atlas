@@ -1,9 +1,10 @@
 // Entry point: event wiring and initial load.
 import { api } from "./api.js";
-import { bulkAction, bulkExport, renderPhotos, repaintSelection, setSelectMode, updateSelectionBar } from "./grid.js";
+import { setupRecognize } from "./clusters.js";
+import { bulkAction, bulkExport, relayout, renderPhotos, setSelectMode } from "./grid.js";
 import { applyLbZoom, closeHelp, closeLightbox, focusableInLightbox, helpOpen, lbZoom, lightboxStep, resetLbZoom, toggleHelp, toggleSlideshow, zoomBy } from "./lightbox.js";
 import { setSearchMode } from "./search.js";
-import { state } from "./state.js";
+import { setPref, state } from "./state.js";
 import { applyQuery, setRestoringState, syncURL } from "./urlstate.js";
 import { $ } from "./util.js";
 import { refresh, setView } from "./views.js";
@@ -35,6 +36,8 @@ if ($("#lb-help")) $("#lb-help").onclick = toggleHelp;
 
 // Scroll/drag zoom + pan on the image stage. Wired once; the handlers no-op
 // unless the lightbox is open. Drag panning only kicks in past 1× zoom.
+setupRecognize();
+
 (function setupLbZoom() {
   const stage = $(".lb-img");
   if (!stage || !stage.addEventListener) return;
@@ -66,14 +69,23 @@ if ($("#lb-help")) $("#lb-help").onclick = toggleHelp;
 })();
 $("#sort").onchange = (e) => { state.sort = e.target.value; syncURL(); renderPhotos(true); };
 
-// Multi-select wiring.
-if ($("#select-toggle")) $("#select-toggle").onclick = () => setSelectMode(!state.selectMode);
-if ($("#select-clear")) $("#select-clear").onclick = () => {
-  state.selected.clear(); state.selectAnchor = null; repaintSelection(); updateSelectionBar();
-};
+// Display preferences: grouping + thumbnail size (persisted, no refetch needed).
+const _group = $("#group-by");
+if (_group) {
+  _group.value = state.groupMode;
+  _group.onchange = (e) => { state.groupMode = e.target.value; setPref("groupMode", state.groupMode); relayout(); };
+}
+const _size = $("#row-height");
+if (_size) {
+  _size.value = String(state.rowHeight);
+  _size.oninput = (e) => { state.rowHeight = +e.target.value; setPref("rowHeight", state.rowHeight); relayout(); };
+}
+
+// Multi-select wiring (selection is implicit: ticking a hover checkbox starts it).
+if ($("#select-clear")) $("#select-clear").onclick = () => setSelectMode(false);
 if ($("#select-all")) $("#select-all").onclick = () => {
   for (const p of state.photos) state.selected.add(p.id);
-  repaintSelection(); updateSelectionBar();
+  setSelectMode(true);
 };
 document.querySelectorAll("#selection-bar [data-bulk]").forEach((b) =>
   (b.onclick = () => bulkAction(b.dataset.bulk)));

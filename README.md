@@ -194,6 +194,7 @@ After indexing you can keep the catalog fresh without a full re-index:
 ```bash
 photo-atlas embed          # backfill semantic-search embeddings (+ per-face grounding)
 photo-atlas dedup          # backfill perceptual hashes for the Duplicates tab
+photo-atlas tints          # backfill the grid's blur-up placeholder colours (from thumbnails)
 photo-atlas retag-scenes   # recompute scene tags in place
 photo-atlas stats          # catalog summary + date-source breakdown
 photo-atlas export-labels  # write person names to portable XMP sidecars
@@ -213,9 +214,12 @@ filter sidebar on the left and seven tabs across the top.
 
 ### Tabs
 
-- **Photos** — the main virtualised gallery. Only a viewport-sized window of cards
-  is ever in the DOM, so it stays fast at 100k+ photos. Infinite-scroll paging, lazy
-  thumbnails with retina `srcset`, and a hover/keyboard ★ star on every card.
+- **Photos** — the main virtualised gallery: **justified rows** (every row fills the
+  width; tiles keep their aspect ratio) **grouped by month** (or year / day / folder /
+  none — the toolbar's *Group* menu, remembered), with a *Size* slider and a floating
+  date bubble while you scroll. Only a viewport-sized window of tiles is ever in the
+  DOM, so it stays fast at 100k+ photos. Cards are clean (just the photo; hover for
+  ★ and a select checkbox) and fade in from the photo's average colour (blur-up).
 - **Memories** — "On this day": photos taken on today's calendar date in earlier
   years, one film-strip per year ("3 years ago"). Pick any date.
 - **Trips** — auto-detected trips (contiguous runs split on capture-time gaps and big
@@ -244,11 +248,14 @@ A–Z/Z–A or recently indexed. Everything is reflected in the URL, so any view
 
 ### Select mode & bulk actions
 
-Click **Select** to turn grid clicks into a multi-selection (Shift-click extends a
-range). The selection bar applies **★ Favorite / Unfavorite**, **🙈 Hide / Unhide**,
+Tick the checkbox that appears on a tile's hover corner to start a multi-selection
+(then plain clicks toggle; Shift-click extends a range). The selection bar applies **★ Favorite / Unfavorite**, **🙈 Hide / Unhide**,
 or **⬇ Export…** (copy the originals to a folder) to the whole set.
 
 ### The lightbox
+
+Hover the photo to see **face boxes** (they follow zoom/pan); hovering one highlights its
+row in the side panel and clicking it focuses the name field.
 
 Click any photo (or press Enter on a focused card) to open the detail lightbox:
 
@@ -317,7 +324,10 @@ photo-atlas index PATH [--embed] [--prune] [--recompute] [--faces …] [--worker
 photo-atlas cluster                 # group unnamed faces into nameable clusters
 photo-atlas embed [--recompute] [--accept-model-change]   # backfill semantic-search embeddings
 photo-atlas dedup [--recompute]     # backfill perceptual hashes (Duplicates tab)
+photo-atlas tints [--recompute]    # backfill blur-up placeholder colours (from thumbnails)
 photo-atlas retag-scenes            # recompute scene tags in place (from stored embeddings)
+photo-atlas recognize [--dry-run]   # tag already-indexed faces from the people you've named
+photo-atlas face-quality            # score older faces so the clearest ones lead previews/covers
 photo-atlas calibrate-faces         # suggest face-match thresholds from people you named
 photo-atlas eval-faces / eval-search / eval-init-queries   # compare models on your library (MODELS.md)
 photo-atlas empty-trash             # permanently delete files removed via the web UI

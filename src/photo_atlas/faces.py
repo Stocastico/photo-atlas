@@ -33,6 +33,8 @@ class FaceObservation:
     bbox: tuple[int, int, int, int]  # x, y, w, h
     embedding: np.ndarray
     confidence: float = 1.0
+    #: 0-1 usefulness for recognition (size, sharpness, pose); ``None`` = not scored.
+    quality: float | None = None
 
 
 class FaceBackend(Protocol):
@@ -172,6 +174,72 @@ def arcface_preprocess(aligned_bgr: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(rgb.transpose(2, 0, 1)[None])
 
 
+def face_quality(
+    image: np.ndarray,
+    bbox: tuple[float, float, float, float],
+    landmarks: np.ndarray | None = None,
+    *,
+    side: float | None = None,
+) -> float:
+    """How trustworthy a face is as a recognition example, 0 (useless) to 1 (ideal).
+
+    A weighted geometric mean of three cues, so one bad cue drags the score down:
+
+    * **size** — the shorter side of the box; ArcFace sees 112 px, so ~112+ is full marks
+      and under ~24 px is near zero (``side`` overrides it, e.g. when scoring a crop);
+    * **sharpness** — variance of the Laplacian of the face resampled to 112², which
+      separates a crisp face from motion/defocus blur independent of the original size;
+    * **pose** — from YuNet's 5 landmarks, how far the nose sits from the eye midpoint
+      relative to the eye distance (≈0 frontal, large in profile). Without landmarks the
+      pose cue is neutral.
+
+    The constants are sensible defaults rather than tuned values; ``min_face_quality`` is
+    off by default and ``photo-atlas eval-faces`` is how to check a threshold on your data.
+    """
+
+    import cv2  # noqa: PLC0415
+
+    x, y, w, h = bbox
+    height, width = image.shape[:2]
+    x0, y0 = max(0, int(x)), max(0, int(y))
+    x1, y1 = min(width, int(x + w)), min(height, int(y + h))
+    if w <= 0 or h <= 0 or x1 - x0 < 2 or y1 - y0 < 2:
+        return 0.0
+    crop = image[y0:y1, x0:x1]
+    gray = cv2.cvtColor(
+        cv2.resize(crop, (112, 112), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY
+    )
+    sharp = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    shorter = float(side if side is not None else min(w, h))
+
+    s_size = float(np.clip((shorter - 24.0) / (112.0 - 24.0), 0.0, 1.0))
+    s_blur = float(np.clip((sharp - 20.0) / (200.0 - 20.0), 0.0, 1.0))
+    s_pose = 1.0
+    if landmarks is not None:
+        lm = np.asarray(landmarks, dtype=np.float32).reshape(5, 2)
+        eye_dist = abs(float(lm[1][0] - lm[0][0]))
+        if eye_dist > 1.0:
+            yaw = abs(float(lm[2][0] - (lm[0][0] + lm[1][0]) / 2.0)) / eye_dist
+            s_pose = float(np.clip(1.0 - (yaw - 0.12) / (0.55 - 0.12), 0.0, 1.0))
+    parts = ((s_size, 0.3), (s_blur, 0.4), (s_pose, 0.3))
+    return float(np.exp(sum(wt * np.log(max(v, 0.02)) for v, wt in parts)))
+
+
+def cap_confidence_for_quality(
+    confidence: float,
+    quality: float | None,
+    *,
+    review_confidence: float,
+    review_quality: float,
+) -> float:
+    """Never let a poor-quality face be auto-trusted: cap its guess just under the
+    review threshold so it lands in "Review guesses" for a human to confirm."""
+
+    if quality is not None and quality < review_quality and confidence >= review_confidence:
+        return max(0.01, review_confidence - 0.01)
+    return confidence
+
+
 class ArcFaceEmbedder:
     """An ArcFace-style recogniser (112² aligned RGB in, one embedding out) from any ONNX.
 
@@ -292,6 +360,9 @@ class _YuNetBackend:
                     bbox=(int(x), int(y), int(bw), int(bh)),
                     embedding=l2_normalize(self._embed(image, full_row)),
                     confidence=float(full_row[-1]),
+                    quality=face_quality(
+                        image, (x, y, bw, bh), full_row[4:14].reshape(5, 2)
+                    ),
                 )
             )
         return observations

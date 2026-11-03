@@ -172,6 +172,10 @@ def extract_meta_from_image(img: Image.Image, path: Path) -> PhotoMeta:
     meta = PhotoMeta()
     meta.width, meta.height = img.size
     exif = _exif_dict(img)
+    # Thumbnails are EXIF-transposed, so store the *displayed* dimensions: the UI's
+    # justified layout derives each tile's aspect ratio from them.
+    if exif.get("Orientation") in (5, 6, 7, 8):
+        meta.width, meta.height = meta.height, meta.width
 
     for key in ("DateTimeOriginal", "DateTimeDigitized", "DateTime"):
         if key in exif:
@@ -285,6 +289,14 @@ def read_exif_settings(path: Path) -> dict[str, str]:
 
     with Image.open(path) as img:
         return exif_settings(img)
+
+
+def tint_of(img: Image.Image) -> str:
+    """Average colour of an image as ``rrggbb`` hex (the grid's blur-up placeholder)."""
+
+    px = img.convert("RGB").resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+    assert isinstance(px, tuple)
+    return "{:02x}{:02x}{:02x}".format(*px[:3])
 
 
 def dhash(img: Image.Image, hash_size: int = 8) -> str:

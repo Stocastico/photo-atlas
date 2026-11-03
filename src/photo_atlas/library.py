@@ -7,8 +7,12 @@ merging people, and listing the unnamed face clusters that still need a label.
 from __future__ import annotations
 
 import sqlite3
+from typing import cast
+
+import numpy as np
 
 from . import db
+from .faces import Enrollment, knn_person_match, l2_normalize
 
 
 def list_persons(conn: sqlite3.Connection) -> list[dict]:
@@ -26,7 +30,7 @@ def list_persons(conn: sqlite3.Connection) -> list[dict]:
         "            AND f0.crop_path IS NOT NULL), "
         "         (SELECT f2.id FROM faces f2 "
         "          WHERE f2.person_id = pr.id AND f2.crop_path IS NOT NULL "
-        "          ORDER BY f2.id LIMIT 1)"
+        "          ORDER BY COALESCE(f2.quality, 0.6) DESC, f2.id LIMIT 1)"
         "       ) AS cover_face_id, "
         "       COUNT(f.id) AS face_count, "
         "       COUNT(DISTINCT f.photo_id) AS photo_count "
@@ -103,14 +107,23 @@ def assign_cluster(
     name: str | None = None,
     person_id: int | None = None,
 ) -> int:
-    """Assign every face in ``cluster_id`` to a person and clear the cluster."""
+    """Assign every face in ``cluster_id`` to a person (human-confirmed) and clear the cluster."""
 
     if person_id is None:
         if not name:
             raise ValueError("Provide either a person name or an existing person_id")
         person_id = db.get_or_create_person(conn, name)
+    # Naming a cluster is a human label: its faces become ground truth (confidence 1.0),
+    # which is what recognition enrolment, calibration and --recompute carry-over rely
+    # on. Any earlier "not this person" correction against *this* person is stale now.
     conn.execute(
-        "UPDATE faces SET person_id=?, cluster_id=NULL WHERE cluster_id=? AND person_id IS NULL",
+        "DELETE FROM face_negatives WHERE person_id=? AND face_id IN "
+        "(SELECT id FROM faces WHERE cluster_id=? AND person_id IS NULL)",
+        (person_id, cluster_id),
+    )
+    conn.execute(
+        "UPDATE faces SET person_id=?, cluster_id=NULL, confidence=1.0 "
+        "WHERE cluster_id=? AND person_id IS NULL",
         (person_id, cluster_id),
     )
     conn.commit()
@@ -179,8 +192,22 @@ def low_confidence_faces(
     return [dict(r) for r in rows]
 
 
-def list_clusters(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
-    """Unnamed face clusters, largest first, with sample face ids."""
+def list_clusters(
+    conn: sqlite3.Connection,
+    limit: int = 50,
+    *,
+    enrollment: Enrollment | None = None,
+    k: int = 5,
+    threshold: float = 0.5,
+) -> list[dict]:
+    """Unnamed face clusters, largest first, ready to be named in one click.
+
+    ``samples`` are the six **most typical, best-quality** faces (close to the centroid and
+    legible), not simply the first ids, so the card shows who the cluster really is rather than
+    its outliers. With an ``enrollment`` of confirmed people, a cluster whose centroid
+    matches one gets a ``suggestion`` (``person_id``, ``name``, ``confidence`` and
+    ``agreement`` = share of up to 12 typical members that match the same person).
+    """
 
     groups = conn.execute(
         "SELECT cluster_id, COUNT(*) AS size FROM faces "
@@ -188,18 +215,59 @@ def list_clusters(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
         "GROUP BY cluster_id ORDER BY size DESC LIMIT ?",
         (limit,),
     ).fetchall()
+    use_enrollment = enrollment is not None and not enrollment.is_empty
+    names = (
+        {int(r["id"]): r["name"] for r in conn.execute("SELECT id, name FROM persons")}
+        if use_enrollment
+        else {}
+    )
     clusters = []
     for g in groups:
-        samples = conn.execute(
-            "SELECT id, photo_id, crop_path FROM faces "
-            "WHERE cluster_id=? AND person_id IS NULL ORDER BY id LIMIT 6",
+        rows = conn.execute(
+            "SELECT id, photo_id, crop_path, embedding, quality FROM faces "
+            "WHERE cluster_id=? AND person_id IS NULL ORDER BY id",
             (g["cluster_id"],),
         ).fetchall()
-        clusters.append(
-            {
-                "cluster_id": int(g["cluster_id"]),
-                "size": int(g["size"]),
-                "samples": [dict(s) for s in samples],
-            }
-        )
+        embs = [db.blob_to_embedding(r["embedding"]) for r in rows]
+        usable = [i for i, e in enumerate(embs) if e is not None]
+        order = list(range(len(rows)))
+        centroid: np.ndarray | None = None
+        if usable and len({cast(np.ndarray, embs[i]).shape[0] for i in usable}) == 1:
+            mat = np.vstack([l2_normalize(cast(np.ndarray, embs[i])) for i in usable])
+            centroid = l2_normalize(mat.mean(axis=0))
+            # Most typical *and* most legible: closeness to the centroid, discounted by
+            # quality (an unscored face counts as middling).
+            quality = np.array([
+                0.6 if rows[i]["quality"] is None else rows[i]["quality"] for i in usable
+            ])
+            score = (mat @ centroid) * (0.5 + 0.5 * quality)
+            ranked = [usable[j] for j in np.argsort(-score, kind="stable")]
+            order = ranked + [i for i in range(len(rows)) if i not in set(usable)]
+        entry: dict = {
+            "cluster_id": int(g["cluster_id"]),
+            "size": int(g["size"]),
+            "samples": [
+                {"id": rows[i]["id"], "photo_id": rows[i]["photo_id"],
+                 "crop_path": rows[i]["crop_path"]}
+                for i in order[:6]
+            ],
+        }
+        if use_enrollment and centroid is not None and enrollment is not None:
+            if centroid.shape[0] == enrollment.embeddings.shape[1]:
+                pid, conf = knn_person_match(centroid, enrollment, k=k, threshold=threshold)
+                if pid is not None:
+                    votes = [
+                        knn_person_match(
+                            cast(np.ndarray, embs[i]), enrollment, k=k, threshold=threshold
+                        )[0]
+                        for i in order[:12] if embs[i] is not None
+                    ]
+                    entry["suggestion"] = {
+                        "person_id": pid,
+                        "name": names.get(pid),
+                        "confidence": round(conf, 3),
+                        "agreement": round(sum(v == pid for v in votes) / len(votes), 2)
+                        if votes else 0.0,
+                    }
+        clusters.append(entry)
     return clusters

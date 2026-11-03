@@ -722,7 +722,16 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
     # -- clusters & assignment -------------------------------------------
     @app.get("/api/clusters")
     def api_clusters(conn: sqlite3.Connection = Depends(get_conn)):
-        return {"clusters": library.list_clusters(conn)}
+        from . import indexer
+
+        # confirmed faces -> "looks like X"
+        enrollment = indexer._load_enrollment(conn, config.min_face_quality)
+        return {"clusters": library.list_clusters(
+            conn,
+            enrollment=None if enrollment.is_empty else enrollment,
+            k=config.recognition_k,
+            threshold=config.face_match_threshold,
+        )}
 
     @app.post("/api/clusters/{cluster_id}/assign")
     def api_assign_cluster(
@@ -752,6 +761,14 @@ def create_app(config: AtlasConfig | None = None, *, allow_any_host: bool = Fals
     def api_unassign_face(face_id: int, conn: sqlite3.Connection = Depends(get_conn)):
         library.unassign_face(conn, face_id)
         return {"ok": True}
+
+    @app.post("/api/faces/recognize")
+    def api_recognize_faces():
+        # Propagate the names you've confirmed to every other face in the catalog (from the
+        # stored embeddings; nothing is re-detected). Behind the same-origin write guard.
+        from . import housekeeping
+
+        return housekeeping.recognize_faces(config)
 
     @app.get("/api/faces/review")
     def api_review_faces(conn: sqlite3.Connection = Depends(get_conn)):

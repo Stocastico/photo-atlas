@@ -20,6 +20,7 @@ from . import db
 from .config import AtlasConfig
 from .indexer import (
     backfill_phashes,
+    backfill_tints,
     cluster_library,
     embed_face_regions,
     embed_library,
@@ -145,6 +146,42 @@ def _cmd_restore(args) -> int:
     if result["restored"]:
         print("Run `photo-atlas index <folder>` to add them back to the catalog.")
     return 1 if result["conflicts"] else 0
+
+
+def _cmd_face_quality(args) -> int:
+    from .housekeeping import backfill_face_quality
+
+    config = _config(args)
+
+    def progress(done: int, total: int) -> None:
+        sys.stdout.write(f"\r  scored {done}/{total}")
+        sys.stdout.flush()
+
+    n = backfill_face_quality(config, progress=progress)
+    print(f"\nScored {n} face(s). Best faces now lead cluster previews and person covers.")
+    return 0
+
+
+def _cmd_recognize(args) -> int:
+    from .housekeeping import recognize_faces
+
+    config = _config(args)
+    r = recognize_faces(config, dry_run=args.dry_run)
+    if r["enrolled"] == 0:
+        print("No confirmed faces yet: name some people first (web UI → Name faces), "
+              "then run this again.")
+        return 1
+    verb = "Would tag" if args.dry_run else "Tagged"
+    print(f"{verb} {r['tagged']} previously unnamed face(s) across {r['people']} people "
+          f"(learned from {r['enrolled']} confirmed faces); retagged {r['retagged']}, "
+          f"cleared {r['cleared']} guess(es) that no longer match.")
+    if r["need_review"]:
+        print(f"{r['need_review']} guess(es) are below {r['review_confidence']:.0%} "
+              "confidence: check them in the web UI (Name faces → Review guesses).")
+    if r["skipped_dim"]:
+        print(f"Skipped {r['skipped_dim']} face(s) from a different face model "
+              "(re-index them with --recompute --accept-model-change).")
+    return 0
 
 
 def _cmd_calibrate_faces(args) -> int:
@@ -315,6 +352,19 @@ def _cmd_dedup(args) -> int:
         f"\nDone: {n} photo(s) hashed. Open the Duplicates tab in `photo-atlas serve` "
         "to review bursts and near-duplicates."
     )
+    return 0
+
+
+def _cmd_tints(args) -> int:
+    config = _config(args)
+
+    def progress(done: int, total: int) -> None:
+        sys.stdout.write(f"\r  tinted {done}/{total}")
+        sys.stdout.flush()
+
+    print("Computing placeholder colours for the photo grid ...")
+    n = backfill_tints(config, recompute=args.recompute, progress=progress)
+    print(f"\nDone: {n} photo(s) tinted.")
     return 0
 
 
@@ -506,6 +556,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_eq.add_argument("file", help="where to write the template")
     p_eq.set_defaults(func=_cmd_eval_init_queries)
 
+    p_fq = sub.add_parser(
+        "face-quality", help="Score faces indexed before quality existed (from their saved crops)"
+    )
+    p_fq.set_defaults(func=_cmd_face_quality)
+
+    p_rec = sub.add_parser(
+        "recognize",
+        help="Name the faces already indexed using the people you've confirmed (no re-index)",
+    )
+    p_rec.add_argument("--dry-run", action="store_true", help="show what would change")
+    p_rec.set_defaults(func=_cmd_recognize)
+
     p_cal = sub.add_parser(
         "calibrate-faces",
         help="Suggest face-match thresholds from the people you have already named",
@@ -536,6 +598,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--recompute", action="store_true", help="Re-hash photos that already have a hash"
     )
     p_dedup.set_defaults(func=_cmd_dedup)
+
+    p_tints = sub.add_parser(
+        "tints",
+        help="Backfill the average colour used as the grid's blur-up placeholder (from thumbnails)",
+    )
+    p_tints.add_argument(
+        "--recompute", action="store_true", help="Recompute photos that already have a tint"
+    )
+    p_tints.set_defaults(func=_cmd_tints)
 
     p_export = sub.add_parser(
         "export-labels", help="Write person names to portable XMP sidecars"

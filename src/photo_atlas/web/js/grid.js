@@ -2,50 +2,59 @@
 import { api } from "./api.js";
 import { makeStar } from "./favorites.js";
 import { inSimilarMode, photosRequestURL } from "./filters.js";
+import { bubbleText, buildLayout, itemAt, visibleRange } from "./layout.js";
 import { openLightbox } from "./lightbox.js";
 import { renderSidebar } from "./sidebar.js";
-import { BUFFER_ROWS, CARD_MIN, GRID_GAP, PEOPLE_LABELS, state } from "./state.js";
+import { BUFFER_PX, GRID_GAP, HEADER_H, PEOPLE_LABELS, state } from "./state.js";
 import { activeFilterPairs } from "./urlstate.js";
 import { $, esc, toast } from "./util.js";
 
-// ---- photos grid (infinite scroll) ----------------------------------------
+// ---- photos grid (justified rows, grouped, infinite scroll) ----------------
+// Cards are deliberately clean: the thumbnail, a hover star + checkbox, and a
+// video badge. The tint is the photo's average colour, shown while the thumb
+// loads and then cross-faded/de-blurred (blur-up).
 function photoCard(p, index) {
   const card = document.createElement("div");
   card.className = "card" + (state.selected.has(p.id) ? " selected" : "");
-  const placeText = p.place_label ? p.place_label.split(",")[0] : p.folder_place;
-  const place = placeText ? `<span>${esc(placeText)}</span>` : "<span></span>";
+  if (p.tint) card.style.backgroundColor = "#" + p.tint;
   // srcset lets the browser pull the 2x (retina) thumb only on hi-DPI screens;
   // the base 320px thumb is pre-generated, the 640px one is cached on demand.
   card.innerHTML = `
-    <img loading="lazy" decoding="async" width="320" height="320"
+    <img loading="lazy" decoding="async"
       src="/api/thumb/${p.id}"
       srcset="/api/thumb/${p.id} 320w, /api/thumb/${p.id}?size=640 640w"
-      sizes="220px"
+      sizes="${Math.ceil(state.rowHeight * 1.6)}px"
       alt="${esc(p.filename)}" />
-    <span class="select-check" aria-hidden="true">✓</span>
-    ${p.face_count ? `<span class="badge">👤 ${p.face_count}</span>` : ""}
-    ${p.is_video ? `<span class="badge video-badge" aria-label="Video">▶</span>` : ""}
-    <div class="meta">${place}<span>${(p.taken_at || "").slice(0, 4)}</span></div>`;
+    <span class="select-check" role="checkbox" aria-label="Select ${esc(p.filename)}"
+      aria-checked="${state.selected.has(p.id)}">✓</span>
+    ${p.is_video ? `<span class="badge video-badge" aria-label="Video">▶</span>` : ""}`;
+  const img = card.querySelector("img");
+  if (img) {
+    const done = () => card.classList.add("loaded");
+    img.onload = done;
+    img.onerror = done;
+    if (img.complete) done();
+  }
   card.setAttribute("role", "button");
   card.setAttribute("tabindex", "0");
   card.setAttribute("aria-label", `Open ${p.filename}`);
-  const activate = (e) => state.selectMode ? toggleSelect(index, e.shiftKey) : openLightbox(index);
+  const activate = (e) => state.selected.size ? toggleSelect(index, e.shiftKey) : openLightbox(index);
   card.onclick = activate;
   card.onkeydown = (e) => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activate(e); }
   };
+  const check = card.querySelector(".select-check");
+  if (check) check.onclick = (e) => { e.stopPropagation(); toggleSelect(index, e.shiftKey); };
   card.appendChild(makeStar(p)); // favourite toggle overlay
   return card;
 }
 
 // ---- multi-select + bulk actions ------------------------------------------
+// Selection is implicit: tick a hover checkbox and the bar appears; while anything
+// is selected a plain click toggles instead of opening. Cleared -> back to browsing.
 export function setSelectMode(on) {
-  state.selectMode = on;
   if (!on) { state.selected.clear(); state.selectAnchor = null; }
-  const btn = $("#select-toggle");
-  if (btn) { btn.classList.toggle("active", on); btn.setAttribute("aria-pressed", on ? "true" : "false"); }
-  $("#selection-bar").hidden = !on;
-  $("#grid").classList.toggle("selecting", on);
+  state.selectMode = state.selected.size > 0;
   repaintSelection();
   updateSelectionBar();
 }
@@ -69,12 +78,21 @@ function toggleSelect(index, shift) {
 export function repaintSelection() {
   for (const [i, el] of state.rendered) {
     const p = state.photos[i];
-    if (p) el.classList.toggle("selected", state.selected.has(p.id));
+    if (!p) continue;
+    const on = state.selected.has(p.id);
+    el.classList.toggle("selected", on);
+    const chk = el.querySelector(".select-check");
+    if (chk) chk.setAttribute("aria-checked", on ? "true" : "false");
   }
 }
 
 export function updateSelectionBar() {
   const n = state.selected.size;
+  state.selectMode = n > 0;
+  const bar = $("#selection-bar");
+  if (bar) bar.hidden = n === 0;
+  const grid = $("#grid");
+  if (grid) grid.classList.toggle("selecting", n > 0);
   const label = $("#selection-count");
   if (label) label.textContent = `${n} selected`;
   document.querySelectorAll("#selection-bar [data-bulk]").forEach((b) => (b.disabled = n === 0));
@@ -121,70 +139,112 @@ export async function bulkExport() {
   toast(`Exported ${res.copied} photo${res.copied === 1 ? "" : "s"}${miss}`, "info");
 }
 
-// -- pure windowing math (unit-tested via tests/js/grid_window_harness.mjs) --
-// The grid takes over its own layout (cards are absolutely positioned) so only
-// a viewport-sized window of card nodes ever exists in the DOM, bounding both
+// -- windowed rendering -----------------------------------------------------
+// layout.js computes every tile's rectangle (justified rows + group headers); only
+// the rectangles intersecting the viewport (plus a buffer) get DOM nodes, bounding
 // node count and decoded-bitmap memory regardless of library size.
-export function gridLayout(containerWidth, n) {
-  const w = Math.max(containerWidth, CARD_MIN);
-  const cols = Math.max(1, Math.floor((w + GRID_GAP) / (CARD_MIN + GRID_GAP)));
-  const cardW = (w - (cols - 1) * GRID_GAP) / cols;
-  const cardH = cardW; // square cards (aspect-ratio 1)
-  const rows = Math.ceil(n / cols);
-  const totalH = rows > 0 ? rows * cardH + (rows - 1) * GRID_GAP : 0;
-  return { cols, cardW, cardH, rows, totalH };
+let layoutKey = "";
+function currentLayout(grid) {
+  const width = Math.max(grid.clientWidth || 0, 200);
+  const complete = state.photos.length >= state.total;
+  const key = [state.photos.length, width, state.rowHeight, state.groupMode, complete].join("|");
+  if (key !== layoutKey || !state.layout) {
+    state.layout = buildLayout(state.photos, {
+      width, target: state.rowHeight, gap: GRID_GAP, mode: state.groupMode,
+      headerH: HEADER_H, complete,
+    });
+    layoutKey = key; // live nodes are repositioned by index in renderWindow
+  }
+  return state.layout;
 }
 
-export function cardOffset(i, layout) {
-  const row = Math.floor(i / layout.cols);
-  const col = i % layout.cols;
-  return { left: col * (layout.cardW + GRID_GAP), top: row * (layout.cardH + GRID_GAP) };
+function headerNode(h) {
+  const el = document.createElement("div");
+  el.className = "group-header";
+  el.innerHTML = `<span class="gh-title">${esc(h.label)}</span><span class="gh-count"></span>`;
+  return el;
 }
 
-export function windowRange(scrollTop, viewportH, layout, n) {
-  const unit = layout.cardH + GRID_GAP;
-  const firstRow = Math.max(0, Math.floor(Math.max(0, scrollTop) / unit) - BUFFER_ROWS);
-  const visRows = Math.ceil(viewportH / unit) + BUFFER_ROWS * 2;
-  const start = firstRow * layout.cols;
-  const end = Math.min(n, (firstRow + visRows) * layout.cols);
-  return { start: Math.min(start, n), end };
-}
-
-// Reconcile the DOM with the currently-visible window: drop cards that scrolled
-// out, create+position the ones that scrolled in, reposition the rest.
+// Reconcile the DOM with the currently-visible window.
 function renderWindow() {
   if (state.view !== "photos") return;
   const grid = $("#grid");
-  const n = state.photos.length;
-  const layout = gridLayout(grid.clientWidth || 0, n);
-  state.layout = layout;
+  const layout = currentLayout(grid);
   grid.style.height = layout.totalH + "px";
 
   const gridTop = grid.getBoundingClientRect().top + window.scrollY;
   const scrollTop = window.scrollY - gridTop;
-  const { start, end } = windowRange(scrollTop, window.innerHeight, layout, n);
+  const vis = visibleRange(layout, scrollTop, window.innerHeight, BUFFER_PX);
 
+  const keep = new Set(vis.items.map((it) => it.i));
   for (const [i, el] of state.rendered) {
-    if (i < start || i >= end) { el.remove(); state.rendered.delete(i); }
+    if (!keep.has(i)) { el.remove(); state.rendered.delete(i); }
   }
-  for (let i = start; i < end; i++) {
-    let el = state.rendered.get(i);
+  for (const it of vis.items) {
+    let el = state.rendered.get(it.i);
     if (!el) {
-      el = photoCard(state.photos[i], i);
+      el = photoCard(state.photos[it.i], it.i);
       grid.appendChild(el);
-      state.rendered.set(i, el);
+      state.rendered.set(it.i, el);
     }
-    const off = cardOffset(i, layout);
-    el.style.width = layout.cardW + "px";
-    el.style.height = layout.cardH + "px";
-    el.style.transform = `translate(${off.left}px, ${off.top}px)`;
+    el.style.width = it.w + "px";
+    el.style.height = it.h + "px";
+    el.style.transform = `translate(${it.left}px, ${it.top}px)`;
   }
+
+  const hkeep = new Set(vis.headers.map((h) => h.key));
+  for (const [k, el] of state.renderedHeaders) {
+    if (!hkeep.has(k)) { el.remove(); state.renderedHeaders.delete(k); }
+  }
+  for (const h of vis.headers) {
+    let el = state.renderedHeaders.get(h.key);
+    if (!el) {
+      el = headerNode(h);
+      grid.appendChild(el);
+      state.renderedHeaders.set(h.key, el);
+    }
+    el.style.height = h.h + "px";
+    el.style.transform = `translateY(${h.top}px)`;
+    const c = el.querySelector(".gh-count");
+    if (c) c.textContent = h.count == null ? "" : `${h.count} photo${h.count === 1 ? "" : "s"}`;
+  }
+  updateBubble(layout, scrollTop);
+}
+
+// Floating date shown while scrolling fast through a long library.
+let bubbleTimer = null;
+function updateBubble(layout, scrollTop) {
+  const el = $("#date-bubble");
+  if (!el) return;
+  const it = itemAt(layout, scrollTop + 120);
+  const text = it ? (state.groupMode === "year"
+    ? (state.photos[it.i].taken_at || "").slice(0, 4)
+    : bubbleText(state.photos[it.i].taken_at)) : "";
+  if (!text || scrollTop < 200) { el.classList.remove("show"); return; }
+  el.textContent = text;
+  el.classList.add("show");
+  clearTimeout(bubbleTimer);
+  bubbleTimer = setTimeout(() => el.classList.remove("show"), 900);
+}
+
+function clearNodes() {
+  for (const el of state.rendered.values()) el.remove();
+  state.rendered.clear();
+  for (const el of state.renderedHeaders.values()) el.remove();
+  state.renderedHeaders.clear();
 }
 
 function clearGrid() {
-  for (const el of state.rendered.values()) el.remove();
-  state.rendered.clear();
+  clearNodes();
+  layoutKey = "";
+  state.layout = null;
   $("#grid").style.height = "0px";
+}
+
+/** Re-flow after a display preference (grouping / size) changed — no refetch. */
+export function relayout() {
+  layoutKey = "";
+  renderWindow();
 }
 
 export async function renderPhotos(reset = true) {

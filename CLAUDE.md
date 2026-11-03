@@ -58,7 +58,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 
 | Module | Role |
 | --- | --- |
-| `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `empty-trash`, `restore`, `calibrate-faces`, `eval-faces`, `eval-search`, `eval-init-queries`, `export-labels`, `demo`) |
+| `cli.py` | argparse entry point (`index`, `embed`, `dedup`, `tints`, `cluster`, `retag-scenes`, `serve`, `stats`, `prune`, `empty-trash`, `restore`, `recognize`, `face-quality`, `calibrate-faces`, `eval-faces`, `eval-search`, `eval-init-queries`, `export-labels`, `demo`) |
 | `config.py` | `AtlasConfig` — library paths + tunables (`~/.photo_atlas`, `PHOTO_ATLAS_HOME`) |
 | `db.py` | SQLite schema, additive migrations (`_migrate`), embedding (de)serialisation. `PHOTO_COLUMNS` is the single source of truth for writable photo columns |
 | `indexer.py` | the ingest pipeline; decode-once per file, fan-out over a `ProcessPoolExecutor` (main process does all DB writes). Housekeeping (`sweep_orphan_derivatives`, `prune_library`, `delete_photos`, `empty_trash`, `restore_trash`, `export_photos`, `cluster_library`, `calibrate_faces`) lives in `housekeeping.py` and is re-exported here. Also `embed_library`, `embed_face_regions` (per-person grounding backfill), `region_box` (face→person-region geometry), `backfill_phashes`, `retag_scenes`; `delete_photos` moves originals to `trash_dir` (purged by `empty_trash` / CLI `empty-trash`, put back by `restore_trash` / CLI `restore [ids]`, which never overwrites), `export_photos` copies a selection's originals to a folder |
@@ -78,6 +78,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
 | `api.py` | FastAPI app (`create_app`); media + JSON endpoints; cross-origin write guard; caches the semantic index + text encoder |
 | `evaluate.py` | model evaluation harness behind `eval-*`: pure metrics (`verification_metrics`, `identification_metrics`, `rank_metrics`), `evaluate_faces` (named faces re-detected once, embedded by every candidate), `evaluate_search` (user queries + label-free burst check), candidate builders/presets |
 | `models.py` | on-demand model downloads (YuNet/ArcFace/SFace + SigLIP 2) with env overrides; `ensure_arcface_models` (default), `ensure_models` (SFace), `ensure_scene_input_size` |
+| `web/js/layout.js` | pure justified-row + grouped layout (`buildLayout`, `visibleRange`, `itemAt`, `groupKey`): no DOM, unit-tested by `tests/js/layout_harness.mjs`. `grid.js` windows its rectangles with the page scroll; headers' counts are `null` while more pages are loading |
 | `web/` | `index.html` + `styles.css` + native **ES modules** in `web/js/` (`main.js` entry; `state`/`api`/`filters`/`urlstate`/`sidebar`/`grid`/`lightbox`/one module per view), Leaflet vendored locally; **no build step**. Modules import each other cyclically (function declarations only — no import-time side effects outside `main.js`); a `let` can't be reassigned from another module, so expose a setter (see `urlstate.setRestoringState`) |
 
 ## Conventions & gotchas
@@ -112,6 +113,12 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   every re-index, and `indexer.backfill_phashes` (CLI `dedup`) fills it for older
   catalogs. `search.find_burst_groups` reads it for the Duplicates tab; videos carry
   no phash so they fall out naturally.
+- **`photos.tint` (average colour, `rrggbb`, schema v4) is the grid's blur-up placeholder.**
+  Out of `PHOTO_COLUMNS` like `phash` (written via `db.set_tint`, listed via `_LIST_COLUMNS`),
+  computed at index time and backfilled from thumbnails by `indexer.backfill_tints` (CLI
+  `tints`). `photos.width/height` are stored **EXIF-transposed** (displayed orientation) since
+  the layout derives aspect ratio from them; older catalogs with rotated photos keep
+  pre-rotation dims until re-indexed (the lightbox face-box helper compensates).
 - **`favorite`, `is_video` and `hidden` are also kept out of `PHOTO_COLUMNS`** so a
   re-index (an `ON CONFLICT DO UPDATE` over only those columns) never resets them; all
   are appended to `_LIST_COLUMNS` by hand and written via their own UPDATEs (bulk via
@@ -138,6 +145,21 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   faces. ONNX providers: `PHOTO_ATLAS_PROVIDERS` (auto = CUDA/DirectML if present).
 - **Facet filters accept a scalar or a list** (OR within a facet, AND across facets).
   Semantic search is a *ranking* layered on top, via the `text` query param.
+- **Human-confirmed = `faces.confidence >= 1.0`**, however it got there (`assign_face`,
+  `assign_cluster`, confirming a guess; migration v2 promoted faces named through clusters
+  before this was true). Enrolment (`indexer._load_enrollment`), `calibrate-faces`, `eval-faces`
+  and `--recompute` carry-over use only those; unconfirmed auto-tags are never ground truth.
+  `housekeeping.recognize_faces` (CLI `recognize`, `POST /api/faces/recognize`, the “Auto-tag”
+  button) re-runs k-NN over the **stored** embeddings for every non-confirmed face, so naming
+  someone reaches already-indexed photos without re-indexing. Cluster cards come from
+  `library.list_clusters` (samples = faces closest to the centroid; `suggestion` = “looks like X”).
+- **Face quality** (`faces.quality`, 0-1, schema v3): `faces.face_quality` blends size,
+  Laplacian sharpness and landmark-based pose (geometric mean; constants are sensible defaults,
+  not tuned). Set at index time (`FaceObservation.quality`, fallback size+sharpness for backends
+  without landmarks), backfilled from crops by `face-quality`. Used to (a) lead cluster previews and
+  person covers with legible faces, (b) force guesses on poor faces (`review_quality`, 0.35) into
+  “Review guesses” via `cap_confidence_for_quality`, and (c) optionally gate enrolment/clustering/
+  auto-tagging with `PHOTO_ATLAS_MIN_FACE_QUALITY` (default 0 = off; unscored faces are never excluded).
 - **Face active learning:** correcting an auto-tag (un/reassign) records a
   `face_negatives` row; `_load_enrollment` feeds those into `Enrollment` so
   `knn_person_match` penalises a rejected identity. A human `assign_face` sets
@@ -147,7 +169,7 @@ pip-installs `.[dev]` and exports `PYTHONPATH=src`.
   (IoU-matched by bbox) copies any prior `confidence>=1.0` assignment onto the
   re-detected face, so re-indexing refreshes detection/embeddings without wiping names.
 - **Frontend tests:** pure helpers (grid windowing, URL state, facet cache, zoom) are
-  exercised by Node harnesses in `tests/js/*_harness.mjs` that `import()` the real
+  exercised by Node harnesses in `tests/js/*_harness.mjs` (layout, lightbox/face boxes, quick-review keys, …) that `import()` the real
   modules over `tests/js/fake_dom.mjs` (`tests/test_web_js.py`); a real-Chromium smoke
   test (`tests/js/browser_smoke.cjs` via `tests/test_web_browser.py`) loads the UI against the
   demo library and fails on any console/page/request error. Both skip when Node /

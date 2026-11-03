@@ -15,7 +15,10 @@ from . import db
 from . import faces as faces_module
 from .config import AtlasConfig
 from .faces import (
+    cap_confidence_for_quality,
     cluster_embeddings,
+    face_quality,
+    knn_person_match,
 )
 from .fsutil import unlink_quietly
 
@@ -278,7 +281,9 @@ def cluster_library(config: AtlasConfig) -> dict[str, int]:
     conn = db.connect(config.db_path)
     try:
         rows = conn.execute(
-            "SELECT id, embedding FROM faces WHERE person_id IS NULL AND embedding IS NOT NULL"
+            "SELECT id, embedding FROM faces WHERE person_id IS NULL AND embedding IS NOT NULL "
+            "AND (quality IS NULL OR quality >= ?)",
+            (config.min_face_quality,),
         ).fetchall()
         ids = [int(r["id"]) for r in rows]
         # The WHERE clause guarantees non-NULL embeddings, so each decodes to an
@@ -337,3 +342,129 @@ def calibrate_faces(config: AtlasConfig) -> dict | None:
     if result is None:
         return None
     return {**result, "faces": len(rows), "people": int(np.unique(person_ids).size)}
+
+
+def recognize_faces(config: AtlasConfig, *, dry_run: bool = False) -> dict:
+    """Name the faces already in the catalog using the people you've confirmed.
+
+    Recognition used to happen only while indexing, so naming someone never reached the
+    faces indexed before. This re-runs the app's k-NN match (negative-aware, same
+    threshold) from the **stored** embeddings — seconds, no photo is touched. Only
+    faces a human hasn't confirmed (confidence < 1) are considered, and they are
+    re-evaluated against the current enrolment: unnamed faces that now match get tagged,
+    wrong guesses move to the right person, and guesses that no longer hold are cleared.
+    Faces in another embedding space (different dimension) are skipped. Idempotent.
+
+    Returns counts: ``tagged`` / ``retagged`` / ``cleared`` / ``unchanged`` /
+    ``skipped_dim`` / ``need_review`` (resulting guesses below ``review_confidence``,
+    shown under *Review guesses*), ``enrolled`` (confirmed faces learned from) and
+    ``people`` (distinct people newly assigned).
+    """
+
+    from .indexer import _load_enrollment  # noqa: PLC0415 - indexer imports this module
+
+    result: dict = {
+        "enrolled": 0, "examined": 0, "tagged": 0, "retagged": 0, "cleared": 0,
+        "unchanged": 0, "skipped_dim": 0, "need_review": 0, "people": 0,
+        "threshold": config.face_match_threshold,
+        "review_confidence": config.review_confidence, "dry_run": dry_run,
+    }
+    conn = db.connect(config.db_path)
+    try:
+        enrollment = _load_enrollment(conn, config.min_face_quality)
+        result["enrolled"] = int(enrollment.person_ids.size)
+        if enrollment.is_empty:
+            return result
+        dim = int(enrollment.embeddings.shape[1])
+        rows = conn.execute(
+            "SELECT id, person_id, confidence, embedding, quality FROM faces "
+            "WHERE embedding IS NOT NULL AND (confidence IS NULL OR confidence < 1.0) "
+            "AND (quality IS NULL OR quality >= ?)",
+            (config.min_face_quality,),
+        ).fetchall()
+        updates: list[tuple[int | None, float, int]] = []
+        newly: set[int] = set()
+        for r in rows:
+            vec = db.blob_to_embedding(r["embedding"])
+            if vec is None or vec.shape[0] != dim:
+                result["skipped_dim"] += 1
+                continue
+            result["examined"] += 1
+            pid, conf = knn_person_match(
+                vec, enrollment, k=config.recognition_k, threshold=config.face_match_threshold
+            )
+            old, old_conf = r["person_id"], r["confidence"] or 0.0
+            conf = cap_confidence_for_quality(
+                conf, r["quality"],
+                review_confidence=config.review_confidence,
+                review_quality=config.review_quality,
+            )
+            if pid is None:
+                if old is None:
+                    result["unchanged"] += 1
+                else:
+                    result["cleared"] += 1
+                    updates.append((None, 0.0, r["id"]))
+                continue
+            if old is None:
+                result["tagged"] += 1
+                newly.add(pid)
+            elif old != pid:
+                result["retagged"] += 1
+                newly.add(pid)
+            else:
+                result["unchanged"] += 1
+            if conf < config.review_confidence:
+                result["need_review"] += 1
+            if old != pid or abs(old_conf - conf) > 1e-6:
+                updates.append((pid, conf, r["id"]))
+        result["people"] = len(newly)
+        if not dry_run:
+            for i in range(0, len(updates), 5000):
+                conn.executemany(
+                    "UPDATE faces SET person_id=?, confidence=?, "
+                    "cluster_id = CASE WHEN ? IS NULL THEN cluster_id ELSE NULL END WHERE id=?",
+                    [(p, c, p, fid) for p, c, fid in updates[i : i + 5000]],
+                )
+            conn.commit()
+        return result
+    finally:
+        conn.close()
+
+
+def backfill_face_quality(config: AtlasConfig, *, progress=None) -> int:
+    """Score faces indexed before quality existed, from their saved crops.
+
+    A crop has no landmarks, so pose is left neutral; size comes from the stored box and
+    sharpness from the crop itself. Faces whose crop file is missing stay unscored (they
+    are never excluded or demoted). Returns the number of faces scored.
+    """
+
+    import cv2  # noqa: PLC0415
+
+    conn = db.connect(config.db_path)
+    scored = 0
+    try:
+        rows = conn.execute(
+            "SELECT id, crop_path, bbox_w, bbox_h FROM faces "
+            "WHERE quality IS NULL AND crop_path IS NOT NULL"
+        ).fetchall()
+        for i, r in enumerate(rows):
+            crop = cv2.imread(str(r["crop_path"]))
+            if crop is None:
+                continue
+            h, w = crop.shape[:2]
+            side = min(r["bbox_w"] or w, r["bbox_h"] or h)
+            conn.execute(
+                "UPDATE faces SET quality=? WHERE id=?",
+                (face_quality(crop, (0, 0, w, h), None, side=float(side)), r["id"]),
+            )
+            scored += 1
+            if scored % 500 == 0:
+                conn.commit()
+            if progress is not None:
+                progress(i + 1, len(rows))
+        conn.commit()
+    finally:
+        conn.close()
+    return scored

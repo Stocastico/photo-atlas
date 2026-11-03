@@ -25,6 +25,29 @@ const ok = (cond, msg) => {
   await page.goto(base, { waitUntil: "networkidle" });
   await page.waitForSelector("#grid .card", { timeout: 10000 });
   ok((await page.locator("#grid .card").count()) > 0, "grid renders photo cards");
+  // Justified rows: tiles in one row share a top and the row fills the grid width.
+  const geo = await page.evaluate(() => {
+    const g = document.querySelector("#grid").getBoundingClientRect();
+    const rects = [...document.querySelectorAll("#grid .card")].map((c) => c.getBoundingClientRect());
+    const top = rects[0].top;
+    const row = rects.filter((r) => Math.abs(r.top - top) < 1);
+    return { n: row.length, right: Math.max(...row.map((r) => r.right)) - g.left, width: g.width,
+      headers: document.querySelectorAll("#grid .group-header").length };
+  });
+  ok(geo.n >= 1 && (geo.n === 1 || Math.abs(geo.right - geo.width) < 2), "first row is justified to the grid width");
+  ok(geo.headers >= 1, "month group headers are shown by default");
+  // Switching to no grouping removes headers without refetching.
+  await page.selectOption("#group-by", "none");
+  await page.waitForTimeout(150);
+  ok((await page.locator("#grid .group-header").count()) === 0, "no grouping -> no headers");
+  await page.selectOption("#group-by", "month");
+  // Hover checkbox starts a selection and reveals the bar; Clear ends it.
+  const first = page.locator("#grid .card").first();
+  await first.hover();
+  await first.locator(".select-check").click();
+  ok(!(await page.locator("#selection-bar").isHidden()), "ticking a checkbox shows the selection bar");
+  await page.click("#select-clear");
+  ok(await page.locator("#selection-bar").isHidden(), "clearing hides the selection bar");
   ok(/\d/.test(await page.textContent("#result-count")), "result count is shown");
 
   // Every tab shows its own panel (and hides the photos panel).
@@ -35,6 +58,31 @@ const ok = (cond, msg) => {
     ok((await page.getAttribute(`#tab-${view}`, "aria-selected")) === "true", `tab ${view}: selected`);
     if (view === "map") ok((await page.locator("#map .leaflet-container, #map.leaflet-container").count()) > 0, "map initialises leaflet");
   }
+
+  // "Auto-tag faces from my names": reports an outcome (the demo has no confirmed faces yet).
+  await page.click('.tab[data-view="clusters"]');
+  await page.waitForSelector("#recognize-btn");
+  await page.click("#recognize-btn");
+  await page.waitForFunction(
+    () => /Name a few people first|Tagged/.test(document.querySelector("#recognize-status").textContent),
+    null, { timeout: 5000 });
+  await page.waitForFunction(() => !document.querySelector("#recognize-btn").disabled, null, { timeout: 5000 })
+    .catch(() => {});
+  ok(!(await page.isDisabled("#recognize-btn")), "auto-tag button is re-enabled afterwards");
+  // Quick review: opens an overlay (the demo has unnamed groups), N focuses the name box, Esc closes.
+  if ((await page.locator("#clusters .cluster-card").count()) > 0) {
+    await page.click("#quick-review-btn");
+    await page.waitForSelector("#qr:not([hidden]) .qr-card", { timeout: 5000 });
+    await page.keyboard.press("n");
+    ok(await page.evaluate(() => document.activeElement && document.activeElement.id === "qr-name"),
+      "quick review: N focuses the new-person box");
+    await page.keyboard.press("Escape"); // leaves the input
+    await page.keyboard.press("Escape"); // closes the overlay
+    await page.waitForSelector("#qr", { state: "hidden", timeout: 3000 });
+    ok(true, "quick review closes with Esc");
+  }
+  await page.click('.tab[data-view="photos"]');
+  await page.waitForTimeout(300);
 
   // Sidebar filter -> URL state + fewer-or-equal results; clear restores.
   await page.waitForSelector("#sidebar .chip", { timeout: 5000 });
@@ -60,6 +108,20 @@ const ok = (cond, msg) => {
   await page.keyboard.press("Escape");
   await page.waitForTimeout(300);
   ok((await page.locator("#lightbox.open").count()) === 0, "Escape closes lightbox");
+
+  // Face boxes: one overlay box per listed face, revealed on hover of the image.
+  await page.goto(base + "?people=1", { waitUntil: "networkidle" });
+  await page.waitForSelector("#grid .card");
+  await page.locator("#grid .card").first().click();
+  await page.waitForSelector("#lb-faces .face-item", { timeout: 5000 });
+  await page.waitForSelector("#lb-boxes .fbox", { state: "attached", timeout: 5000 });
+  const nItems = await page.locator("#lb-faces .face-item").count();
+  ok((await page.locator("#lb-boxes .fbox").count()) === nItems, "one face box per listed face");
+  await page.hover(".lb-img");
+  ok((await page.locator("#lb-boxes .fbox").first().evaluate((e) => +getComputedStyle(e).opacity)) > 0.5,
+    "face boxes appear on hover");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(200);
 
   ok(problems.length === 0, "no console/page/request errors: " + JSON.stringify(problems.slice(0, 8)));
   await browser.close();

@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS photos (
     embedding    BLOB,          -- SigLIP image embedding (float32) for semantic search
     embed_dim    INTEGER,       -- length of ``embedding`` (NULL when not embedded)
     phash        TEXT,          -- perceptual hash (dHash, hex) for near-duplicate grouping
+    tint         TEXT,          -- average colour (rrggbb hex): blur-up placeholder in the grid
     indexed_at   TEXT
 );
 
@@ -95,7 +96,8 @@ CREATE TABLE IF NOT EXISTS faces (
     crop_path   TEXT,
     confidence  REAL,
     region_embedding BLOB,      -- SigLIP embedding of the person region (for grounding)
-    region_dim       INTEGER    -- length of ``region_embedding`` (NULL when not embedded)
+    region_dim       INTEGER,   -- length of ``region_embedding`` (NULL when not embedded)
+    quality          REAL       -- 0-1 recognition usefulness (size/sharpness/pose); NULL = unscored
 );
 
 -- Face active-learning: a "not this person" negative recorded when the user
@@ -238,6 +240,8 @@ def _migrate_to_v1(conn: sqlite3.Connection) -> None:
         # in via a re-index (``index --embed``) or the ``embed`` backfill.
         if "embedding" not in fcols:
             conn.execute("ALTER TABLE faces ADD COLUMN embedding BLOB")
+        if "confidence" not in fcols:
+            conn.execute("ALTER TABLE faces ADD COLUMN confidence REAL")
         if "region_embedding" not in fcols:
             conn.execute("ALTER TABLE faces ADD COLUMN region_embedding BLOB")
         if "region_dim" not in fcols:
@@ -249,12 +253,54 @@ def _migrate_to_v1(conn: sqlite3.Connection) -> None:
         conn.execute(f"DROP INDEX IF EXISTS {name}")
 
 
+def _migrate_to_v2(conn: sqlite3.Connection) -> None:
+    """Faces named through a *cluster* were never marked human-confirmed.
+
+    ``assign_cluster`` used to leave ``confidence`` at the index-time 0.0 (an auto-match
+    always stores >= 1 - threshold > 0), so a named face with confidence 0/NULL can only
+    have been named by a person. Promote them to 1.0 so enrolment, calibration, the
+    evaluation commands and ``--recompute`` carry-over all see them.
+    """
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "faces" in tables:
+        conn.execute(
+            "UPDATE faces SET confidence = 1.0 "
+            "WHERE person_id IS NOT NULL AND (confidence IS NULL OR confidence <= 0)"
+        )
+
+
+def _migrate_to_v3(conn: sqlite3.Connection) -> None:
+    """Per-face quality score (filled at index time; ``photo-atlas face-quality`` backfills)."""
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "faces" in tables:
+        fcols = {r["name"] for r in conn.execute("PRAGMA table_info(faces)")}
+        if "quality" not in fcols:
+            conn.execute("ALTER TABLE faces ADD COLUMN quality REAL")
+
+
+def _migrate_to_v4(conn: sqlite3.Connection) -> None:
+    """Average-colour ``photos.tint`` (blur-up placeholder; ``photo-atlas tints`` backfills)."""
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "photos" in tables:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(photos)")}
+        if "tint" not in cols:
+            conn.execute("ALTER TABLE photos ADD COLUMN tint TEXT")
+
+
 #: Ordered ``(version, fn)`` catalog migrations, applied once each and recorded in
 #: ``PRAGMA user_version``. Append new entries (and bump ``SCHEMA_VERSION``) instead
 #: of adding ad-hoc column probes. A migration runs *before* the schema script, so on
 #: a brand-new file its tables may not exist yet — guard accordingly.
-MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [(1, _migrate_to_v1)]
-SCHEMA_VERSION = 1
+MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
+    (1, _migrate_to_v1),
+    (2, _migrate_to_v2),
+    (3, _migrate_to_v3),
+    (4, _migrate_to_v4),
+]
+SCHEMA_VERSION = 4
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -487,6 +533,12 @@ def set_phash(conn: sqlite3.Connection, photo_id: int, phash: str | None) -> Non
     conn.execute("UPDATE photos SET phash=? WHERE id=?", (phash, photo_id))
 
 
+def set_tint(conn: sqlite3.Connection, photo_id: int, tint: str | None) -> None:
+    """Persist a photo's average colour (``rrggbb``); kept out of PHOTO_COLUMNS like phash."""
+
+    conn.execute("UPDATE photos SET tint=? WHERE id=?", (tint, photo_id))
+
+
 def delete_photos(conn: sqlite3.Connection, ids: list[int]) -> int:
     """Delete photo rows (faces cascade); return the number removed.
 
@@ -631,8 +683,8 @@ def replace_faces(conn: sqlite3.Connection, photo_id: int, faces: Iterable[dict]
         conn.execute(
             "INSERT INTO faces (photo_id, person_id, cluster_id, bbox_x, bbox_y, "
             "bbox_w, bbox_h, dim, embedding, crop_path, confidence, "
-            "region_embedding, region_dim) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "region_embedding, region_dim, quality) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 photo_id,
                 f.get("person_id"),
@@ -644,6 +696,7 @@ def replace_faces(conn: sqlite3.Connection, photo_id: int, faces: Iterable[dict]
                 f.get("confidence"),
                 f.get("region_embedding"),
                 f.get("region_dim"),
+                f.get("quality"),
             ),
         )
     conn.execute("UPDATE photos SET face_count=? WHERE id=?", (len(rows), photo_id))

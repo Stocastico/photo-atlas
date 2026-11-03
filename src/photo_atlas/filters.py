@@ -45,6 +45,7 @@ _LIST_COLUMNS = ", ".join(
         "p.favorite",
         "p.is_video",
         "p.hidden",
+        "p.tint",
     ]
 )
 
