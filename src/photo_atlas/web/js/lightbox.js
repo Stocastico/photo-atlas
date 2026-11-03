@@ -23,12 +23,77 @@ export function nextZoom(view, factor, max = LB_MAX_ZOOM) {
   return { scale, tx: view.tx * ratio, ty: view.ty * ratio };
 }
 
+/**
+ * A face's bbox (pixels in the upright image) as percentages of the displayed
+ * photo, for an absolutely-positioned overlay. `natural` is the loaded preview's
+ * size: older catalogs stored pre-rotation width/height, so when the stored
+ * aspect disagrees with the preview's we swap them. Null when dims are unknown.
+ */
+export function faceBoxPct(face, photo, natural) {
+  let w = photo.width, h = photo.height;
+  if (!w || !h) return null;
+  if (natural && natural.w && natural.h) {
+    const stored = w / h, shown = natural.w / natural.h;
+    if (Math.abs(stored - shown) > 0.05 && Math.abs(h / w - shown) < Math.abs(stored - shown)) {
+      [w, h] = [h, w];
+    }
+  }
+  return {
+    left: (face.bbox_x / w) * 100, top: (face.bbox_y / h) * 100,
+    width: (face.bbox_w / w) * 100, height: (face.bbox_h / h) * 100,
+  };
+}
+
+// Overlay of face boxes that rides the image's zoom/pan transform. Revealed while
+// hovering the image; hovering a box/list row highlights its counterpart.
+function placeFaceBoxes(p, itemsByFace) {
+  const stage = $(".lb-img");
+  const img = $("#lb-img");
+  if (!stage || !img) return;
+  let layer = $("#lb-boxes");
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.id = "lb-boxes";
+    layer.className = "lb-boxes";
+    stage.appendChild(layer);
+  }
+  layer.innerHTML = "";
+  const draw = () => {
+    layer.innerHTML = "";
+    layer.style.left = img.offsetLeft + "px";
+    layer.style.top = img.offsetTop + "px";
+    layer.style.width = img.offsetWidth + "px";
+    layer.style.height = img.offsetHeight + "px";
+    for (const face of p.faces) {
+      const b = faceBoxPct(face, p, { w: img.naturalWidth, h: img.naturalHeight });
+      if (!b) continue;
+      const box = document.createElement("button");
+      box.type = "button";
+      box.className = "fbox" + (face.person_name ? " named" : "");
+      box.dataset.face = String(face.id);
+      box.style.left = b.left + "%"; box.style.top = b.top + "%";
+      box.style.width = b.width + "%"; box.style.height = b.height + "%";
+      box.setAttribute("aria-label", face.person_name || "Unnamed face");
+      if (face.person_name) box.innerHTML = `<span class="fname">${esc(face.person_name)}</span>`;
+      const item = itemsByFace.get(face.id);
+      box.onmouseenter = () => item && item.classList.add("hl");
+      box.onmouseleave = () => item && item.classList.remove("hl");
+      box.onclick = (e) => { e.stopPropagation(); const inp = item && item.querySelector("input"); if (inp) inp.focus(); };
+      layer.appendChild(box);
+    }
+    applyLbZoom();
+  };
+  if (img.complete && img.naturalWidth) draw(); else img.onload = draw;
+}
+
 export let lbZoom = { scale: 1, tx: 0, ty: 0 };
 export function applyLbZoom() {
   const img = $("#lb-img");
   if (!img) return;
   img.style.transform = `translate(${lbZoom.tx}px, ${lbZoom.ty}px) scale(${lbZoom.scale})`;
   img.style.cursor = lbZoom.scale > 1 ? "grab" : "zoom-in";
+  const boxes = $("#lb-boxes");
+  if (boxes) boxes.style.transform = `translate(${lbZoom.tx}px, ${lbZoom.ty}px) scale(${lbZoom.scale})`;
   const stage = $(".lb-img");
   if (stage) stage.classList.toggle("zoomed", lbZoom.scale > 1);
 }
@@ -124,6 +189,8 @@ function renderLightboxSide(p, id, reopen) {
   // photos use the reusable <img>. Swap the stage element so navigating between a
   // video and a photo restores the right one.
   const stage = $(".lb-img");
+  const oldBoxes = $("#lb-boxes");
+  if (oldBoxes) oldBoxes.remove();
   if (p.is_video) {
     stage.innerHTML = `<video id="lb-video" controls preload="metadata" playsinline
       poster="/api/preview/${id}" src="/api/image/${id}"></video>`;
@@ -191,6 +258,7 @@ function renderLightboxSide(p, id, reopen) {
   }
 
   const list = $("#lb-faces");
+  const itemsByFace = new Map();
   if (!p.faces.length) list.innerHTML = `<span class="tagline">No faces detected.</span>`;
   for (const face of p.faces) {
     const item = document.createElement("div");
@@ -223,8 +291,12 @@ function renderLightboxSide(p, id, reopen) {
       refresh();
     };
     input.addEventListener("keydown", (e) => e.key === "Enter" && item.querySelector('.primary').click());
+    item.onmouseenter = () => $(`#lb-boxes .fbox[data-face="${face.id}"]`)?.classList.add("hl");
+    item.onmouseleave = () => $(`#lb-boxes .fbox[data-face="${face.id}"]`)?.classList.remove("hl");
+    itemsByFace.set(face.id, item);
     list.appendChild(item);
   }
+  if (!p.is_video) placeFaceBoxes(p, itemsByFace);
 }
 
 export async function openLightbox(index) {

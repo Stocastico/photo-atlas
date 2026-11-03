@@ -6,7 +6,7 @@
 import { installDom, webModule } from "./fake_dom.mjs";
 
 installDom();
-const { nextZoom } = await import(webModule("lightbox.js"));
+const { nextZoom, faceBoxPct } = await import(webModule("lightbox.js"));
 
 let pass = 0, fail = 0;
 const check = (name, cond) => { cond ? pass++ : (fail++, console.error("FAIL:", name)); };
@@ -32,6 +32,16 @@ check("clamp to max", near(v.scale, 6));
 // A no-op factor leaves the transform unchanged.
 v = nextZoom({ scale: 3, tx: 7, ty: 9 }, 1);
 check("factor 1 is a no-op", near(v.scale, 3) && near(v.tx, 7) && near(v.ty, 9));
+
+// ---- face boxes: bbox pixels -> percentages of the displayed image
+const ph = { width: 1000, height: 500 };
+let b = faceBoxPct({ bbox_x: 100, bbox_y: 50, bbox_w: 200, bbox_h: 100 }, ph, { w: 800, h: 400 });
+check("box left%", near(b.left, 10) && near(b.top, 10));
+check("box size%", near(b.width, 20) && near(b.height, 20));
+// Catalog stored pre-rotation dims (landscape) but the preview is portrait -> swap.
+b = faceBoxPct({ bbox_x: 100, bbox_y: 50, bbox_w: 200, bbox_h: 100 }, { width: 1000, height: 500 }, { w: 400, h: 800 });
+check("rotated legacy dims swapped", near(b.left, 100 / 500 * 100) && near(b.top, 50 / 1000 * 100));
+check("no dims -> null", faceBoxPct({ bbox_x: 1, bbox_y: 1, bbox_w: 1, bbox_h: 1 }, {}, { w: 10, h: 10 }) === null);
 
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

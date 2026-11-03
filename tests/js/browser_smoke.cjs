@@ -97,6 +97,20 @@ const ok = (cond, msg) => {
   await page.waitForTimeout(300);
   ok((await page.locator("#lightbox.open").count()) === 0, "Escape closes lightbox");
 
+  // Face boxes: one overlay box per listed face, revealed on hover of the image.
+  await page.goto(base + "?people=1", { waitUntil: "networkidle" });
+  await page.waitForSelector("#grid .card");
+  await page.locator("#grid .card").first().click();
+  await page.waitForSelector("#lb-faces .face-item", { timeout: 5000 });
+  await page.waitForSelector("#lb-boxes .fbox", { state: "attached", timeout: 5000 });
+  const nItems = await page.locator("#lb-faces .face-item").count();
+  ok((await page.locator("#lb-boxes .fbox").count()) === nItems, "one face box per listed face");
+  await page.hover(".lb-img");
+  ok((await page.locator("#lb-boxes .fbox").first().evaluate((e) => +getComputedStyle(e).opacity)) > 0.5,
+    "face boxes appear on hover");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(200);
+
   ok(problems.length === 0, "no console/page/request errors: " + JSON.stringify(problems.slice(0, 8)));
   await browser.close();
   console.log(`${passed} passed, ${failed} failed`);
