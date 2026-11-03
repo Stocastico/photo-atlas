@@ -2,7 +2,7 @@
 import { api } from "./api.js";
 import { setupRecognize } from "./clusters.js";
 import { bulkAction, bulkExport, relayout, renderPhotos, setSelectMode } from "./grid.js";
-import { applyLbZoom, closeHelp, closeLightbox, focusableInLightbox, helpOpen, lbZoom, lightboxStep, resetLbZoom, toggleHelp, toggleSlideshow, zoomBy } from "./lightbox.js";
+import { applyFaceBoxPref, applyLbZoom, closeHelp, closeLightbox, focusableInLightbox, helpOpen, lbZoom, lightboxStep, resetLbZoom, toggleFaceBoxes, toggleHelp, toggleSlideshow, zoomBy } from "./lightbox.js";
 import { setSearchMode } from "./search.js";
 import { setPref, state } from "./state.js";
 import { applyQuery, setRestoringState, syncURL } from "./urlstate.js";
@@ -33,6 +33,8 @@ $("#lb-next").onclick = () => lightboxStep(1);
 $("#lightbox").onclick = (e) => { if (e.target.id === "lightbox") closeLightbox(); };
 if ($("#lb-play")) $("#lb-play").onclick = toggleSlideshow;
 if ($("#lb-help")) $("#lb-help").onclick = toggleHelp;
+if ($("#lb-boxes-toggle")) $("#lb-boxes-toggle").onclick = toggleFaceBoxes;
+applyFaceBoxPref();
 
 // Scroll/drag zoom + pan on the image stage. Wired once; the handlers no-op
 // unless the lightbox is open. Drag panning only kicks in past 1× zoom.
@@ -98,6 +100,7 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "ArrowLeft" && !typing) lightboxStep(-1);
   else if (e.key === "ArrowRight" && !typing) lightboxStep(1);
   else if ((e.key === "?" || (e.key === "/" && e.shiftKey)) && !typing) { e.preventDefault(); toggleHelp(); }
+  else if ((e.key === "b" || e.key === "B") && !typing) { e.preventDefault(); toggleFaceBoxes(); }
   else if (e.key === " " && !typing) { e.preventDefault(); toggleSlideshow(); }
   else if ((e.key === "+" || e.key === "=") && !typing) { e.preventDefault(); zoomBy(1.25); }
   else if (e.key === "-" && !typing) { e.preventDefault(); zoomBy(1 / 1.25); }

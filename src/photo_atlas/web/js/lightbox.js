@@ -4,7 +4,7 @@ import { makeStar } from "./favorites.js";
 import { moreLikeThis, moreLikeThisFace } from "./filters.js";
 import { renderPhotos } from "./grid.js";
 import { renderSidebar } from "./sidebar.js";
-import { state } from "./state.js";
+import { pref, setPref, state } from "./state.js";
 import { $, esc, fmtDate } from "./util.js";
 
 // ---- lightbox / detail ----------------------------------------------------
@@ -86,6 +86,19 @@ function placeFaceBoxes(p, itemsByFace) {
   if (img.complete && img.naturalWidth) draw(); else img.onload = draw;
 }
 
+// "Always show face boxes" (B): a persisted per-viewer preference; off = hover only.
+export function applyFaceBoxPref() {
+  const on = pref("faceBoxes", "hover") === "always";
+  const lb = $("#lightbox");
+  if (lb) lb.classList.toggle("boxes-always", on);
+  const b = $("#lb-boxes-toggle");
+  if (b) b.setAttribute("aria-pressed", on ? "true" : "false");
+}
+export function toggleFaceBoxes() {
+  setPref("faceBoxes", pref("faceBoxes", "hover") === "always" ? "hover" : "always");
+  applyFaceBoxPref();
+}
+
 export let lbZoom = { scale: 1, tx: 0, ty: 0 };
 export function applyLbZoom() {
   const img = $("#lb-img");
@@ -137,6 +150,7 @@ function helpPanel() {
         <dt>+ / − / 0</dt><dd>Zoom in / out / reset</dd>
         <dt>Double-click</dt><dd>Toggle zoom</dd>
         <dt>Drag</dt><dd>Pan when zoomed in</dd>
+        <dt>B</dt><dd>Always show face boxes</dd>
         <dt>?</dt><dd>Toggle this help</dd>
         <dt>Esc</dt><dd>Close</dd>
       </dl></div>`;

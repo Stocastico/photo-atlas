@@ -705,5 +705,5 @@ hardware) to design and benchmark. None of it is started.
 ### Not done (rated "maybe" in the lab)
 - [ ] Draggable year/month scrubber (only the scroll bubble exists).
 - [ ] Top filter menu with popovers (the sidebar is unchanged).
-- [ ] Face boxes always-on option; show a face-box toggle in the lightbox.
-- [ ] Quick-review undo (needs an "unassign cluster" endpoint).
+- [x] Face boxes always-on option (lightbox ▢ button / `B`, remembered).
+- [x] Quick-review undo (`Z`; `POST /api/clusters/{id}/unassign` restores exactly the faces named).

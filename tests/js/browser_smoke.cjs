@@ -76,7 +76,17 @@ const ok = (cond, msg) => {
     await page.keyboard.press("n");
     ok(await page.evaluate(() => document.activeElement && document.activeElement.id === "qr-name"),
       "quick review: N focuses the new-person box");
-    await page.keyboard.press("Escape"); // leaves the input
+    // Name the first group, then undo it: the same group comes back.
+    const before = await page.locator("#qr .qr-progress").first().innerText();
+    await page.fill("#qr-name", "Zed");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction((b) => !document.querySelector("#qr .qr-progress")
+      || document.querySelector("#qr .qr-progress").innerText !== b || document.querySelector("#qr").hidden,
+      before, { timeout: 5000 });
+    await page.keyboard.press("z");
+    await page.waitForFunction((b) => document.querySelector("#qr:not([hidden]) .qr-progress")
+      && document.querySelector("#qr .qr-progress").innerText === b, before, { timeout: 5000 });
+    ok(true, "quick review: Z undoes the last naming");
     await page.keyboard.press("Escape"); // closes the overlay
     await page.waitForSelector("#qr", { state: "hidden", timeout: 3000 });
     ok(true, "quick review closes with Esc");
@@ -120,6 +130,13 @@ const ok = (cond, msg) => {
   await page.hover(".lb-img");
   ok((await page.locator("#lb-boxes .fbox").first().evaluate((e) => +getComputedStyle(e).opacity)) > 0.5,
     "face boxes appear on hover");
+  // B / the toolbar button pins the boxes visible without hovering.
+  await page.mouse.move(5, 5);
+  await page.keyboard.press("b");
+  ok((await page.locator("#lb-boxes .fbox").first().evaluate((e) => +getComputedStyle(e).opacity)) > 0.5,
+    "B pins face boxes on");
+  ok((await page.getAttribute("#lb-boxes-toggle", "aria-pressed")) === "true", "boxes toggle reflects state");
+  await page.keyboard.press("b");
   await page.keyboard.press("Escape");
   await page.waitForTimeout(200);
 

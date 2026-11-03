@@ -255,7 +255,8 @@ or **⬇ Export…** (copy the originals to a folder) to the whole set.
 ### The lightbox
 
 Hover the photo to see **face boxes** (they follow zoom/pan); hovering one highlights its
-row in the side panel and clicking it focuses the name field.
+row in the side panel and clicking it focuses the name field. **B** (or the ▢ button)
+keeps the boxes always visible.
 
 Click any photo (or press Enter on a focused card) to open the detail lightbox:
 

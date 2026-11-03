@@ -112,6 +112,7 @@ export function quickReviewAction(key, n) {
   const k = key.toLowerCase();
   if (k === "n") return { type: "new" };
   if (k === "s" || key === "ArrowRight") return { type: "skip" };
+  if (k === "z") return { type: "undo" };
   return null;
 }
 
@@ -138,11 +139,25 @@ export async function startQuickReview() {
     document.removeEventListener("keydown", onKey, true);
     renderClusters(); renderSidebar();
   };
+  const history = []; // namings made this session: {index, clusterId, faceIds, personId}
   const next = () => { i += 1; if (i >= clusters.length) close(); else show(); };
+  const undo = async () => {
+    const h = history.pop();
+    if (!h) { toast("Nothing to undo.", "info"); return; }
+    await api(`/api/clusters/${h.clusterId}/unassign`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ face_ids: h.faceIds, person_id: h.personId }),
+    });
+    people = (await api("/api/persons")).persons || [];
+    i = h.index;
+    show();
+  };
   const assign = async (body) => {
-    await api(`/api/clusters/${clusters[i].cluster_id}/assign`, {
+    const res = await api(`/api/clusters/${clusters[i].cluster_id}/assign`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
+    history.push({ index: i, clusterId: clusters[i].cluster_id, faceIds: res.face_ids || [],
+      personId: res.person_id });
     if (body.name) people = (await api("/api/persons")).persons || []; // new person: pick up its real id
     next();
   };
@@ -159,12 +174,14 @@ export async function startQuickReview() {
           `<button class="primary" data-k="${k}"><kbd>${k + 1}</kbd> ${esc(p.name)}${
             c.suggestion && c.suggestion.person_id === p.id ? " ✨" : ""}</button>`).join("")}</div>
         <div class="qr-new"><kbd>N</kbd> <input id="qr-name" placeholder="New person…" />
-          <button class="ghost" id="qr-skip" type="button"><kbd>S</kbd> Skip</button></div>
+          <button class="ghost" id="qr-skip" type="button"><kbd>S</kbd> Skip</button>
+          <button class="ghost" id="qr-undo" type="button"><kbd>Z</kbd> Undo</button></div>
       </div>`;
     overlay.querySelectorAll("[data-k]").forEach((b) =>
       (b.onclick = () => assign({ person_id: cands[+b.dataset.k].id })));
     $("#qr-close").onclick = close;
     $("#qr-skip").onclick = next;
+    $("#qr-undo").onclick = undo;
     const inp = $("#qr-name");
     inp.onkeydown = (e) => {
       e.stopPropagation();
@@ -184,6 +201,7 @@ export async function startQuickReview() {
     if (a.type === "pick") assign({ person_id: cands[a.index].id });
     else if (a.type === "new") $("#qr-name").focus();
     else if (a.type === "skip") next();
+    else if (a.type === "undo") undo();
   };
   document.addEventListener("keydown", onKey, true);
   show();
