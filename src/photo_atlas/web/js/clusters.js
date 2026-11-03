@@ -1,7 +1,7 @@
 // Name-faces and review views.
 import { api } from "./api.js";
 import { renderSidebar } from "./sidebar.js";
-import { $, esc } from "./util.js";
+import { $, esc, toast } from "./util.js";
 
 // ---- clusters (name faces) ------------------------------------------------
 // Active-learning review: low-confidence auto-tags the user can confirm or
@@ -57,6 +57,8 @@ function suggestionHtml(s) {
 
 // "Auto-tag": run recognition over the whole catalog from the people you've confirmed.
 export function setupRecognize() {
+  const qr = $("#quick-review-btn");
+  if (qr) qr.onclick = () => startQuickReview().catch(() => toast("Couldn't start quick review."));
   const btn = $("#recognize-btn");
   if (!btn) return;
   btn.onclick = async () => {
@@ -83,6 +85,108 @@ export function setupRecognize() {
       btn.disabled = false;
     }
   };
+}
+
+// ---- quick review ----------------------------------------------------------
+// Keyboard-first naming: one face group at a time, the likeliest people on keys
+// 1-6, N for someone new, S to skip. Pure helpers are unit-tested in Node.
+const QR_MAX = 6;
+
+/** Likeliest people for a group: the "looks like" suggestion, then the most photographed. */
+export function quickReviewCandidates(people, suggestion) {
+  const out = [];
+  if (suggestion && suggestion.person_id != null) {
+    out.push({ id: suggestion.person_id, name: suggestion.name });
+  }
+  const rest = [...people].sort((a, b) => (b.photo_count || 0) - (a.photo_count || 0));
+  for (const p of rest) {
+    if (out.length >= QR_MAX) break;
+    if (!out.some((o) => o.id === p.id)) out.push({ id: p.id, name: p.name });
+  }
+  return out.slice(0, QR_MAX);
+}
+
+/** Map a key press to an action, or null. `n` = number of candidates on screen. */
+export function quickReviewAction(key, n) {
+  if (/^[1-6]$/.test(key)) { const i = +key - 1; return i < n ? { type: "pick", index: i } : null; }
+  const k = key.toLowerCase();
+  if (k === "n") return { type: "new" };
+  if (k === "s" || key === "ArrowRight") return { type: "skip" };
+  return null;
+}
+
+export async function startQuickReview() {
+  const [{ clusters }, pr] = await Promise.all([api("/api/clusters"), api("/api/persons")]);
+  let people = pr.persons || [];
+  if (!clusters.length) { toast("No unnamed groups to review.", "info"); return; }
+  let i = 0;
+  let overlay = $("#qr");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "qr";
+    overlay.className = "qr";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-label", "Quick review");
+    document.body.appendChild(overlay);
+  }
+  overlay.hidden = false;
+  let cands = [];
+
+  const close = () => {
+    overlay.hidden = true;
+    document.removeEventListener("keydown", onKey, true);
+    renderClusters(); renderSidebar();
+  };
+  const next = () => { i += 1; if (i >= clusters.length) close(); else show(); };
+  const assign = async (body) => {
+    await api(`/api/clusters/${clusters[i].cluster_id}/assign`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    if (body.name) people = (await api("/api/persons")).persons || []; // new person: pick up its real id
+    next();
+  };
+  const show = () => {
+    const c = clusters[i];
+    cands = quickReviewCandidates(people, c.suggestion);
+    overlay.innerHTML = `
+      <div class="qr-card">
+        <div class="qr-progress">${i + 1} / ${clusters.length} · ${c.size} faces
+          <button class="ghost" id="qr-close" type="button">Close (Esc)</button></div>
+        <div class="qr-faces">${c.samples.map((s) =>
+          `<img src="/api/face/${s.id}" alt="" onerror="this.style.visibility='hidden'"/>`).join("")}</div>
+        <div class="qr-cands">${cands.map((p, k) =>
+          `<button class="primary" data-k="${k}"><kbd>${k + 1}</kbd> ${esc(p.name)}${
+            c.suggestion && c.suggestion.person_id === p.id ? " ✨" : ""}</button>`).join("")}</div>
+        <div class="qr-new"><kbd>N</kbd> <input id="qr-name" placeholder="New person…" />
+          <button class="ghost" id="qr-skip" type="button"><kbd>S</kbd> Skip</button></div>
+      </div>`;
+    overlay.querySelectorAll("[data-k]").forEach((b) =>
+      (b.onclick = () => assign({ person_id: cands[+b.dataset.k].id })));
+    $("#qr-close").onclick = close;
+    $("#qr-skip").onclick = next;
+    const inp = $("#qr-name");
+    inp.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") inp.blur();
+      if (e.key === "Enter" && inp.value.trim()) {
+        assign({ name: inp.value.trim() });
+      }
+    };
+  };
+  const onKey = (e) => {
+    if (overlay.hidden) return;
+    if (e.key === "Escape") { e.preventDefault(); close(); return; }
+    if (e.target && e.target.id === "qr-name") return;
+    const a = quickReviewAction(e.key, cands.length);
+    if (!a) return;
+    e.preventDefault();
+    if (a.type === "pick") assign({ person_id: cands[a.index].id });
+    else if (a.type === "new") $("#qr-name").focus();
+    else if (a.type === "skip") next();
+  };
+  document.addEventListener("keydown", onKey, true);
+  show();
 }
 
 export async function renderClusters() {

@@ -69,6 +69,18 @@ const ok = (cond, msg) => {
   await page.waitForFunction(() => !document.querySelector("#recognize-btn").disabled, null, { timeout: 5000 })
     .catch(() => {});
   ok(!(await page.isDisabled("#recognize-btn")), "auto-tag button is re-enabled afterwards");
+  // Quick review: opens an overlay (the demo has unnamed groups), N focuses the name box, Esc closes.
+  if ((await page.locator("#clusters .cluster-card").count()) > 0) {
+    await page.click("#quick-review-btn");
+    await page.waitForSelector("#qr:not([hidden]) .qr-card", { timeout: 5000 });
+    await page.keyboard.press("n");
+    ok(await page.evaluate(() => document.activeElement && document.activeElement.id === "qr-name"),
+      "quick review: N focuses the new-person box");
+    await page.keyboard.press("Escape"); // leaves the input
+    await page.keyboard.press("Escape"); // closes the overlay
+    await page.waitForSelector("#qr", { state: "hidden", timeout: 3000 });
+    ok(true, "quick review closes with Esc");
+  }
   await page.click('.tab[data-view="photos"]');
   await page.waitForTimeout(300);
 
