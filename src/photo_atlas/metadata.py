@@ -172,6 +172,10 @@ def extract_meta_from_image(img: Image.Image, path: Path) -> PhotoMeta:
     meta = PhotoMeta()
     meta.width, meta.height = img.size
     exif = _exif_dict(img)
+    # Thumbnails are EXIF-transposed, so store the *displayed* dimensions: the UI's
+    # justified layout derives each tile's aspect ratio from them.
+    if exif.get("Orientation") in (5, 6, 7, 8):
+        meta.width, meta.height = meta.height, meta.width
 
     for key in ("DateTimeOriginal", "DateTimeDigitized", "DateTime"):
         if key in exif:
